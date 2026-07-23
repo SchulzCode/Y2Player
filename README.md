@@ -10,11 +10,10 @@ Y2Player is for Y2 owners, firmware modders, and contributors who want a lightwe
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and pause/resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
-- Navigate entirely with the Y2 click wheel and hardware buttons; no touchscreen is required.
+- Navigate entirely with the Y2 click wheel and hardware buttons
 - View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
-- Pair and manage Bluetooth A2DP audio devices where the stock Android firmware exposes the required operations.
-- Use optional equalizer, bass boost, loudness, and best-effort Direct DAC controls when supported by the device firmware.
+- Pair and manage Bluetooth A2DP audio devices.
 
 ## Music library and playback
 
@@ -45,15 +44,21 @@ Playback includes a persistent queue, shuffle, repeat one/all, previous/next beh
 
 ### Screen-off and lock behavior
 
-When the display is off or Android's keyguard is locked, Y2Player blocks click-wheel, navigation, media, and headset-button input. **Only the system Power and Volume controls remain active.** Playback itself may continue with the display off; the input block prevents accidental pocket presses.
+When the display is off or Android's keyguard is locked, Y2Player blocks click-wheel, navigation, media, and headset-button input. **Only the system Power and Volume controls remain active.** Playback itself continues with the display off; the input block prevents accidental pocket presses.
 
 ## Interface and artwork
 
 The main interface is a low-overhead custom-drawn view sized around the Y2's landscape panel and physical focus navigation. Home combines the library menu with a compact playback pane. Now Playing shows embedded artwork when available, a fallback graphic otherwise, title/artist/album information, progress and time, playback state, output-route warnings, and cautious DAC information.
 
+### Screenshots
+
+| Library | Now Playing | Empty library |
+| --- | --- | --- |
+| ![Y2Player library](docs/screenshots/y2-ui-after-main.png) | ![Y2Player Now Playing](docs/screenshots/y2-ui-after-now-playing.png) | ![Y2Player empty library](docs/screenshots/y2-ui-after-empty.png) |
+
 ## Bluetooth audio
 
-Y2Player integrates with Android 4.4's Bluetooth A2DP and legacy remote-control APIs. The in-app Bluetooth screen can enable Bluetooth, discover audio devices, pair, connect/disconnect, forget bonds, and refresh the A2DP service. If the firmware does not expose an automatic connect, disconnect, or forget operation, the app directs the user to Android Bluetooth settings instead of claiming success.
+Y2Player integrates with Android 4.4's Bluetooth A2DP and legacy remote-control APIs. The in-app Bluetooth screen can enable Bluetooth, discover audio devices, pair, connect/disconnect, forget bonds, and refresh the A2DP service.
 
 Transport buttons and AVRCP metadata are supported through the API 19 media-button and remote-control interfaces. Losing an active Bluetooth route pauses playback rather than leaking audio to the speaker; reconnecting requires an explicit Play command.
 
@@ -142,7 +147,7 @@ If ADB installation is enabled on the device, install the debug APK with the And
 adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-The debug build uses the separate package name `com.schulzcode.y2player.debug`. Installing an APK alone does not remove the stock launcher; Android must allow the user to select Y2Player as HOME.
+The debug build uses the separate package name `com.luca.y2player.debug`. Installing an APK alone does not remove the stock launcher; Android must allow the user to select Y2Player as HOME.
 
 ### System-image integration for the Y2 launcher
 
@@ -156,13 +161,13 @@ OriginalFirmware/MT6582_Android_scatter.txt
 Validate the host environment without producing an image:
 
 ```powershell
-.\tools\build-firmware.ps1 -ValidateOnly
+.\build-firmware.ps1 -ValidateOnly
 ```
 
 Build and verify the release APK and replacement system image:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build-firmware.ps1
+powershell -ExecutionPolicy Bypass -File .\build-firmware.ps1
 ```
 
 This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report.
@@ -178,6 +183,7 @@ The script only builds files; it never flashes, pushes, reboots, or modifies the
 - DAC detection and the vendor Hi-Fi request are best-effort. Native DSD, bit-perfect output, and high-rate PCM are not promised.
 - Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and exact decoder behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
+- Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.
 - No prebuilt GitHub release download is referenced by this repository; build artifacts are produced locally.
 
 ## Contributing
