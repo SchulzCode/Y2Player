@@ -4,6 +4,18 @@
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
+## Project status and bug reports
+
+Y2Player is my first Android app. Although I test each release, the app will likely contain bugs, device-specific issues, or edge cases that I have not found yet.
+
+If you encounter a problem, please:
+
+1. note what you were doing when the issue occurred and whether it can be reproduced;
+2. export the diagnostics log from Y2Player as soon as possible;
+3. open a [GitHub issue](https://github.com/SchulzCode/Y2Player/issues) and attach the diagnostics log together with your Y2Player version, firmware version, and a short description of the problem.
+
+The diagnostics log is especially helpful because many playback, audio-effect, Bluetooth, storage, and firmware-related problems cannot be reproduced reliably on another device. Please review the exported file before posting it publicly.
+
 ## Highlights
 
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
@@ -14,6 +26,19 @@ Y2Player is for Y2 owners, firmware modders, and contributors who want a lightwe
 - View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
+
+## Outlook: V2.0
+
+V2.0 is planned only after V1.0 has been thoroughly tested and its known bugs and reliability issues have been addressed. The current priorities are stability, predictable playback, hardware-control reliability, and a solid everyday experience on the Y2.
+
+The current V2.0 outlook includes:
+
+- **customizable themes** for changing the appearance without compromising readability or click-wheel navigation;
+- **FM radio support**, provided it can be integrated reliably with the Y2 hardware and firmware.
+
+These are planned directions rather than guaranteed release promises. The goal of Y2Player is not feature bloat. New features should be added deliberately, implemented well, tested on real hardware, and refined before the next major feature is introduced.
+
+The long-term goal is to build a strong, dependable foundation for a modern iPod-like device: focused, responsive, offline-first, and enjoyable to use every day.
 
 ## Music library and playback
 
@@ -52,9 +77,20 @@ The main interface is a low-overhead custom-drawn view sized around the Y2's lan
 
 ### Screenshots
 
-| Library | Now Playing | Empty library |
-| --- | --- | --- |
-| ![Y2Player library](docs/screenshots/y2-ui-after-main.png) | ![Y2Player Now Playing](docs/screenshots/y2-ui-after-now-playing.png) | ![Y2Player empty library](docs/screenshots/y2-ui-after-empty.png) |
+<table>
+  <tr>
+    <th align="center">Library</th>
+    <th align="center">Now Playing</th>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/239abe49-dc50-4fdc-83db-b6b2faca1ab3" alt="Y2Player library screen" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/ca908848-3149-4b7f-8b3a-b9b1e27a9ae0" alt="Y2Player Now Playing screen" width="100%" />
+    </td>
+  </tr>
+</table>
 
 ## Bluetooth audio
 
@@ -67,11 +103,11 @@ Transport buttons and AVRCP metadata are supported through the API 19 media-butt
 Two audio-quality modes are available:
 
 - **Balanced** uses the normal Android audio path and can enable supported app-session effects.
-- **Direct DAC** makes a best-effort request for the Y2 firmware's MediaTek Hi-Fi route and bypasses app-side equalizer, bass boost, loudness, crossfade, and pause/resume fades while active. Stored settings are preserved for returning to Balanced mode.
+- **Direct DAC (experimental)** makes a best-effort request for the Y2 firmware's MediaTek Hi-Fi route and bypasses app-side equalizer, bass boost, loudness, crossfade, and pause/resume fades while active. The request may be ignored, rejected, or have no effect depending on the installed firmware and audio HAL. Stored settings are preserved for returning to Balanced mode.
 
 Equalizer presets, custom equalizer bands, bass boost, and loudness appear only when Android reports compatible effects for the playback session. Availability and behavior therefore depend on the installed firmware.
 
-Direct DAC mode is not a bit-perfect or native-DSD guarantee. Final sample format, resampling, clocks, and CS43131 programming remain controlled by AudioFlinger, the MediaTek audio HAL, and the kernel driver. Y2Player reports limitations instead of claiming capabilities the app cannot verify.
+Direct DAC is an experimental feature and may not work reliably or completely on every Y2 or firmware version. It is not proof that audio bypasses Android's mixer and is not a bit-perfect, hi-res, or native-DSD guarantee. Final sample format, resampling, clocks, and CS43131 programming remain controlled by AudioFlinger, the MediaTek audio HAL, and the kernel driver. Y2Player reports limitations instead of claiming capabilities the app cannot verify.
 
 ## Storage, diagnostics, and recovery
 
@@ -139,19 +175,103 @@ The verified APK and build report are staged under `dist\firmware\`. Signing mat
 
 ## Install on a device
 
-### APK installation for development
+### Flash the modified system image with SP Flash Tool
 
-If ADB installation is enabled on the device, install the debug APK with the Android SDK tools:
+> [!WARNING]
+> Flashing modified firmware can permanently damage or brick your device if the wrong file, partition, or flashing mode is selected. Proceed entirely at your own risk. I am not responsible for damaged devices, lost data, failed flashes, or any other consequences.
+>
+> **Read this entire guide carefully before starting. Do not continue until you understand every step. Work slowly, verify every selection, and never guess.**
 
-```powershell
-adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+#### Downloads
+
+- [SP Flash Tool](https://spflashtool.com/)
+- [Original Y2 stock firmware 3.1.7](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7)
+
+#### Requirements
+
+- an **Innioasis Y2** with the matching stock firmware version;
+- the modified `system.img` from the Y2Player GitHub Release;
+- the matching original `MT6582_Android_scatter.txt` file from the [original Y2 stock firmware](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7);
+- [SP Flash Tool](https://spflashtool.com/);
+- the required MediaTek USB drivers;
+- a verified copy of the complete original firmware so the device can be restored if necessary.
+
+#### Before flashing
+
+1. Back up any important files from the Y2.
+2. Keep the complete original firmware and matching scatter file in a safe location.
+3. Confirm that the downloaded release is intended for the Innioasis Y2 and your firmware base.
+4. Verify the SHA-256 checksum supplied with the release.
+5. Fully charge the Y2 before beginning.
+6. Read all remaining steps before opening SP Flash Tool.
+
+If `userdata` was recently reset or flashed, first boot the original firmware and complete the initial Android setup. After setup is complete, shut the device down and flash only the modified `system.img`. Skipping the original setup may leave required device settings uninitialized.
+
+#### Flashing steps
+
+1. Extract the Y2Player release ZIP.
+2. Open [SP Flash Tool](https://spflashtool.com/).
+3. Load the matching original `MT6582_Android_scatter.txt` file.
+4. Select **Download Only** from the flashing-mode menu.
+5. Remove every partition checkmark.
+6. Enable **only** the `ANDROID` partition.
+7. In the `ANDROID` row, select the modified Y2Player `system.img`.
+8. Carefully verify the configuration before continuing:
+   - mode is **Download Only**;
+   - only `ANDROID` is checked;
+   - `ANDROID` points to the modified Y2Player `system.img`;
+   - no other partition is selected.
+9. Turn the Y2 completely off.
+10. Click **Download** in SP Flash Tool.
+11. Connect the powered-off Y2 to the computer with a reliable USB data cable.
+12. Wait until SP Flash Tool displays the green success indicator.
+13. Disconnect the USB cable and start the Y2.
+14. Allow extra time for the first boot.
+
+#### Never select these partitions
+
+Do not flash or format any unrelated partition, including:
+
+```text
+PRELOADER
+MBR
+EBR1
+EBR2
+UBOOT
+BOOTIMG
+RECOVERY
+SEC_RO
+LOGO
+CACHE
+USRDATA
+NVRAM
 ```
 
-The debug build uses the separate package name `com.luca.y2player.debug`. Installing an APK alone does not remove the stock launcher; Android must allow the user to select Y2Player as HOME.
+Do not use **Format All + Download** or **Firmware Upgrade**. For this installation, use **Download Only** and flash only `ANDROID`.
 
-### System-image integration for the Y2 launcher
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" alt="SP Flash Tool configured to flash only the ANDROID partition" width="900" />
+</p>
+<p align="center"><em>SP Flash Tool configured with only the ANDROID partition selected.</em></p>
 
-The repository's production path builds a **system-partition-only** image that installs the signed APK at `/system/priv-app/Y2Player.apk` and removes the stock launcher from the copied system image. You must supply your own matching stock firmware inputs:
+#### Restoring the original firmware
+
+If the modified system does not boot or function correctly:
+
+1. Turn the device off.
+2. Open SP Flash Tool.
+3. Load the matching original scatter file.
+4. Select **Download Only**.
+5. Select only the original `ANDROID` partition and original `system.img`.
+6. Flash it using the same careful procedure described above.
+
+Do not restore additional partitions unless a verified device-specific recovery guide explicitly requires them.
+
+### Build the system image yourself
+
+The repository can also build a system-partition-only image from your own matching stock firmware. It installs the signed APK at `/system/priv-app/Y2Player.apk` and removes the stock launcher from the copied system image.
+
+Provide:
 
 ```text
 OriginalFirmware/system.img
@@ -172,19 +292,20 @@ powershell -ExecutionPolicy Bypass -File .\build-firmware.ps1
 
 This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report.
 
-The script only builds files; it never flashes, pushes, reboots, or modifies the original firmware inputs. For an initial SP Flash Tool test, select only the generated `system.img`/`ANDROID` partition. Never select Preloader, NVRAM, boot, or unrelated partitions. Keep a verified stock recovery path and understand the risk before flashing any modified firmware.
+The build script only creates files. It never flashes, pushes, reboots, or modifies the original firmware inputs.
 
 ## Known limitations
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
+- This is my first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
 - Decoder and container support varies with the stock Android 4.4 media framework; recognition of a file extension does not guarantee playback.
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
-- DAC detection and the vendor Hi-Fi request are best-effort. Native DSD, bit-perfect output, and high-rate PCM are not promised.
+- **Direct DAC is experimental.** The vendor Hi-Fi request may be unavailable, rejected, or have no effect depending on the firmware and audio HAL. Native DSD, bit-perfect output, and high-rate PCM are not promised.
 - Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and exact decoder behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
 - Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.
-- No prebuilt GitHub release download is referenced by this repository; build artifacts are produced locally.
+- Prebuilt system images are firmware-specific and must only be flashed on the supported Innioasis Y2 firmware base identified by the release.
 
 ## Contributing
 
