@@ -67,15 +67,41 @@ object VolumeCurve {
 }
 
 /**
+ * Converts between Android's discrete music-stream index and Y2Player's
+ * discrete in-app fader. Android 4.4 does not expose the vendor volume curve,
+ * so fader position is the only stable quantity that can be transferred.
+ *
+ * The integer arithmetic is allocation-free and rounds to the nearest step.
+ */
+object VolumeModeTransfer {
+    fun appLevelFromSystemIndex(systemIndex: Int, systemMax: Int): Int {
+        if (systemMax <= 0) return VolumeCurve.STEPS
+        val safeIndex = systemIndex.coerceIn(0, systemMax)
+        return ((safeIndex.toLong() * VolumeCurve.STEPS + systemMax / 2L) / systemMax)
+            .toInt()
+            .coerceIn(0, VolumeCurve.STEPS)
+    }
+
+    fun systemIndexFromAppLevel(appLevel: Int, systemMax: Int): Int {
+        if (systemMax <= 0) return 0
+        val safeLevel = VolumeCurve.clampLevel(appLevel)
+        return ((safeLevel.toLong() * systemMax + VolumeCurve.STEPS / 2L) / VolumeCurve.STEPS)
+            .toInt()
+            .coerceIn(0, systemMax)
+    }
+}
+
+/**
  * How Y2Player controls loudness.
  *
  * [SYSTEM] is the default: hardware keys drive the Android music stream and the
  * app applies no attenuation of its own (its gain is exactly 1.0, so the
  * multiplication in the service is a no-op). It is the safe fallback.
  *
- * [PERCEPTUAL] leaves the Android stream where it is and attenuates inside the
- * player via MediaPlayer.setVolume, using [VolumeCurve]. This gives finer
- * control at low listening levels at the cost of not moving the system volume UI.
+ * [PERCEPTUAL] holds the Android music stream at maximum and attenuates inside
+ * the player via MediaPlayer.setVolume, using [VolumeCurve]. When modes change,
+ * [VolumeModeTransfer] moves the current fader position to the newly active
+ * control so the displayed level and available range stay in sync.
  *
  * Exactly one mode is active at a time. Stacking both would square the
  * attenuation and make the bottom of the range unusable.

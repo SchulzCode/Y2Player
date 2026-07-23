@@ -39,6 +39,7 @@ import com.schulzcode.y2player.library.LibraryRepository
 import com.schulzcode.y2player.playback.PlaybackService
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
+import com.schulzcode.y2player.playback.VolumeModeTransfer
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.settings.DisplayController
@@ -471,18 +472,7 @@ class MainActivity : Activity() {
                     else "Wheel haptics ${value.hapticLevel.label.lowercase()} · ${value.hapticLevel.durationMs} ms pulse (API 19 has no amplitude control)"
                 )
             }
-            AppEffect.CycleVolumeMode -> {
-                val value = preferences.cycleVolumeMode()
-                applyPlaybackPreferences(value)
-                eventLog.info(Sub.PLAYBACK, Ev.VOLUME_MODE, "mode" to value.volumeMode.storageId)
-                showMessage(
-                    if (value.volumeMode == VolumeMode.PERCEPTUAL) {
-                        "In-app volume · keys and wheel now set player level"
-                    } else {
-                        "System volume · keys now set the Android music stream"
-                    }
-                )
-            }
+            AppEffect.CycleVolumeMode -> cycleVolumeMode()
             AppEffect.CycleSleepTimer -> requirePlayback { it.cycleSleepTimer() }
             AppEffect.CycleAudioQuality -> {
                 val value = preferences.cycleAudioQuality()
@@ -618,6 +608,53 @@ class MainActivity : Activity() {
             Ev.VOLUME_LEVEL,
             "level" to value.volumeLevel,
             "pct" to VolumeCurve.percentForLevel(value.volumeLevel)
+        )
+    }
+
+    private fun cycleVolumeMode() {
+        val binder = playbackBinder
+        if (binder == null) {
+            showMessage("Playback is starting")
+            return
+        }
+        val current = preferences.snapshot()
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val systemMaximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(0)
+        val nextMode = current.volumeMode.next()
+        val transferredAppLevel: Int
+        val targetSystemIndex: Int
+        if (nextMode == VolumeMode.PERCEPTUAL) {
+            transferredAppLevel = VolumeModeTransfer.appLevelFromSystemIndex(
+                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC),
+                systemMaximum
+            )
+            targetSystemIndex = systemMaximum
+        } else {
+            transferredAppLevel = VolumeCurve.STEPS
+            targetSystemIndex = VolumeModeTransfer.systemIndexFromAppLevel(
+                current.volumeLevel,
+                systemMaximum
+            )
+        }
+
+        val value = preferences.setVolumeMode(nextMode, transferredAppLevel)
+        playerView.isSoundEffectsEnabled = value.uiSoundEffectsEnabled
+        store.dispatch(AppAction.PreferencesChanged(value))
+        binder.applyVolumeModeTransition(value, targetSystemIndex)
+        eventLog.info(
+            Sub.PLAYBACK,
+            Ev.VOLUME_MODE,
+            "mode" to value.volumeMode.storageId,
+            "app_level" to value.volumeLevel,
+            "system_target" to targetSystemIndex,
+            "system_max" to systemMaximum
+        )
+        showMessage(
+            if (value.volumeMode == VolumeMode.PERCEPTUAL) {
+                "In-app volume · transferred to ${VolumeCurve.percentForLevel(value.volumeLevel)}%"
+            } else {
+                "System volume · transferred to Android music stream"
+            }
         )
     }
 

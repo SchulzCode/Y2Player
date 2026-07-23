@@ -149,24 +149,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun cycleSleepTimer() = post(::cycleSleepTimerInternal)
 
         fun applyPreferences(value: PlayerPreferencesState) = post {
-            val previousGain = appVolumeGain()
-            val effective = runtimePreferences(value)
-            val modeChanged = value.audioQualityMode != requestedPreferences.audioQualityMode
-            val transitionChanged = effective.gaplessEnabled != currentPreferences.gaplessEnabled ||
-                effective.crossfadeMs != currentPreferences.crossfadeMs
-            if (modeChanged || transitionChanged) clearPreload()
-            requestedPreferences = value
-            currentPreferences = effective
-            // A volume step must be audible immediately. Skipped while a fade is
-            // running: that fade owns the volume ramp, and cancelling it would
-            // drop the completion callback that actually pauses the engine. The
-            // fade's own terminal setOutputVolume recomputes the gain anyway.
-            if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
-            dacController.applyDirectMode(value.audioQualityMode == AudioQualityMode.DIRECT_DAC)
-            audioEffectsState = audioEffectsController.apply(effective)
-            if (modeChanged || transitionChanged) refreshPreload()
-            refreshSnapshot()
-            publishSnapshot()
+            applyPreferencesInternal(value)
+            normalizeSystemVolumeForAppControl()
+        }
+
+        /**
+         * Transfers volume ownership without a loudness spike. Entering app
+         * control attenuates MediaPlayer before raising the Android stream;
+         * leaving it lowers the Android stream before removing app attenuation.
+         */
+        fun applyVolumeModeTransition(value: PlayerPreferencesState, systemVolumeIndex: Int) = post {
+            applyVolumeModeTransitionInternal(value, systemVolumeIndex)
         }
 
         fun reconcileAvailability(availableTrackIds: Set<Long>) = post {
@@ -286,6 +279,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 .onFailure { logger.error("Playback", "MediaPlayer engine initialization failed", it) }
                 .getOrElse { UnavailablePlaybackEngine("MediaPlayer is unavailable") }
                 .also { it.setListener(this) }
+            // Restore the persisted app gain before normalizing the system layer.
+            // This order also makes a reboot into in-app mode free of a volume spike.
+            setOutputVolume(effectiveVolume())
+            normalizeSystemVolumeForAppControl()
             audioFocus = AudioFocusController(this, this)
             audioEffectsController = AudioEffectsController(this, engine.audioSessionId, logger)
             audioEffectsState = audioEffectsController.apply(currentPreferences)
@@ -1296,6 +1293,68 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
+    private fun applyPreferencesInternal(value: PlayerPreferencesState) {
+        val previousGain = appVolumeGain()
+        val effective = runtimePreferences(value)
+        val modeChanged = value.audioQualityMode != requestedPreferences.audioQualityMode
+        val transitionChanged = effective.gaplessEnabled != currentPreferences.gaplessEnabled ||
+            effective.crossfadeMs != currentPreferences.crossfadeMs
+        if (modeChanged || transitionChanged) clearPreload()
+        requestedPreferences = value
+        currentPreferences = effective
+        // A volume step must be audible immediately. While a fade is running,
+        // its terminal update applies the newest steady-state gain instead.
+        if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
+        dacController.applyDirectMode(value.audioQualityMode == AudioQualityMode.DIRECT_DAC)
+        audioEffectsState = audioEffectsController.apply(effective)
+        if (modeChanged || transitionChanged) refreshPreload()
+        refreshSnapshot()
+        publishSnapshot()
+    }
+
+    private fun applyVolumeModeTransitionInternal(value: PlayerPreferencesState, systemVolumeIndex: Int) {
+        // A pause/focus fade owns MediaPlayer volume for only a short bounded
+        // interval. Deferring preserves its completion callback and avoids
+        // raising the system layer before the transferred app gain is active.
+        if (fadeInProgress) {
+            playbackHandler.postDelayed(
+                { applyVolumeModeTransitionInternal(value, systemVolumeIndex) },
+                VOLUME_FADE_STEP_MS
+            )
+            return
+        }
+        if (value.volumeMode == VolumeMode.PERCEPTUAL) {
+            applyPreferencesInternal(value)
+            setMusicStreamVolume(systemVolumeIndex)
+        } else {
+            setMusicStreamVolume(systemVolumeIndex)
+            applyPreferencesInternal(value)
+        }
+    }
+
+    /** Keeps Android from silently limiting the top of the in-app fader. */
+    private fun normalizeSystemVolumeForAppControl() {
+        if (currentPreferences.volumeMode != VolumeMode.PERCEPTUAL || fadeInProgress) return
+        val maximum = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
+            .onFailure { logger.warn("Volume", "unable to read music-stream maximum: ${it.javaClass.simpleName}") }
+            .getOrNull() ?: return
+        setMusicStreamVolume(maximum)
+    }
+
+    private fun setMusicStreamVolume(requestedIndex: Int) {
+        val maximum = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
+            .getOrElse {
+                logger.warn("Volume", "unable to read music-stream maximum: ${it.javaClass.simpleName}")
+                return
+            }
+        val target = requestedIndex.coerceIn(0, maximum.coerceAtLeast(0))
+        val current = runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrNull()
+        if (current == target) return
+        runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+            .onSuccess { logger.info("Volume", "music stream transferred ${current ?: "?"}/$maximum -> $target/$maximum") }
+            .onFailure { logger.warn("Volume", "unable to set music-stream volume: ${it.javaClass.simpleName}") }
+    }
+
     /**
      * Attenuation contributed by the in-app volume mode. Exactly 1.0 in SYSTEM
      * mode, so the multiplication below is a no-op and MediaPlayer receives the
@@ -1335,6 +1394,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (fraction >= 1f) {
                     fadeInProgress = false
                     onComplete?.invoke()
+                    // Preferences can change during a fade. Its originally
+                    // captured target is stale in that case, so finish at the
+                    // current steady-state gain before touching system volume.
+                    setOutputVolume(effectiveVolume())
+                    normalizeSystemVolumeForAppControl()
                 } else playbackHandler.postDelayed(this, VOLUME_FADE_STEP_MS)
             }
         }
@@ -1360,6 +1424,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "AudioRoute",
             "action=${event.action} wired=${event.routes.wired} bluetooth=${event.routes.bluetooth} noisy=${event.becomingNoisy}"
         )
+        // Android may restore a different remembered stream index for each
+        // output route. App-controlled mode must not become capped again after
+        // a wired/Bluetooth route switch.
+        normalizeSystemVolumeForAppControl()
         val mustPause = safetyPolicy.onRoutesChanged(
             event.routes,
             becomingNoisy = event.becomingNoisy,

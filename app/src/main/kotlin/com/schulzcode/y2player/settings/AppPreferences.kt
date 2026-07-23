@@ -51,16 +51,12 @@ class AppPreferences(context: Context) {
         return snapshot()
     }
 
-    /**
-     * Switches between system and in-app volume. Leaving PERCEPTUAL restores the
-     * level to maximum so the player cannot be left silently attenuated in a mode
-     * that does not expose a level control.
-     */
-    fun cycleVolumeMode(): PlayerPreferencesState {
-        val next = snapshot().volumeMode.next()
-        val editor = preferences.edit().putString(KEY_VOLUME_MODE, next.storageId)
-        if (next == VolumeMode.SYSTEM) editor.putInt(KEY_VOLUME_LEVEL, VolumeCurve.STEPS)
-        editor.apply()
+    /** Persists a mode and its transferred in-app level as one atomic edit. */
+    fun setVolumeMode(mode: VolumeMode, appLevel: Int): PlayerPreferencesState {
+        preferences.edit()
+            .putString(KEY_VOLUME_MODE, mode.storageId)
+            .putInt(KEY_VOLUME_LEVEL, VolumeCurve.clampLevel(appLevel))
+            .apply()
         return snapshot()
     }
 

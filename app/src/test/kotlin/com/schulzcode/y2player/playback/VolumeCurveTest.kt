@@ -107,4 +107,38 @@ class VolumeCurveTest {
         assertEquals(VolumeMode.PERCEPTUAL, VolumeMode.SYSTEM.next())
         assertEquals(VolumeMode.SYSTEM, VolumeMode.PERCEPTUAL.next())
     }
+
+    @Test fun volumeModeTransferPreservesEndpointsAndHalfTravel() {
+        assertEquals(0, VolumeModeTransfer.appLevelFromSystemIndex(0, 15))
+        assertEquals(VolumeCurve.STEPS, VolumeModeTransfer.appLevelFromSystemIndex(15, 15))
+        assertEquals(VolumeCurve.STEPS / 2, VolumeModeTransfer.appLevelFromSystemIndex(5, 10))
+
+        assertEquals(0, VolumeModeTransfer.systemIndexFromAppLevel(0, 15))
+        assertEquals(15, VolumeModeTransfer.systemIndexFromAppLevel(VolumeCurve.STEPS, 15))
+        assertEquals(5, VolumeModeTransfer.systemIndexFromAppLevel(VolumeCurve.STEPS / 2, 10))
+    }
+
+    @Test fun volumeModeTransferClampsInvalidInputsAndHandlesMissingStreamRange() {
+        assertEquals(0, VolumeModeTransfer.appLevelFromSystemIndex(-4, 15))
+        assertEquals(VolumeCurve.STEPS, VolumeModeTransfer.appLevelFromSystemIndex(99, 15))
+        assertEquals(VolumeCurve.STEPS, VolumeModeTransfer.appLevelFromSystemIndex(0, 0))
+
+        assertEquals(0, VolumeModeTransfer.systemIndexFromAppLevel(-4, 15))
+        assertEquals(15, VolumeModeTransfer.systemIndexFromAppLevel(99, 15))
+        assertEquals(0, VolumeModeTransfer.systemIndexFromAppLevel(20, 0))
+    }
+
+    @Test fun volumeModeTransferRoundTripStaysWithinStreamQuantizationError() {
+        for (systemMax in 1..25) {
+            for (level in 0..VolumeCurve.STEPS) {
+                val systemIndex = VolumeModeTransfer.systemIndexFromAppLevel(level, systemMax)
+                val restored = VolumeModeTransfer.appLevelFromSystemIndex(systemIndex, systemMax)
+                val maximumQuantizationError = (VolumeCurve.STEPS + systemMax - 1) / systemMax
+                assertTrue(
+                    "level $level via $systemIndex/$systemMax restored as $restored",
+                    Math.abs(restored - level) <= maximumQuantizationError
+                )
+            }
+        }
+    }
 }
