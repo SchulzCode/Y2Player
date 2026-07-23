@@ -411,6 +411,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             onError(requestId, "Track has no playable duration")
             return@post
         }
+        // The first prepared player is the earliest point at which API-19
+        // vendor stacks are guaranteed to have a live playback path for the
+        // session. Reapply here so persisted settings cannot remain attached
+        // only to the idle player that originally allocated the session ID.
+        audioEffectsState = audioEffectsController.apply(currentPreferences)
         val requestedPosition = normalizedResumePosition(pendingPositionMs, durationMs)
         if (requestedPosition > 0) engine.seekTo(requestedPosition)
         val wantedAutoPlay = pendingAutoPlay

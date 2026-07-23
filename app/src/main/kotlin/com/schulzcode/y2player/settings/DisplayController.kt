@@ -2,9 +2,7 @@ package com.schulzcode.y2player.settings
 
 import android.Manifest
 import android.app.Activity
-import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioManager
 import android.provider.Settings
 import com.schulzcode.y2player.core.state.DisplayState
 import com.schulzcode.y2player.core.state.ScreenContent
@@ -62,53 +60,6 @@ class DisplayController(private val activity: Activity) {
                 "Brightness changed for this session; firmware permission is still required for persistence"
             }
         )
-    }
-
-    /**
-     * Applies the Android system UI sound-effect setting.
-     *
-     * Written only when the current value differs, because this is a
-     * system-wide setting and a redundant write on every startup is both
-     * pointless I/O and a needless mutation of the user's device. Disabling also
-     * unloads the samples the framework has already cached, freeing a little
-     * heap on a 1 GB device.
-     *
-     * Failures (permission refused on some builds) are reported, never thrown.
-     */
-    fun setUiSoundEffectsEnabled(enabled: Boolean): Result {
-        val target = if (enabled) 1 else 0
-        val current = runCatching {
-            Settings.System.getInt(activity.contentResolver, Settings.System.SOUND_EFFECTS_ENABLED, 1)
-        }.getOrNull()
-
-        if (current == target) {
-            applyAudioManagerState(enabled)
-            return Result(true, if (enabled) "UI sounds enabled" else "UI sounds disabled")
-        }
-
-        val written = runCatching {
-            Settings.System.putInt(activity.contentResolver, Settings.System.SOUND_EFFECTS_ENABLED, target)
-        }.getOrDefault(false)
-        applyAudioManagerState(enabled)
-
-        return if (written) {
-            Result(true, if (enabled) "UI sounds enabled" else "UI sounds disabled")
-        } else {
-            Result(false, "Could not change UI sounds; firmware permission is required")
-        }
-    }
-
-    /**
-     * Mirrors the setting into the AudioManager for the current process. Only
-     * unloading is performed: loadSoundEffects() is the framework's own job when
-     * the setting is on, and forcing it would allocate sample buffers we never use.
-     */
-    private fun applyAudioManagerState(enabled: Boolean) {
-        if (enabled) return
-        runCatching {
-            val audioManager = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.unloadSoundEffects()
-        }
     }
 
     fun setTimeout(timeoutMs: Int): Result {

@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Optional wheel detent feedback. Normal-protection, granted at install;
          the setting is hidden entirely when Vibrator.hasVibrator() is false. -->
@@ -59,6 +60,17 @@
             android:name=".playback.PlaybackService"
             android:exported="false"
             android:label="@string/service_name" />
+
+        <!-- BOOT_COMPLETED is a protected system broadcast. Reapplying here is
+             intentionally later than the HOME activity's early boot startup,
+             after AudioService has had a chance to load its sound pool. -->
+        <receiver
+            android:name=".settings.BootSettingsReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Must stay exported: it receives the framework MEDIA_BUTTON broadcast
              and the vendor "com.innioasis.y2.key" broadcast sent by the platform

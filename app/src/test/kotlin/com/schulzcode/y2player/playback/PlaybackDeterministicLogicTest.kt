@@ -28,4 +28,41 @@ class PlaybackDeterministicLogicTest {
         assertTrue(guard.isCurrent(current))
     }
 
+    @Test fun replacementIsCreatedBeforeCurrentSessionOwnerIsReleased() {
+        val events = mutableListOf<String>()
+        var currentIsAlive = true
+
+        val replacement = replaceSessionOwner(
+            current = "current",
+            create = {
+                assertTrue(currentIsAlive)
+                events += "create"
+                "replacement"
+            },
+            release = {
+                assertEquals("current", it)
+                currentIsAlive = false
+                events += "release"
+            }
+        )
+
+        assertEquals("replacement", replacement)
+        assertEquals(listOf("create", "release"), events)
+    }
+
+    @Test fun failedReplacementDoesNotReleaseCurrentSessionOwner() {
+        var released = false
+
+        val failure = runCatching {
+            replaceSessionOwner(
+                current = "current",
+                create = { throw IllegalStateException("creation failed") },
+                release = { released = true }
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertFalse(released)
+    }
+
 }

@@ -42,6 +42,7 @@ import com.schulzcode.y2player.playback.VolumeMode
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.settings.DisplayController
+import com.schulzcode.y2player.settings.UiSoundEffectsController
 import com.schulzcode.y2player.storage.StorageMonitor
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -54,6 +55,7 @@ class MainActivity : Activity() {
     private lateinit var diagnosticsRepository: DiagnosticsRepository
     private lateinit var preferences: AppPreferences
     private lateinit var displayController: DisplayController
+    private lateinit var uiSoundEffectsController: UiSoundEffectsController
     private lateinit var bluetoothController: BluetoothController
     private lateinit var safeModeManager: SafeModeManager
     private lateinit var formatProbeController: FormatProbeController
@@ -189,6 +191,7 @@ class MainActivity : Activity() {
         safeModeManager = container.safeModeManager
         val startupSafeMode = safeModeManager.beginUiStartup()
         displayController = DisplayController(this)
+        uiSoundEffectsController = UiSoundEffectsController(this)
         bluetoothController = container.bluetoothController
         if (startupSafeMode) bluetoothController.stop()
         formatProbeController = FormatProbeController(
@@ -208,6 +211,7 @@ class MainActivity : Activity() {
         hapticController.setLevel(preferences.snapshot().hapticLevel)
         inputController = Y2InputController(::dispatchInput)
         playerView = Y2PlayerView(this, store::dispatch, container.artworkLoader)
+        playerView.isSoundEffectsEnabled = preferences.snapshot().uiSoundEffectsEnabled
         setContentView(playerView)
         startupSafeModeDeadline = SystemClock.uptimeMillis() + SAFE_MODE_KEY_WINDOW_MS
 
@@ -254,12 +258,6 @@ class MainActivity : Activity() {
         val diagnostics = diagnosticsRepository
         backgroundExecutor.execute { runCatching { database.loadFormatProbe() }.onSuccess(diagnostics::setProbeResults) }
 
-        // Re-assert the persisted UI-sound preference once per launch. The value is
-        // system-wide, so another app (or a factory reset) can have changed it; the
-        // controller skips the write when it already matches.
-        val uiSounds = preferences.snapshot().uiSoundEffectsEnabled
-        val display = displayController
-        backgroundExecutor.execute { runCatching { display.setUiSoundEffectsEnabled(uiSounds) } }
         if (!startupSafeMode) libraryRepository.loadCached()
 
         val serviceIntent = Intent(this, PlaybackService::class.java)
@@ -292,11 +290,16 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_RESUME)
+        val currentPreferences = preferences.snapshot()
         storageMonitor.publish()
         store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
-        store.dispatch(AppAction.PreferencesChanged(preferences.snapshot()))
+        store.dispatch(AppAction.PreferencesChanged(currentPreferences))
         if (!safeModeManager.isSafeMode()) store.dispatch(AppAction.BluetoothChanged(bluetoothController.snapshot()))
-        hapticController.setLevel(preferences.snapshot().hapticLevel)
+        playerView.isSoundEffectsEnabled = currentPreferences.uiSoundEffectsEnabled
+        val uiSounds = currentPreferences.uiSoundEffectsEnabled
+        val controller = uiSoundEffectsController
+        backgroundExecutor.execute { controller.apply(uiSounds) }
+        hapticController.setLevel(currentPreferences.hapticLevel)
         hapticController.resume()
     }
 
@@ -436,7 +439,7 @@ class MainActivity : Activity() {
             AppEffect.ToggleUiSoundEffects -> {
                 val value = preferences.toggleUiSoundEffects()
                 applyPlaybackPreferences(value)
-                showMessage(displayController.setUiSoundEffectsEnabled(value.uiSoundEffectsEnabled).message)
+                showMessage(uiSoundEffectsController.apply(value.uiSoundEffectsEnabled).message)
             }
             AppEffect.ToggleVerboseDiagnostics -> {
                 val value = preferences.toggleVerboseDiagnostics()
@@ -619,6 +622,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyPlaybackPreferences(value: com.schulzcode.y2player.core.state.PlayerPreferencesState) {
+        playerView.isSoundEffectsEnabled = value.uiSoundEffectsEnabled
         store.dispatch(AppAction.PreferencesChanged(value))
         playbackBinder?.applyPreferences(value)
     }

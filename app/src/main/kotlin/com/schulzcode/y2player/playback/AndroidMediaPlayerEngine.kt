@@ -9,6 +9,17 @@ import android.os.PowerManager
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 
+/**
+ * Creates the next owner before releasing the current one. Some API-19 vendor
+ * audio stacks tear down a session's effect chain as soon as its last player
+ * disappears, even when a later player reuses the same numeric session ID.
+ */
+internal inline fun <T> replaceSessionOwner(current: T, create: () -> T, release: (T) -> Unit): T {
+    val replacement = create()
+    release(current)
+    return replacement
+}
+
 @Suppress("DEPRECATION")
 class AndroidMediaPlayerEngine(
     context: Context,
@@ -48,8 +59,11 @@ class AndroidMediaPlayerEngine(
         if (state == EngineState.RELEASED) return
         try {
             cancelTransition(discardNext = true)
-            releaseSlot(current)
-            current = Slot(createPlayer(audioSessionId), requestId, EngineState.PREPARING)
+            current = replaceSessionOwner(
+                current = current,
+                create = { Slot(createPlayer(audioSessionId), requestId, EngineState.PREPARING) },
+                release = ::releaseSlot
+            )
             state = EngineState.PREPARING
             logger.info("PlaybackEngine", "prepare request=$requestId ${track.absolutePath}")
             current.player.setDataSource(track.absolutePath)
@@ -130,10 +144,18 @@ class AndroidMediaPlayerEngine(
     override fun cancel() {
         if (state == EngineState.RELEASED) return
         cancelTransition(discardNext = true)
-        releaseSlot(current)
-        runCatching { Slot(createPlayer(audioSessionId), current.requestId + 1) }
+        runCatching {
+            replaceSessionOwner(
+                current = current,
+                create = { Slot(createPlayer(audioSessionId), current.requestId + 1) },
+                release = ::releaseSlot
+            )
+        }
             .onSuccess { current = it; state = EngineState.EMPTY }
             .onFailure {
+                // Creation failed, so continuity is no longer possible. Still
+                // release the old player to honor cancel's resource contract.
+                releaseSlot(current)
                 state = EngineState.ERROR
                 logger.error("PlaybackEngine", "player recreation failed", it)
             }
