@@ -64,7 +64,7 @@ The main interface is a low-overhead custom-drawn view sized around the Y2's lan
 
 ### Screenshots
 
-| Library | Now Playing | Empty library |
+| Library | Now Playing|
 | --- | --- | --- |
 | <img width="493" height="370" alt="image" src="https://github.com/user-attachments/assets/239abe49-dc50-4fdc-83db-b6b2faca1ab3" />| <img width="495" height="372" alt="image" src="https://github.com/user-attachments/assets/ca908848-3149-4b7f-8b3a-b9b1e27a9ae0" /> |
 
