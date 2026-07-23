@@ -27,6 +27,19 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
 
+## Outlook: V2.0
+
+V2.0 is planned only after V1.0 has been thoroughly tested and its known bugs and reliability issues have been addressed. The current priorities are stability, predictable playback, hardware-control reliability, and a solid everyday experience on the Y2.
+
+The current V2.0 outlook includes:
+
+- **customizable themes** for changing the appearance without compromising readability or click-wheel navigation;
+- **FM radio support**, provided it can be integrated reliably with the Y2 hardware and firmware.
+
+These are planned directions rather than guaranteed release promises. The goal of Y2Player is not feature bloat. New features should be added deliberately, implemented well, tested on real hardware, and refined before the next major feature is introduced.
+
+The long-term goal is to build a strong, dependable foundation for a modern iPod-like device: focused, responsive, offline-first, and enjoyable to use every day.
+
 ## Music library and playback
 
 The library is built from audio files on the Y2's internal music storage and removable SD card. Metadata is stored locally in SQLite, and incremental rescans update changed files without loading the complete library into the UI at once.
