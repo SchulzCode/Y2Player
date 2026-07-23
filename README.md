@@ -66,7 +66,7 @@ The main interface is a low-overhead custom-drawn view sized around the Y2's lan
 
 | Library | Now Playing | Empty library |
 | --- | --- | --- |
-| ![Y2Player library](docs/screenshots/y2-ui-after-main.png) | ![Y2Player Now Playing](docs/screenshots/y2-ui-after-now-playing.png) | ![Y2Player empty library](docs/screenshots/y2-ui-after-empty.png) |
+| <img width="493" height="370" alt="image" src="https://github.com/user-attachments/assets/239abe49-dc50-4fdc-83db-b6b2faca1ab3" />| <img width="495" height="372" alt="image" src="https://github.com/user-attachments/assets/ca908848-3149-4b7f-8b3a-b9b1e27a9ae0" /> |
 
 ## Bluetooth audio
 
@@ -270,7 +270,7 @@ The build script only creates files. It never flashes, pushes, reboots, or modif
 ## Known limitations
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
-- This is the author's first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
+- This is my first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
 - Decoder and container support varies with the stock Android 4.4 media framework; recognition of a file extension does not guarantee playback.
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
