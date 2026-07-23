@@ -64,9 +64,20 @@ The main interface is a low-overhead custom-drawn view sized around the Y2's lan
 
 ### Screenshots
 
-| Library | Now Playing|
-| --- | --- | --- |
-| <img width="493" height="370" alt="image" src="https://github.com/user-attachments/assets/239abe49-dc50-4fdc-83db-b6b2faca1ab3" />| <img width="495" height="372" alt="image" src="https://github.com/user-attachments/assets/ca908848-3149-4b7f-8b3a-b9b1e27a9ae0" /> |
+<table>
+  <tr>
+    <th align="center">Library</th>
+    <th align="center">Now Playing</th>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/239abe49-dc50-4fdc-83db-b6b2faca1ab3" alt="Y2Player library screen" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/ca908848-3149-4b7f-8b3a-b9b1e27a9ae0" alt="Y2Player Now Playing screen" width="100%" />
+    </td>
+  </tr>
+</table>
 
 ## Bluetooth audio
 
@@ -225,7 +236,10 @@ NVRAM
 
 Do not use **Format All + Download** or **Firmware Upgrade**. For this installation, use **Download Only** and flash only `ANDROID`.
 
-<img width="1880" height="820" alt="SP Flash Tool configured to flash only the ANDROID partition" src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" />
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" alt="SP Flash Tool configured to flash only the ANDROID partition" width="900" />
+</p>
+<p align="center"><em>SP Flash Tool configured with only the ANDROID partition selected.</em></p>
 
 #### Restoring the original firmware
 
