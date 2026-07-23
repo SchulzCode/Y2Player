@@ -30,7 +30,6 @@ import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.state.DeviceState
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
-import com.schulzcode.y2player.input.HardwareKeyGate
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
 import com.schulzcode.y2player.queue.QueueController
@@ -319,9 +318,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_MEDIA_BUTTON) {
             val event = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
-            if (event?.action == KeyEvent.ACTION_UP && HardwareKeyGate.isInputAllowed(this, event.keyCode)) {
-                handleMediaKey(event.keyCode)
-            }
+            // MediaButtonReceiver already validates and normalizes DOWN-only,
+            // DOWN+UP and UP-only stacks to one service delivery per press. This
+            // service is not exported, so no second edge/screen gate belongs here.
+            if (event != null) handleMediaKey(event.keyCode, event.action)
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
             START_STICKY
@@ -602,8 +602,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    private fun handleMediaKey(keyCode: Int) {
-        logger.info("MediaButton", "keyCode=$keyCode")
+    private fun handleMediaKey(keyCode: Int, action: Int) {
+        logger.info("MediaButton", "keyCode=$keyCode action=$action")
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY -> post {
                 if (snapshot.status != PlaybackStatus.PLAYING) togglePlaybackInternal()

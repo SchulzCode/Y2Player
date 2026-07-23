@@ -11,9 +11,18 @@ class MediaButtonReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_MEDIA_BUTTON && intent.action != ACTION_Y2_KEY) return
         val event = extractKeyEvent(intent) ?: return
         if (event.keyCode !in ALLOWED_KEY_CODES) return
-        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode)) return
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
+        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source)) return
         if (!HardwareKeyGate.accept(event, source)) return
+        if (!MediaButtonPressGate.shouldDispatch(
+                keyCode = event.keyCode,
+                action = event.action,
+                eventTime = event.eventTime,
+                downTime = event.downTime,
+                repeatCount = event.repeatCount,
+                source = source
+            )
+        ) return
         val serviceIntent = Intent(context, PlaybackService::class.java).apply {
             action = PlaybackService.ACTION_MEDIA_BUTTON
             putExtra(Intent.EXTRA_KEY_EVENT, event)
@@ -53,4 +62,58 @@ class MediaButtonReceiver : BroadcastReceiver() {
             KeyEvent.KEYCODE_HEADSETHOOK
         )
     }
+}
+
+/**
+ * Normalizes inconsistent API-19 Bluetooth key delivery to one command per
+ * physical press. Some stacks send DOWN only while others send DOWN+UP or UP
+ * only. Dispatch the first usable edge and suppress its matching release.
+ */
+internal object MediaButtonPressGate {
+    private var downKeyCode = KeyEvent.KEYCODE_UNKNOWN
+    private var downEventTime = Long.MIN_VALUE
+    private var downTime = Long.MIN_VALUE
+    private var downSource: HardwareKeyGate.Source? = null
+
+    @Synchronized
+    fun shouldDispatch(
+        keyCode: Int,
+        action: Int,
+        eventTime: Long,
+        downTime: Long,
+        repeatCount: Int,
+        source: HardwareKeyGate.Source
+    ): Boolean = when (action) {
+        KeyEvent.ACTION_DOWN -> {
+            if (repeatCount > 0) false
+            else {
+                downKeyCode = keyCode
+                downEventTime = eventTime
+                this.downTime = downTime
+                downSource = source
+                true
+            }
+        }
+        KeyEvent.ACTION_UP -> {
+            val age = if (downEventTime == Long.MIN_VALUE) Long.MAX_VALUE
+            else kotlin.math.abs(eventTime - downEventTime)
+            val samePress = keyCode == downKeyCode && source == downSource &&
+                ((downTime > 0L && this.downTime > 0L && downTime == this.downTime) || age <= RELEASE_WINDOW_MS)
+            clearPendingDown()
+            !samePress
+        }
+        else -> false
+    }
+
+    @Synchronized
+    fun reset() = clearPendingDown()
+
+    private fun clearPendingDown() {
+        downKeyCode = KeyEvent.KEYCODE_UNKNOWN
+        downEventTime = Long.MIN_VALUE
+        downTime = Long.MIN_VALUE
+        downSource = null
+    }
+
+    private const val RELEASE_WINDOW_MS = 5_000L
 }
