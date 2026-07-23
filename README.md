@@ -146,12 +146,17 @@ The verified APK and build report are staged under `dist\firmware\`. Signing mat
 >
 > **Read this entire guide carefully before starting. Do not continue until you understand every step. Work slowly, verify every selection, and never guess.**
 
+#### Downloads
+
+- [SP Flash Tool](https://spflashtool.com/)
+- [Original Y2 stock firmware 3.1.7](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7)
+
 #### Requirements
 
 - an **Innioasis Y2** with the matching stock firmware version;
 - the modified `system.img` from the Y2Player GitHub Release;
-- the matching original `MT6582_Android_scatter.txt` file for your Y2 firmware;
-- SP Flash Tool;
+- the matching original `MT6582_Android_scatter.txt` file from the [original Y2 stock firmware](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7);
+- [SP Flash Tool](https://spflashtool.com/);
 - the required MediaTek USB drivers;
 - a verified copy of the complete original firmware so the device can be restored if necessary.
 
@@ -169,7 +174,7 @@ If `userdata` was recently reset or flashed, first boot the original firmware an
 #### Flashing steps
 
 1. Extract the Y2Player release ZIP.
-2. Open SP Flash Tool.
+2. Open [SP Flash Tool](https://spflashtool.com/).
 3. Load the matching original `MT6582_Android_scatter.txt` file.
 4. Select **Download Only** from the flashing-mode menu.
 5. Remove every partition checkmark.
@@ -208,7 +213,7 @@ NVRAM
 
 Do not use **Format All + Download** or **Firmware Upgrade**. For this installation, use **Download Only** and flash only `ANDROID`.
 
-<img width="1880" height="820" alt="image" src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" />
+<img width="1880" height="820" alt="SP Flash Tool configured to flash only the ANDROID partition" src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" />
 
 #### Restoring the original firmware
 
