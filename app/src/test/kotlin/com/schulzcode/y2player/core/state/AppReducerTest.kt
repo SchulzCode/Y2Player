@@ -95,12 +95,71 @@ class AppReducerTest {
         assertEquals(Screen.MainMenu, AppReducer.reduce(emptyQueue, AppAction.Confirm).state.currentScreen)
     }
 
-    @Test fun rightOpensTheVisibleMiniPlayerFromNonContextScreens() {
+    @Test fun rightOnSettingsEntersTheSelectedChildInsteadOfOpeningNowPlaying() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Settings)),
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
         )
-        assertEquals(Screen.NowPlaying, AppReducer.reduce(state, AppAction.Right).state.currentScreen)
+        val result = AppReducer.reduce(state, AppAction.Right)
+        assertEquals(Screen.PlaybackSettings, result.state.currentScreen)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    @Test fun rightNavigatesThroughRealChildrenAcrossLibraryAndSettings() {
+        val loaded = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
+        val albums = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Albums)),
+            library = LibraryState(tracks = listOf(track)),
+            playback = loaded
+        )
+        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(albums, AppAction.Right).state.currentScreen)
+
+        val playlists = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Playlists)),
+            library = LibraryState(tracks = listOf(track)),
+            playback = loaded
+        )
+        assertEquals(Screen.Favorites, AppReducer.reduce(playlists, AppAction.Right).state.currentScreen)
+
+        val playbackSettings = selectKey(
+            AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings)), playback = loaded),
+            "sound"
+        )
+        assertEquals(Screen.SoundSettings, AppReducer.reduce(playbackSettings, AppAction.Right).state.currentScreen)
+
+        val display = selectKey(
+            AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded),
+            "brightness"
+        )
+        assertEquals(Screen.Brightness, AppReducer.reduce(display, AppAction.Right).state.currentScreen)
+    }
+
+    @Test fun rightOnEveryNestedLeafStaysPutEvenWhenATrackIsLoaded() {
+        val loaded = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L, queue = listOf(1L))
+        val baseLibrary = LibraryState(tracks = listOf(track))
+        val states = listOf(
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings)), playback = loaded), "shuffle"),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings)), playback = loaded), "audio_quality"),
+            AppState(screenStack = listOf(ScreenEntry(Screen.SortOrder)), playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.Bluetooth)), playback = loaded),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded), "keep_screen_on"),
+            AppState(screenStack = listOf(ScreenEntry(Screen.Brightness)), playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.ScreenTimeout)), playback = loaded),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Storage)), playback = loaded), "rescan"),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.System)), playback = loaded), "android_settings"),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Diagnostics)), playback = loaded), "diag_export"),
+            AppState(screenStack = listOf(ScreenEntry(Screen.About)), playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.TrackOptions(1))), library = baseLibrary, playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.AddToPlaylist(1))), library = baseLibrary, playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.QueueOptions(0))), library = baseLibrary, playback = loaded),
+            AppState(screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions)), library = baseLibrary, playback = loaded)
+        )
+
+        states.forEach { state ->
+            val result = AppReducer.reduce(state, AppAction.Right)
+            assertEquals("Right left ${state.currentScreen}", state.screenStack, result.state.screenStack)
+            assertTrue("Right activated ${state.currentScreen}", result.effects.isEmpty())
+        }
     }
 
     @Test fun favoriteMenuUsesFavoriteCollection() {
@@ -294,6 +353,14 @@ class AppReducerTest {
         val longState = state.copy(preferences = state.preferences.copy(longSeekStepMs = 60_000))
         assertEquals(AppEffect.SeekBy(-60_000), AppReducer.reduce(longState, AppAction.SeekBackwardLong).effects.single())
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
+    }
+
+    private fun selectKey(state: AppState, key: String): AppState {
+        val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.Action)?.key == key }
+        require(index >= 0) { "Missing row $key on ${state.currentScreen}" }
+        return state.copy(
+            screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index)
+        )
     }
 
 }

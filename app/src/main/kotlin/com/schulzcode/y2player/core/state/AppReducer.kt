@@ -400,18 +400,36 @@ object AppReducer {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? Action
             val key = row?.key.orEmpty()
             if (key.startsWith("bt_device:")) Reduction(state, listOf(ForgetBluetoothDevice(key.substringAfter(':'))))
-            else Reduction(state, listOf(if (state.bluetooth.isDiscovering) StopBluetoothScan else StartBluetoothScan))
+            else Reduction(state)
         }
-        Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs, is Screen.ArtistSongs, is Screen.Folders -> {
+        Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs, is Screen.ArtistSongs -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
-            if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id))
+            if (row == null) deeperNavigation(state) else push(state, Screen.TrackOptions(row.track.id))
+        }
+        is Screen.Folders -> {
+            val row = ScreenContent.rows(state).getOrNull(state.selectedIndex)
+            if (row is TrackRow) push(state, Screen.TrackOptions(row.track.id)) else deeperNavigation(state)
         }
         is Screen.PlaylistTracks -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
-            if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id, screen.playlistId))
+            if (row == null) deeperNavigation(state) else push(state, Screen.TrackOptions(row.track.id, screen.playlistId))
         }
-        is Screen.TrackOptions -> Reduction(state)
-        else -> if (state.playback.currentTrackId != null) push(state, Screen.NowPlaying) else Reduction(state)
+        else -> deeperNavigation(state)
+    }
+
+    /**
+     * Right means "enter the selected child", never "activate this row". Reuse
+     * Confirm's screen mapping, but accept only a pure push to a non-player
+     * screen. Settings toggles, destructive actions and other leaf rows remain
+     * untouched. Now Playing is intentionally reachable by Right only from the
+     * split home screen handled above.
+     */
+    private fun deeperNavigation(state: AppState): Reduction {
+        val candidate = confirm(state)
+        val pushedChild = candidate.state.screenStack.size > state.screenStack.size
+        return if (candidate.effects.isEmpty() && pushedChild && candidate.state.currentScreen != Screen.NowPlaying) {
+            candidate
+        } else Reduction(state)
     }
 
     private fun back(state: AppState): Reduction {
