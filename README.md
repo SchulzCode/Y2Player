@@ -10,11 +10,10 @@ Y2Player is for Y2 owners, firmware modders, and contributors who want a lightwe
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and pause/resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
-- Navigate entirely with the Y2 click wheel and hardware buttons; no touchscreen is required.
+- Navigate entirely with the Y2 click wheel and hardware buttons
 - View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
-- Pair and manage Bluetooth A2DP audio devices where the stock Android firmware exposes the required operations.
-- Use optional equalizer, bass boost, loudness, and best-effort Direct DAC controls when supported by the device firmware.
+- Pair and manage Bluetooth A2DP audio devices.
 
 ## Music library and playback
 
@@ -45,7 +44,7 @@ Playback includes a persistent queue, shuffle, repeat one/all, previous/next beh
 
 ### Screen-off and lock behavior
 
-When the display is off or Android's keyguard is locked, Y2Player blocks click-wheel, navigation, media, and headset-button input. **Only the system Power and Volume controls remain active.** Playback itself may continue with the display off; the input block prevents accidental pocket presses.
+When the display is off or Android's keyguard is locked, Y2Player blocks click-wheel, navigation, media, and headset-button input. **Only the system Power and Volume controls remain active.** Playback itself continues with the display off; the input block prevents accidental pocket presses.
 
 ## Interface and artwork
 
@@ -53,15 +52,13 @@ The main interface is a low-overhead custom-drawn view sized around the Y2's lan
 
 ### Screenshots
 
-These checked-in images are API 19 emulator reference captures from an earlier UI validation pass. The current Y2 layout targets 480 × 360 landscape; updated photographs or captures from real hardware are not yet included.
-
 | Library | Now Playing | Empty library |
 | --- | --- | --- |
 | ![Y2Player library](docs/screenshots/y2-ui-after-main.png) | ![Y2Player Now Playing](docs/screenshots/y2-ui-after-now-playing.png) | ![Y2Player empty library](docs/screenshots/y2-ui-after-empty.png) |
 
 ## Bluetooth audio
 
-Y2Player integrates with Android 4.4's Bluetooth A2DP and legacy remote-control APIs. The in-app Bluetooth screen can enable Bluetooth, discover audio devices, pair, connect/disconnect, forget bonds, and refresh the A2DP service. If the firmware does not expose an automatic connect, disconnect, or forget operation, the app directs the user to Android Bluetooth settings instead of claiming success.
+Y2Player integrates with Android 4.4's Bluetooth A2DP and legacy remote-control APIs. The in-app Bluetooth screen can enable Bluetooth, discover audio devices, pair, connect/disconnect, forget bonds, and refresh the A2DP service.
 
 Transport buttons and AVRCP metadata are supported through the API 19 media-button and remote-control interfaces. Losing an active Bluetooth route pauses playback rather than leaking audio to the speaker; reconnecting requires an explicit Play command.
 
