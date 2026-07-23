@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Bluetooth is optional: the player's core function is local playback to
+         the built-in DAC. Marking it required would block installation on any
+         unit whose platform does not declare the feature. -->
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Optional wheel detent feedback. Normal-protection, granted at install;
+         the setting is hidden entirely when Vibrator.hasVibrator() is false. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:name=".Y2Application"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="false"
+        android:supportsRtl="false"
+        android:theme="@style/AppTheme">
+
+        <!-- configChanges: the renderer derives its whole layout from the runtime
+             width/height and repaints on onSizeChanged, so handling configuration
+             changes in-place avoids destroying and rebuilding the launcher (and
+             any in-flight diagnostics work) for a locale or dock change.
+             stateNotNeeded: a HOME activity must be able to restart with no saved
+             state after the system reclaims the process. -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode|locale|fontScale|mcc|mnc"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:stateNotNeeded="true"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="false"
+            android:label="@string/service_name" />
+
+        <!-- Must stay exported: it receives the framework MEDIA_BUTTON broadcast
+             and the vendor "com.innioasis.y2.key" broadcast sent by the platform
+             key handler. Consequence accepted for this closed appliance: any
+             installed app could drive playback. The receiver validates the action
+             and rejects any key code outside its allowlist. -->
+        <receiver
+            android:name=".playback.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <action android:name="com.innioasis.y2.key" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

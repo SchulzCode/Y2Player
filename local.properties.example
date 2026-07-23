@@ -1,0 +1,4 @@
+# Copy to local.properties only when Android Studio does not create it.
+# Windows paths need escaped backslashes, for example:
+# sdk.dir=C\:\\Users\\YOUR_NAME\\AppData\\Local\\Android\\Sdk
+sdk.dir=/path/to/Android/Sdk
