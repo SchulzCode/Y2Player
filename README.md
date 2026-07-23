@@ -139,19 +139,95 @@ The verified APK and build report are staged under `dist\firmware\`. Signing mat
 
 ## Install on a device
 
-### APK installation for development
+### Flash the modified system image with SP Flash Tool
 
-If ADB installation is enabled on the device, install the debug APK with the Android SDK tools:
+> [!WARNING]
+> Flashing modified firmware can permanently damage or brick your device if the wrong file, partition, or flashing mode is selected. Proceed entirely at your own risk. I am not responsible for damaged devices, lost data, failed flashes, or any other consequences.
+>
+> **Read this entire guide carefully before starting. Do not continue until you understand every step. Work slowly, verify every selection, and never guess.**
 
-```powershell
-adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+#### Requirements
+
+- an **Innioasis Y2** with the matching stock firmware version;
+- the modified `system.img` from the Y2Player GitHub Release;
+- the matching original `MT6582_Android_scatter.txt` file for your Y2 firmware;
+- SP Flash Tool;
+- the required MediaTek USB drivers;
+- a verified copy of the complete original firmware so the device can be restored if necessary.
+
+#### Before flashing
+
+1. Back up any important files from the Y2.
+2. Keep the complete original firmware and matching scatter file in a safe location.
+3. Confirm that the downloaded release is intended for the Innioasis Y2 and your firmware base.
+4. Verify the SHA-256 checksum supplied with the release.
+5. Fully charge the Y2 before beginning.
+6. Read all remaining steps before opening SP Flash Tool.
+
+If `userdata` was recently reset or flashed, first boot the original firmware and complete the initial Android setup. After setup is complete, shut the device down and flash only the modified `system.img`. Skipping the original setup may leave required device settings uninitialized.
+
+#### Flashing steps
+
+1. Extract the Y2Player release ZIP.
+2. Open SP Flash Tool.
+3. Load the matching original `MT6582_Android_scatter.txt` file.
+4. Select **Download Only** from the flashing-mode menu.
+5. Remove every partition checkmark.
+6. Enable **only** the `ANDROID` partition.
+7. In the `ANDROID` row, select the modified Y2Player `system.img`.
+8. Carefully verify the configuration before continuing:
+   - mode is **Download Only**;
+   - only `ANDROID` is checked;
+   - `ANDROID` points to the modified Y2Player `system.img`;
+   - no other partition is selected.
+9. Turn the Y2 completely off.
+10. Click **Download** in SP Flash Tool.
+11. Connect the powered-off Y2 to the computer with a reliable USB data cable.
+12. Wait until SP Flash Tool displays the green success indicator.
+13. Disconnect the USB cable and start the Y2.
+14. Allow extra time for the first boot.
+
+#### Never select these partitions
+
+Do not flash or format any unrelated partition, including:
+
+```text
+PRELOADER
+MBR
+EBR1
+EBR2
+UBOOT
+BOOTIMG
+RECOVERY
+SEC_RO
+LOGO
+CACHE
+USRDATA
+NVRAM
 ```
 
-The debug build uses the separate package name `com.luca.y2player.debug`. Installing an APK alone does not remove the stock launcher; Android must allow the user to select Y2Player as HOME.
+Do not use **Format All + Download** or **Firmware Upgrade**. For this installation, use **Download Only** and flash only `ANDROID`.
 
-### System-image integration for the Y2 launcher
+<img width="1880" height="820" alt="image" src="https://github.com/user-attachments/assets/b1a7c479-ff63-4ce0-995a-f83b826f535c" />
 
-The repository's production path builds a **system-partition-only** image that installs the signed APK at `/system/priv-app/Y2Player.apk` and removes the stock launcher from the copied system image. You must supply your own matching stock firmware inputs:
+#### Restoring the original firmware
+
+If the modified system does not boot or function correctly:
+
+1. Turn the device off.
+2. Open SP Flash Tool.
+3. Load the matching original scatter file.
+4. Select **Download Only**.
+5. Select only the original `ANDROID` partition and original `system.img`.
+6. Flash it using the same careful procedure described above.
+
+Do not restore additional partitions unless a verified device-specific recovery guide explicitly requires them.
+
+### Build the system image yourself
+
+The repository can also build a system-partition-only image from your own matching stock firmware. It installs the signed APK at `/system/priv-app/Y2Player.apk` and removes the stock launcher from the copied system image.
+
+Provide:
 
 ```text
 OriginalFirmware/system.img
@@ -172,7 +248,7 @@ powershell -ExecutionPolicy Bypass -File .\build-firmware.ps1
 
 This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report.
 
-The script only builds files; it never flashes, pushes, reboots, or modifies the original firmware inputs. For an initial SP Flash Tool test, select only the generated `system.img`/`ANDROID` partition. Never select Preloader, NVRAM, boot, or unrelated partitions. Keep a verified stock recovery path and understand the risk before flashing any modified firmware.
+The build script only creates files. It never flashes, pushes, reboots, or modifies the original firmware inputs.
 
 ## Known limitations
 
@@ -184,7 +260,7 @@ The script only builds files; it never flashes, pushes, reboots, or modifies the
 - Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and exact decoder behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
 - Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.
-- No prebuilt GitHub release download is referenced by this repository; build artifacts are produced locally.
+- Prebuilt system images are firmware-specific and must only be flashed on the supported Innioasis Y2 firmware base identified by the release.
 
 ## Contributing
 
