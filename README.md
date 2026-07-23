@@ -4,6 +4,18 @@
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
+## Project status and bug reports
+
+Y2Player is my first Android app. Although I test each release, the app will likely contain bugs, device-specific issues, or edge cases that I have not found yet.
+
+If you encounter a problem, please:
+
+1. note what you were doing when the issue occurred and whether it can be reproduced;
+2. export the diagnostics log from Y2Player as soon as possible;
+3. open a [GitHub issue](https://github.com/SchulzCode/Y2Player/issues) and attach the diagnostics log together with your Y2Player version, firmware version, and a short description of the problem.
+
+The diagnostics log is especially helpful because many playback, audio-effect, Bluetooth, storage, and firmware-related problems cannot be reproduced reliably on another device. Please review the exported file before posting it publicly.
+
 ## Highlights
 
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
@@ -258,6 +270,7 @@ The build script only creates files. It never flashes, pushes, reboots, or modif
 ## Known limitations
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
+- This is the author's first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
 - Decoder and container support varies with the stock Android 4.4 media framework; recognition of a file extension does not guarantee playback.
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
