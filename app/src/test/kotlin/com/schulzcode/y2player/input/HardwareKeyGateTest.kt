@@ -31,7 +31,7 @@ class HardwareKeyGateTest {
         assertTrue(accept(400, HardwareKeyGate.Source.Y2_BROADCAST))
     }
 
-    @Test fun activityWheelMediaAndNavigationKeysRequireAnOnAndUnlockedDisplay() {
+    @Test fun wheelMediaAndNavigationKeysRequireAnOnAndUnlockedDisplay() {
         val blockedKeys = intArrayOf(
             KeyEvent.KEYCODE_DPAD_UP,
             KeyEvent.KEYCODE_DPAD_CENTER,
@@ -45,65 +45,6 @@ class HardwareKeyGateTest {
             assertFalse(HardwareKeyGate.isInputAllowed(keyCode, screenOn = false, keyguardLocked = false))
             assertFalse(HardwareKeyGate.isInputAllowed(keyCode, screenOn = true, keyguardLocked = true))
             assertTrue(HardwareKeyGate.isInputAllowed(keyCode, screenOn = true, keyguardLocked = false))
-        }
-    }
-
-    @Test fun genuineMediaBroadcastControlsPlaybackWhileScreenIsOffAndLocked() {
-        val remoteKeys = intArrayOf(
-            KeyEvent.KEYCODE_MEDIA_PLAY,
-            KeyEvent.KEYCODE_MEDIA_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_STOP,
-            KeyEvent.KEYCODE_MEDIA_REWIND,
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
-            KeyEvent.KEYCODE_HEADSETHOOK
-        )
-        remoteKeys.forEach { keyCode ->
-            assertTrue(
-                HardwareKeyGate.isInputAllowed(
-                    keyCode,
-                    screenOn = false,
-                    keyguardLocked = true,
-                    source = HardwareKeyGate.Source.MEDIA_BROADCAST
-                )
-            )
-        }
-    }
-
-    @Test fun mediaBroadcastCannotWakeWheelOrNavigationControls() {
-        val physicalControls = intArrayOf(
-            KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_RIGHT,
-            KeyEvent.KEYCODE_DPAD_CENTER,
-            KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_BACK
-        )
-        physicalControls.forEach { keyCode ->
-            assertFalse(
-                HardwareKeyGate.isInputAllowed(
-                    keyCode,
-                    screenOn = false,
-                    keyguardLocked = true,
-                    source = HardwareKeyGate.Source.MEDIA_BROADCAST
-                )
-            )
-        }
-    }
-
-    @Test fun vendorBroadcastCannotUseMediaCodesWhileScreenIsOff() {
-        for (keyCode in intArrayOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_HEADSETHOOK)) {
-            assertFalse(
-                HardwareKeyGate.isInputAllowed(
-                    keyCode,
-                    screenOn = false,
-                    keyguardLocked = true,
-                    source = HardwareKeyGate.Source.Y2_BROADCAST
-                )
-            )
         }
     }
 

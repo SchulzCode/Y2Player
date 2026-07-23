@@ -318,10 +318,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_MEDIA_BUTTON) {
             val event = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
-            // MediaButtonReceiver already validates and normalizes DOWN-only,
-            // DOWN+UP and UP-only stacks to one service delivery per press. This
-            // service is not exported, so no second edge/screen gate belongs here.
-            if (event != null) handleMediaKey(event.keyCode, event.action)
+            // The non-exported service trusts the receiver's source-scoped key
+            // mapping; repeating the Activity screen gate would block AirPods.
+            if (event?.action == KeyEvent.ACTION_UP) handleMediaKey(event.keyCode)
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
             START_STICKY
@@ -602,8 +601,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    private fun handleMediaKey(keyCode: Int, action: Int) {
-        logger.info("MediaButton", "keyCode=$keyCode action=$action")
+    private fun handleMediaKey(keyCode: Int) {
+        logger.info("MediaButton", "keyCode=$keyCode")
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY -> post {
                 if (snapshot.status != PlaybackStatus.PLAYING) togglePlaybackInternal()
