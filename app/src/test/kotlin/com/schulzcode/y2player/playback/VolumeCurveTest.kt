@@ -46,15 +46,6 @@ class VolumeCurveTest {
         assertTrue("steps are not uniform: $smallest..$largest", largest - smallest < 0.05)
     }
 
-    /** Cube law has an excessive first step and does not meet the uniformity requirement. */
-    @Test fun cubeLawWouldViolateTheStepUniformityRequirement() {
-        val first = 20.0 * Math.log10(
-            VolumeCurve.cubeGain(2f / VolumeCurve.STEPS).toDouble() /
-                VolumeCurve.cubeGain(1f / VolumeCurve.STEPS)
-        )
-        assertTrue("cube law first step is $first dB", first > 5.0)
-    }
-
     @Test fun outOfRangeLevelsClampInsteadOfThrowing() {
         assertEquals(0f, VolumeCurve.gainForLevel(-5), 0f)
         assertEquals(1f, VolumeCurve.gainForLevel(VolumeCurve.STEPS + 99), 0f)

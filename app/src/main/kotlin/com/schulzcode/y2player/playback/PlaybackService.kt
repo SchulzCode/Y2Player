@@ -29,6 +29,9 @@ import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.state.DeviceState
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
+import com.schulzcode.y2player.diagnostics.Ev
+import com.schulzcode.y2player.diagnostics.EventLog
+import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
 import com.schulzcode.y2player.queue.QueueController
@@ -88,60 +91,35 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun removeQueueIndex(index: Int) = post { removeQueueIndexInternal(index) }
 
         fun moveQueueItem(index: Int, delta: Int) = post {
-            if (queue.moveItem(index, delta)) {
-                refreshSnapshot()
-                persistQueueState()
-                armNearEndPreload()
-                publishSnapshot()
-            }
+            if (queue.moveItem(index, delta)) afterQueueMutation()
         }
 
         fun clearUpcoming() = post {
             queue.clearUpcoming()
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
 
         fun clearQueue() = post(::clearQueueInternal)
 
-        /**
-         * USB hand-off barrier. Unlike [clearQueue], this does not return until
-         * the playback thread has cancelled preparation, released both player
-         * slots and persisted the empty queue. It is called from the UI's
-         * bounded background worker, never from the main thread.
-         */
+        /** Inserts a track directly after the current one. */
         fun playNext(trackId: Long) = post {
             queue.addNext(trackId)
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
 
         fun addToQueue(trackId: Long) = post {
             queue.append(trackId)
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
 
         fun toggleShuffle() = post {
             queue.toggleShuffle()
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
 
         fun cycleRepeat() = post {
             queue.cycleRepeat()
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
 
         fun cycleSleepTimer() = post(::cycleSleepTimerInternal)
@@ -198,6 +176,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private lateinit var preferences: AppPreferences
     private lateinit var safeModeManager: SafeModeManager
     private lateinit var logger: DiagnosticLogger
+    private lateinit var eventLog: EventLog
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var routeMonitor: AudioRouteMonitor
 
@@ -236,6 +215,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var currentWatchdogRequest: Long? = null
     private var nextWatchdogRequest: Long? = null
     private var autoPreloadAttemptedForRequest = 0L
+    /**
+     * Effects attach to the audio *session*, not to a player, and the session id
+     * is fixed for the life of the engine. Re-applying on every prepare rewrote
+     * every band and rebuilt three description lists once per track change for
+     * no behavioural gain; this reapplies once per engine session instead.
+     */
+    private var audioEffectsSessionApplied = false
     private var fadeGeneration = 0L
     private var outputVolume = 1f
     private var sleepTimerMode = SleepTimerMode.OFF
@@ -258,8 +244,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         currentPreferences = runtimePreferences(requestedPreferences)
         safeModeManager = container.safeModeManager
         logger = container.logger
+        eventLog = container.eventLog
         dacController = DacController(this, logger)
-        dacController.applyDirectMode(requestedPreferences.audioQualityMode == AudioQualityMode.DIRECT_DAC)
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -270,6 +256,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         storageMonitor.addListener(storageListener)
 
         post {
+            // Vendor Hi-Fi routing goes through AudioSystem.setParameters, a
+            // synchronous call into the audio HAL. An MT6582 HAL that is slow to
+            // answer an undocumented parameter would stall the main thread at
+            // every service start, so it is requested from the playback thread.
+            dacController.applyDirectMode(requestedPreferences.audioQualityMode == AudioQualityMode.DIRECT_DAC)
             engine = runCatching<PlaybackEngine> { AndroidMediaPlayerEngine(this, logger) }
                 .onFailure { logger.error("Playback", "MediaPlayer engine initialization failed", it) }
                 .getOrElse { UnavailablePlaybackEngine("MediaPlayer is unavailable") }
@@ -281,6 +272,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             audioFocus = AudioFocusController(this, this)
             audioEffectsController = AudioEffectsController(this, engine.audioSessionId, logger)
             audioEffectsState = audioEffectsController.apply(currentPreferences)
+            audioEffectsSessionApplied = true
             remoteControl = LegacyRemoteControlController(
                 context = this,
                 logger = logger,
@@ -353,6 +345,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (::remoteControl.isInitialized) remoteControl.release()
                 if (::audioEffectsController.isInitialized) audioEffectsController.release()
                 if (::engine.isInitialized) engine.release()
+                // Same reason as onCreate: this reaches the audio HAL, so it must
+                // not run on the main thread during teardown. If the post below
+                // fails the looper is already gone and this is skipped; the next
+                // service start constructs a fresh DacController that applies the
+                // configured mode unconditionally, so the vendor flag self-corrects.
+                if (::dacController.isInitialized) dacController.applyDirectMode(false)
             }
             if (Looper.myLooper() == playbackThread.looper) {
                 cleanup.run()
@@ -370,20 +368,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             persistenceExecutor.awaitTermination(SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         }.getOrDefault(false)
         if (!persisted) persistenceExecutor.shutdownNow()
-        if (::dacController.isInitialized) dacController.applyDirectMode(false)
         logger.info("Playback", "service destroyed")
+        eventLog.info(Sub.PLAYBACK, Ev.PLAYBACK_RELEASE, "persisted" to persisted)
         super.onDestroy()
     }
 
     override fun onLowMemory() {
         super.onLowMemory()
-        post {
-            cancelVolumeFade()
-            clearPreload()
-            // Allow one later near-end recovery so gapless self-heals if pressure eases.
-            autoPreloadAttemptedForRequest = 0L
-            logger.warn("Playback", "low memory: secondary player and transitions released")
-        }
+        releaseTransientPlaybackResources("low memory")
     }
 
     override fun onTrimMemory(level: Int) {
@@ -394,14 +386,20 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // would break gapless during background listening, the primary use case.
         if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) return
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            post {
-                cancelVolumeFade()
-                clearPreload()
-                // Allow one later near-end recovery so gapless self-heals if pressure eases.
-                autoPreloadAttemptedForRequest = 0L
-                logger.warn("Playback", "trim memory level=$level: secondary player released")
-            }
+            releaseTransientPlaybackResources("trim memory level=$level")
         }
+    }
+
+    /**
+     * Drops the second player and any running transition under memory pressure.
+     * The current track keeps playing; only what can be rebuilt is released.
+     */
+    private fun releaseTransientPlaybackResources(reason: String) = post {
+        cancelVolumeFade()
+        clearPreload()
+        // Allow one later near-end recovery so gapless self-heals if pressure eases.
+        autoPreloadAttemptedForRequest = 0L
+        logger.warn("Playback", "$reason: secondary player and transitions released")
     }
 
     override fun onPrepared(requestId: Long, durationMs: Long) = post {
@@ -414,9 +412,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
         // The first prepared player is the earliest point at which API-19
         // vendor stacks are guaranteed to have a live playback path for the
-        // session. Reapply here so persisted settings cannot remain attached
-        // only to the idle player that originally allocated the session ID.
-        audioEffectsState = audioEffectsController.apply(currentPreferences)
+        // session, so persisted settings are applied once here rather than
+        // remaining attached only to the idle player that allocated the session
+        // ID. Every later track reuses that same session id, so re-applying per
+        // track only rewrote settings that were already in force.
+        if (!audioEffectsSessionApplied) {
+            audioEffectsState = audioEffectsController.apply(currentPreferences)
+            audioEffectsSessionApplied = true
+        }
         val requestedPosition = normalizedResumePosition(pendingPositionMs, durationMs)
         if (requestedPosition > 0) engine.seekTo(requestedPosition)
         val wantedAutoPlay = pendingAutoPlay
@@ -434,8 +437,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (playRequested) startEngineWithFade()
         val started = playRequested && engine.state == EngineState.PLAYING
         if (started) {
-            startForeground(NOTIFICATION_ID, createNotification())
-            lastNotificationKey = notificationKey()
+            enterForeground()
             scheduleProgress()
             recordCurrentPlaybackStart()
         } else {
@@ -461,6 +463,25 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
         )
         currentTrack?.let { logger.info("Playback", "prepared request=$requestId track=${it.id} ${it.title}") }
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_PREPARED,
+            "request" to requestId,
+            "track" to currentTrack?.id,
+            "durationMs" to durationMs,
+            "positionMs" to requestedPosition,
+            "started" to started,
+            "focus" to focusGranted
+        )
+        if (started) {
+            eventLog.info(
+                Sub.PLAYBACK, Ev.PLAYBACK_START,
+                "request" to requestId,
+                "track" to currentTrack?.id,
+                "codec" to currentTrack?.codec,
+                "sampleRate" to currentTrack?.sampleRate,
+                "reason" to "prepared"
+            )
+        }
         pendingPositionMs = 0
         pendingAutoPlay = false
         persistSession()
@@ -504,8 +525,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         currentPreparationRecorded = false
         currentRetryCount = 0
         recordCurrentPlaybackStart()
-        startForeground(NOTIFICATION_ID, createNotification())
-        lastNotificationKey = notificationKey()
+        enterForeground()
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_START,
+            "request" to requestId,
+            "track" to expectedTrack.id,
+            "codec" to expectedTrack.codec,
+            "sampleRate" to expectedTrack.sampleRate,
+            "reason" to if (currentPreferences.crossfadeMs > 0) "crossfade" else "gapless"
+        )
         snapshot = buildSnapshot(
             status = PlaybackStatus.PLAYING,
             positionMs = engine.currentPositionMs(),
@@ -538,6 +566,18 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "Playback",
             "track=${track?.id} path=${track?.absolutePath} format=${track?.extension} retry=$currentRetryCount error=$message"
         )
+        eventLog.error(
+            Sub.PLAYBACK, Ev.PLAYBACK_ERROR,
+            "request" to requestId,
+            "track" to track?.id,
+            "format" to track?.extension,
+            "codec" to track?.codec,
+            "retry" to currentRetryCount,
+            "message" to message
+        )
+        // A failed player is the one case where the effect backend may have been
+        // torn down with it, so allow one re-application on the next prepare.
+        audioEffectsSessionApplied = false
         if (currentRetryCount < MAX_TRACK_RETRIES && track?.let(::resolvePlayableTrack) != null) {
             currentRetryCount += 1
             logger.warn("Playback", "retrying track=${track.id} attempt=$currentRetryCount")
@@ -550,8 +590,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             currentRetryCount = 0
             prepareCurrent(autoPlay = shouldAutoPlay && safetyPolicy.canAutomaticallyStart(), positionMs = 0)
         } else {
-            stopForeground(true)
-            lastNotificationKey = null
+            leaveForeground()
             snapshot = buildSnapshot(PlaybackStatus.ERROR, 0, 0, PauseReason.PLAYBACK_ERROR, message)
             persistSession(positionOverride = 0)
             publishSnapshot()
@@ -648,7 +687,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                     return
                 }
                 currentTrack = playable
-                if (engine.state !in setOf(EngineState.READY, EngineState.PAUSED) || engine.durationMs() <= 0) {
+                if (engine.state !in RESUMABLE_ENGINE_STATES || engine.durationMs() <= 0) {
                     prepareCurrent(autoPlay = true, positionMs = snapshot.positionMs)
                 } else startInternal()
             }
@@ -681,8 +720,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             return
         }
         recordCurrentPlaybackStart()
-        startForeground(NOTIFICATION_ID, createNotification())
-        lastNotificationKey = notificationKey()
+        enterForeground()
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_START,
+            "track" to currentTrack?.id,
+            "codec" to currentTrack?.codec,
+            "sampleRate" to currentTrack?.sampleRate,
+            "reason" to "resume"
+        )
         snapshot = buildSnapshot(PlaybackStatus.PLAYING, engine.currentPositionMs(), engine.durationMs(), PauseReason.NONE)
         scheduleProgress()
         armNearEndPreload()
@@ -707,7 +752,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private fun pauseInternal(
         reason: PauseReason,
         abandonFocus: Boolean = true,
-        useFade: Boolean = true
+        useFade: Boolean = true,
+        errorMessage: String? = null
     ) {
         if (reason == PauseReason.USER) safetyPolicy.onManualPause()
         val position = when {
@@ -742,10 +788,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
         }
         if (abandonFocus && ::audioFocus.isInitialized) audioFocus.abandon()
-        stopForeground(true)
-        lastNotificationKey = null
-        snapshot = buildSnapshot(PlaybackStatus.PAUSED, position, duration, reason)
+        leaveForeground()
+        snapshot = buildSnapshot(PlaybackStatus.PAUSED, position, duration, reason, errorMessage)
         persistSession(positionOverride = position)
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_PAUSE,
+            "track" to currentTrack?.id,
+            "reason" to reason.name,
+            "positionMs" to position
+        )
         publishSnapshot()
         stopSelfIfIdle()
     }
@@ -801,9 +852,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (preloadRequest != null && engine.hasPreparedNext(preloadRequest)) {
             if ((!shouldAutoPlay || audioFocus.request()) && engine.startPreparedNext(0)) return
         }
-        val currentPassOnly = !userInitiated && sleepTimerMode in setOf(SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE)
+        val currentPassOnly = !userInitiated && sleepTimerMode in PASS_BOUNDED_SLEEP_MODES
         if (!moveToNextAvailable(ignoreRepeatOne = userInitiated, currentPassOnly = currentPassOnly)) {
-            finishQueue(endedBySleepTimer = sleepTimerMode in setOf(SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE))
+            finishQueue(endedBySleepTimer = sleepTimerMode in PASS_BOUNDED_SLEEP_MODES)
             return
         }
         currentRetryCount = 0
@@ -818,8 +869,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         engine.pause()
         audioFocus.abandon()
         playbackHandler.removeCallbacks(progressRunnable)
-        stopForeground(true)
-        lastNotificationKey = null
+        leaveForeground()
         if (endedBySleepTimer) clearSleepTimer()
         snapshot = buildSnapshot(
             PlaybackStatus.PAUSED,
@@ -828,25 +878,43 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             if (endedBySleepTimer) PauseReason.SLEEP_TIMER else PauseReason.USER
         )
         persistSession(positionOverride = snapshot.durationMs)
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_STOP,
+            "reason" to if (endedBySleepTimer) "sleep_timer" else "queue_end",
+            "track" to currentTrack?.id
+        )
         publishSnapshot()
     }
 
+    /**
+     * Advances to the next item that actually resolves to a readable file.
+     *
+     * Each probe mutates the queue position, so a search that finds nothing
+     * restores the index it started from: leaving the queue parked on an
+     * arbitrary unplayable item made the next user action continue from
+     * wherever the failed search happened to stop.
+     */
     private fun moveToNextAvailable(
         ignoreRepeatOne: Boolean = false,
         currentPassOnly: Boolean = false
     ): Boolean {
         val size = queue.snapshot().items.size
+        val startIndex = queue.snapshot().currentIndex
         repeat(size.coerceAtLeast(1)) {
             val next = when {
                 currentPassOnly -> queue.nextInCurrentPass()
                 ignoreRepeatOne -> queue.nextIgnoringRepeatOne()
                 else -> queue.next()
             }
-            if (next == null) return false
+            if (next == null) {
+                startIndex?.let(queue::moveToQueueIndex)
+                return false
+            }
             val track = libraryRepository.findTrack(next)
             if (track?.let(::resolvePlayableTrack) != null) return true
             logger.warn("Playback", "skipping unavailable track=$next")
         }
+        startIndex?.let(queue::moveToQueueIndex)
         return false
     }
 
@@ -858,10 +926,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             if (newId == null) clearQueueInternal()
             else prepareCurrent(snapshot.status == PlaybackStatus.PLAYING, 0)
         } else {
-            refreshSnapshot()
-            persistQueueState()
-            armNearEndPreload()
-            publishSnapshot()
+            afterQueueMutation()
         }
     }
 
@@ -877,15 +942,36 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         pendingAutoPlay = false
         if (::audioFocus.isInitialized) audioFocus.abandon()
         playbackHandler.removeCallbacks(progressRunnable)
-        stopForeground(true)
-        lastNotificationKey = null
+        leaveForeground()
         snapshot = PlaybackSnapshot(audioEffects = audioEffectsState, sleepTimerMode = sleepTimerMode)
-        persistQueueState(positionOverride = 0)
+        // Written immediately rather than debounced: Reset Library clears the
+        // queue and then wipes the tracks it refers to, and a write still sitting
+        // in the debounce window would race that wipe.
+        playbackHandler.removeCallbacks(queuePersistRunnable)
+        queuePersistScheduled = false
+        flushQueuePersist()
+        eventLog.info(Sub.PLAYBACK, Ev.PLAYBACK_STOP, "reason" to "queue_cleared")
         publishSnapshot()
     }
 
     private fun refreshSnapshot() {
         snapshot = buildSnapshot(snapshot.status, snapshot.positionMs, snapshot.durationMs, snapshot.pauseReason, snapshot.errorMessage)
+    }
+
+    /**
+     * The four steps every queue edit owes: refresh the snapshot, persist the
+     * new order, re-evaluate preload eligibility, publish.
+     *
+     * They were repeated verbatim at seven call sites, where omitting one — most
+     * easily [armNearEndPreload], whose absence leaves a preloaded player that no
+     * longer matches the next item — produced a bug visible only at the next
+     * track transition.
+     */
+    private fun afterQueueMutation() {
+        refreshSnapshot()
+        persistQueueState()
+        armNearEndPreload()
+        publishSnapshot()
     }
 
     private fun prepareCurrent(
@@ -904,8 +990,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             if (::engine.isInitialized) engine.cancel()
             if (::audioFocus.isInitialized) audioFocus.abandon()
             playbackHandler.removeCallbacks(progressRunnable)
-            stopForeground(true)
-            lastNotificationKey = null
+            leaveForeground()
             snapshot = buildSnapshot(
                 PlaybackStatus.ERROR,
                 0,
@@ -928,6 +1013,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         snapshot = buildSnapshot(PlaybackStatus.PREPARING, pendingPositionMs, track.durationMs, PauseReason.NONE)
         persistQueueState(positionOverride = pendingPositionMs)
         publishSnapshot()
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_OPEN,
+            "request" to activeRequestId,
+            "track" to track.id,
+            "format" to track.extension,
+            "codec" to track.codec,
+            "sampleRate" to track.sampleRate,
+            "volume" to track.volumeId,
+            "autoPlay" to autoPlay,
+            "positionMs" to pendingPositionMs
+        )
         engine.prepare(track, activeRequestId)
         scheduleCurrentWatchdog(activeRequestId)
     }
@@ -1213,8 +1309,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         playbackHandler.removeCallbacks(progressRunnable)
         duckedForFocus = false
         if (::audioFocus.isInitialized) audioFocus.abandon()
-        stopForeground(true)
-        lastNotificationKey = null
+        leaveForeground()
         snapshot = buildSnapshot(
             PlaybackStatus.PAUSED,
             position,
@@ -1224,6 +1319,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         )
         persistSession(positionOverride = position)
         logger.warn("Playback", "source released after storage loss track=${currentTrack?.id} volume=${currentTrack?.volumeId}")
+        eventLog.warn(
+            Sub.PLAYBACK, Ev.PLAYBACK_SOURCE_LOST,
+            "track" to currentTrack?.id,
+            "volume" to currentTrack?.volumeId,
+            "positionMs" to position
+        )
         publishSnapshot()
         stopSelfIfIdle()
     }
@@ -1236,8 +1337,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         duckedForFocus = false
         playbackHandler.removeCallbacks(progressRunnable)
         if (::audioFocus.isInitialized) audioFocus.abandon()
-        stopForeground(true)
-        lastNotificationKey = null
+        leaveForeground()
         queue.restore(emptyList(), null)
         currentTrack = null
         snapshot = PlaybackSnapshot(
@@ -1373,10 +1473,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         engine.pause()
         audioFocus.abandon()
         playbackHandler.removeCallbacks(progressRunnable)
-        stopForeground(true)
-        lastNotificationKey = null
+        leaveForeground()
         snapshot = buildSnapshot(PlaybackStatus.PAUSED, snapshot.durationMs, snapshot.durationMs, PauseReason.SLEEP_TIMER)
         persistSession(positionOverride = snapshot.durationMs)
+        eventLog.info(
+            Sub.PLAYBACK, Ev.PLAYBACK_STOP,
+            "reason" to "sleep_timer_track_end",
+            "track" to currentTrack?.id
+        )
         publishSnapshot()
     }
 
@@ -1529,22 +1633,28 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
+    /**
+     * Pauses without speaker fallback after the private output disappeared.
+     *
+     * [pauseInternal] already builds the snapshot, persists the session and
+     * publishes; passing the message straight through means one DB write, one
+     * RemoteControlClient update and one UI wake per disconnect. Disconnects
+     * arrive in bursts (AUDIO_BECOMING_NOISY, then A2DP CONNECTION_STATE_CHANGED),
+     * so doing this work twice per event was multiplied by every burst.
+     *
+     * [PlaybackSafetyPolicy.onRoutesChanged] has already latched the loss when it
+     * returned true, so it is not latched again here.
+     */
     private fun handlePrivateRouteLoss(action: String) {
-        safetyPolicy.onRouteLoss()
         cancelVolumeFade()
         duckedForFocus = false
         logger.warn("Playback", "private output lost action=$action; pausing without speaker fallback")
-        pauseInternal(PauseReason.OUTPUT_DISCONNECTED, useFade = false)
         clearPreload()
-        snapshot = buildSnapshot(
-            PlaybackStatus.PAUSED,
-            snapshot.positionMs,
-            snapshot.durationMs,
+        pauseInternal(
             PauseReason.OUTPUT_DISCONNECTED,
-            ROUTE_LOSS_MESSAGE
+            useFade = false,
+            errorMessage = ROUTE_LOSS_MESSAGE
         )
-        persistSession(positionOverride = snapshot.positionMs)
-        publishSnapshot()
     }
 
     private fun runtimePreferences(value: PlayerPreferencesState): PlayerPreferencesState {
@@ -1612,9 +1722,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (!::queue.isInitialized) return
         val items = queue.snapshot().items
         val session = queue.session(currentPersistPosition())
+        // Claimed here, on the playback thread, rather than inside the executor.
+        // Recording it only after the write completed left a window in which
+        // further edits saw "not yet persisted" and scheduled another full
+        // rewrite of the same list — repeating a delete-and-reinsert of up to
+        // MAX_QUEUE_ITEMS rows that the debounce exists to prevent. On failure
+        // the claim is released so the next edit rewrites it for real.
+        lastPersistedQueueItems = items
         submitPersistence("atomic queue persistence") {
-            database.saveQueueState(items, session)
-            lastPersistedQueueItems = items
+            runCatching { database.saveQueueState(items, session) }
+                .onFailure {
+                    lastPersistedQueueItems = null
+                    throw it
+                }
         }
     }
 
@@ -1682,6 +1802,25 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             scheduleProgress()
         }
         publishSnapshot()
+    }
+
+    /**
+     * Enters the foreground and records the key describing what was posted.
+     *
+     * The notification and [lastNotificationKey] must move together: the key is
+     * what stops [updateNotificationIfNeeded] from re-posting an identical
+     * notification. Keeping the pair in one place removes the possibility of a
+     * caller updating one without the other.
+     */
+    private fun enterForeground() {
+        startForeground(NOTIFICATION_ID, createNotification())
+        lastNotificationKey = notificationKey()
+    }
+
+    /** Leaves the foreground and forgets the posted key. Counterpart of [enterForeground]. */
+    private fun leaveForeground() {
+        stopForeground(true)
+        lastNotificationKey = null
     }
 
     private fun updateNotificationIfNeeded(value: PlaybackSnapshot) {
@@ -1756,5 +1895,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         private const val VOLUME_FADE_STEP_MS = 25L
         private const val ROUTE_LOSS_MESSAGE = "Private audio output disconnected - playback paused"
         private val ACTIVE_STATUSES = setOf(PlaybackStatus.PLAYING, PlaybackStatus.PREPARING)
+        // Hoisted: these were allocated fresh on every evaluation, on paths that
+        // run per key press and per track transition.
+        private val RESUMABLE_ENGINE_STATES = setOf(EngineState.READY, EngineState.PAUSED)
+        private val PASS_BOUNDED_SLEEP_MODES = setOf(SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE)
     }
 }

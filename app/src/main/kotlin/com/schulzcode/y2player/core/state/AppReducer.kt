@@ -42,11 +42,7 @@ object AppReducer {
     }
 
     private fun playbackChanged(state: AppState, playback: com.schulzcode.y2player.core.model.PlaybackSnapshot): AppState {
-        val progressOnly = state.playback.copy(
-            positionMs = playback.positionMs,
-            durationMs = playback.durationMs,
-            sleepTimerRemainingMs = playback.sleepTimerRemainingMs
-        ) == playback
+        val progressOnly = isProgressOnlyUpdate(state.playback, playback)
         val updated = state.copy(playback = playback)
         if (progressOnly) return updated
 
@@ -363,9 +359,7 @@ object AppReducer {
     }
 
     private fun playWholeCollection(state: AppState): Reduction {
-        val ids = ScreenContent.rows(state).filterIsInstance<TrackRow>()
-            .filter { it.track.available }
-            .map { it.track.id }
+        val ids = ScreenContent.playableTrackIds(state)
         return if (ids.isEmpty()) Reduction(state)
         else Reduction(pushState(state, Screen.NowPlaying), listOf(PlayCollection(ids, 0)))
     }

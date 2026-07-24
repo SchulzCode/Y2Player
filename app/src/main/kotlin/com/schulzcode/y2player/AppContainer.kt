@@ -9,6 +9,7 @@ import com.schulzcode.y2player.core.state.AppStore
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.DiagnosticsRepository
 import com.schulzcode.y2player.diagnostics.EventLog
+import com.schulzcode.y2player.diagnostics.LogWriter
 import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.io.File
 import com.schulzcode.y2player.library.LibraryDatabase
@@ -21,7 +22,14 @@ import com.schulzcode.y2player.storage.UsbStateMonitor
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
-    val logger: DiagnosticLogger by lazy { DiagnosticLogger(appContext) }
+    /**
+     * One log worker thread for the whole process, shared by the human-readable
+     * and structured logs. Each keeps its own bounded queue; only the thread is
+     * shared. See [com.schulzcode.y2player.diagnostics.LogWriter].
+     */
+    private val logWriter = LogWriter()
+
+    val logger: DiagnosticLogger by lazy { DiagnosticLogger(appContext, logWriter) }
 
     /**
      * Structured NDJSON log.
@@ -44,7 +52,8 @@ class AppContainer(context: Context) {
                     ?.let { File(it.directory, "Y2Player/logs") }
             },
             appVersion = BuildConfig.VERSION_NAME,
-            buildId = BuildConfig.BUILD_ID
+            buildId = BuildConfig.BUILD_ID,
+            writer = logWriter
         )
     }
     val database: LibraryDatabase by lazy { LibraryDatabase(appContext) }
@@ -55,8 +64,20 @@ class AppContainer(context: Context) {
     val appStore: AppStore by lazy { AppStore() }
     val preferences: AppPreferences by lazy { AppPreferences(appContext) }
     val safeModeManager: SafeModeManager by lazy { SafeModeManager(appContext, logger) }
-    val storageMonitor: StorageMonitor by lazy { StorageMonitor(appContext) }
-    val bluetoothController: BluetoothController by lazy { BluetoothController(appContext, logger) }
+    val storageMonitor: StorageMonitor by lazy { StorageMonitor(appContext, eventLog) }
+    private val bluetoothControllerLazy = lazy { BluetoothController(appContext, logger, eventLog) }
+    val bluetoothController: BluetoothController by bluetoothControllerLazy
+
+    /**
+     * The Bluetooth controller only if something already built it.
+     *
+     * Teardown must not be the thing that constructs it: touching
+     * [bluetoothController] from a shutdown path would create a controller,
+     * register its receiver and open a profile proxy purely in order to close
+     * them again.
+     */
+    fun bluetoothControllerOrNull(): BluetoothController? =
+        if (bluetoothControllerLazy.isInitialized()) bluetoothControllerLazy.value else null
 
     /**
      * Process-wide artwork loader shared by the Now Playing view and the

@@ -106,7 +106,10 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         val stringPool = HashMap<String, String>(256)
         return readableDatabase.query(
             "tracks", TRACK_COLUMNS, "available = 1", null, null, null, "title COLLATE NOCASE"
-        ).use { cursor -> buildList { while (cursor.moveToNext()) cursor.toTrack(stringPool)?.let(::add) } }
+        ).use { cursor ->
+            val columns = TrackColumns(cursor)
+            buildList { while (cursor.moveToNext()) cursor.toTrack(columns, stringPool)?.let(::add) }
+        }
     }
 
     /** Total indexed rows including unavailable ones (About screen bookkeeping). */
@@ -114,9 +117,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         if (cursor.moveToFirst()) cursor.getInt(0) else 0
     }
 
+    /**
+     * Single row, so no string pool: pooling exists to share repeated artist and
+     * album strings across a whole library walk, and a one-row map could only
+     * ever hold values already unique to this track.
+     */
     fun findTrack(id: Long): Track? = readableDatabase.query(
         "tracks", TRACK_COLUMNS, "id = ?", arrayOf(id.toString()), null, null, null, "1"
-    ).use { cursor -> if (cursor.moveToFirst()) cursor.toTrack(HashMap<String, String>()) else null }
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.toTrack(TrackColumns(cursor), null) else null }
 
     fun loadTrackFingerprints(volumeId: String, absolutePaths: List<String>): Map<String, TrackFingerprint> {
         if (absolutePaths.isEmpty()) return emptyMap()
@@ -527,46 +535,77 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         }
     }
 
-    private fun Cursor.toTrack(stringPool: MutableMap<String, String>): Track? {
-        val absolutePath = nullableString("absolute_path")?.trim().takeUnless { it.isNullOrEmpty() } ?: return null
-        val relativePath = nullableString("relative_path")?.trim().takeUnless { it.isNullOrEmpty() }
+    /**
+     * Column indices for one cursor, resolved once.
+     *
+     * Resolving them by name inside the row loop meant twenty-one string-keyed
+     * lookups per track: on a 30k-track library that was over half a million
+     * redundant lookups per full load, all of it on the library thread ahead of
+     * the first usable screen.
+     */
+    private class TrackColumns(cursor: Cursor) {
+        val id = cursor.getColumnIndexOrThrow("id")
+        val volumeId = cursor.getColumnIndexOrThrow("volume_id")
+        val absolutePath = cursor.getColumnIndexOrThrow("absolute_path")
+        val relativePath = cursor.getColumnIndexOrThrow("relative_path")
+        val title = cursor.getColumnIndexOrThrow("title")
+        val artist = cursor.getColumnIndexOrThrow("artist")
+        val album = cursor.getColumnIndexOrThrow("album")
+        val albumArtist = cursor.getColumnIndexOrThrow("album_artist")
+        val trackNumber = cursor.getColumnIndexOrThrow("track_number")
+        val discNumber = cursor.getColumnIndexOrThrow("disc_number")
+        val durationMs = cursor.getColumnIndexOrThrow("duration_ms")
+        val fileSize = cursor.getColumnIndexOrThrow("file_size")
+        val modifiedAt = cursor.getColumnIndexOrThrow("modified_at")
+        val available = cursor.getColumnIndexOrThrow("available")
+        val scanError = cursor.getColumnIndexOrThrow("scan_error")
+        val codec = cursor.getColumnIndexOrThrow("codec")
+        val sampleRate = cursor.getColumnIndexOrThrow("sample_rate")
+        val bitDepth = cursor.getColumnIndexOrThrow("bit_depth")
+        val channels = cursor.getColumnIndexOrThrow("channels")
+        val addedAt = cursor.getColumnIndexOrThrow("added_at")
+        val favorite = cursor.getColumnIndexOrThrow("favorite")
+    }
+
+    private fun Cursor.toTrack(columns: TrackColumns, stringPool: MutableMap<String, String>?): Track? {
+        val absolutePath = nullableString(columns.absolutePath)?.trim().takeUnless { it.isNullOrEmpty() } ?: return null
+        val relativePath = nullableString(columns.relativePath)?.trim().takeUnless { it.isNullOrEmpty() }
             ?: java.io.File(absolutePath).name
-        val title = nullableString("title")?.trim().takeUnless { it.isNullOrEmpty() }
+        val title = nullableString(columns.title)?.trim().takeUnless { it.isNullOrEmpty() }
             ?: java.io.File(absolutePath).nameWithoutExtension.ifBlank { "Unknown track" }
         return Track(
-        id = getLong(getColumnIndexOrThrow("id")).takeIf { it > 0 } ?: return null,
-        volumeId = stringPool.poolString(nullableString("volume_id")?.trim().takeUnless { it.isNullOrEmpty() } ?: "unknown"),
+        id = getLong(columns.id).takeIf { it > 0 } ?: return null,
+        volumeId = (nullableString(columns.volumeId)?.trim().takeUnless { it.isNullOrEmpty() } ?: "unknown").pooled(stringPool),
         absolutePath = absolutePath,
         relativePath = relativePath,
         title = title,
-        artist = nullableString("artist")?.let { stringPool.poolString(it) },
-        album = nullableString("album")?.let { stringPool.poolString(it) },
-        albumArtist = nullableString("album_artist")?.let { stringPool.poolString(it) },
-        trackNumber = nullableInt("track_number"),
-        discNumber = nullableInt("disc_number"),
-        durationMs = getLong(getColumnIndexOrThrow("duration_ms")).coerceAtLeast(0),
-        fileSize = getLong(getColumnIndexOrThrow("file_size")).coerceAtLeast(0),
-        modifiedAt = getLong(getColumnIndexOrThrow("modified_at")).coerceAtLeast(0),
-        available = getInt(getColumnIndexOrThrow("available")) != 0,
-        scanError = nullableString("scan_error"),
-        codec = nullableString("codec"),
-        sampleRate = nullableInt("sample_rate"),
-        bitDepth = nullableInt("bit_depth"),
-        channels = nullableInt("channels"),
-        addedAt = getLong(getColumnIndexOrThrow("added_at")).coerceAtLeast(0),
-        favorite = getInt(getColumnIndexOrThrow("favorite")) != 0
+        artist = nullableString(columns.artist)?.pooled(stringPool),
+        album = nullableString(columns.album)?.pooled(stringPool),
+        albumArtist = nullableString(columns.albumArtist)?.pooled(stringPool),
+        trackNumber = nullableInt(columns.trackNumber),
+        discNumber = nullableInt(columns.discNumber),
+        durationMs = getLong(columns.durationMs).coerceAtLeast(0),
+        fileSize = getLong(columns.fileSize).coerceAtLeast(0),
+        modifiedAt = getLong(columns.modifiedAt).coerceAtLeast(0),
+        available = getInt(columns.available) != 0,
+        scanError = nullableString(columns.scanError),
+        codec = nullableString(columns.codec),
+        sampleRate = nullableInt(columns.sampleRate),
+        bitDepth = nullableInt(columns.bitDepth),
+        channels = nullableInt(columns.channels),
+        addedAt = getLong(columns.addedAt).coerceAtLeast(0),
+        favorite = getInt(columns.favorite) != 0
     )
     }
 
-    private fun Cursor.nullableString(column: String): String? {
-        val index = getColumnIndexOrThrow(column)
-        return if (isNull(index)) null else getString(index)
-    }
+    private fun Cursor.nullableString(index: Int): String? =
+        if (isNull(index)) null else getString(index)
 
-    private fun Cursor.nullableInt(column: String): Int? {
-        val index = getColumnIndexOrThrow(column)
-        return if (isNull(index)) null else getInt(index)
-    }
+    private fun String.pooled(pool: MutableMap<String, String>?): String =
+        if (pool == null) this else pool.poolString(this)
+
+    private fun Cursor.nullableInt(index: Int): Int? =
+        if (isNull(index)) null else getInt(index)
 
     private fun encodePlayOrder(order: List<Int>): String {
         if (cachedPlayOrderSource === order) return cachedPlayOrderText.orEmpty()

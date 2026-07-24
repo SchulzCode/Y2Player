@@ -103,6 +103,23 @@ data class PlayerPreferencesState(
     val loudnessGainMb: Int = 0
 )
 
+/**
+ * True when the only difference between two playback snapshots is the passage
+ * of time: position, duration and the sleep-timer countdown.
+ *
+ * This question is asked once per progress tick by both the reducer (to decide
+ * whether navigation state needs re-normalising) and the renderer (to decide
+ * whether anything outside the progress area must repaint). It was implemented
+ * separately in each, by the same copy-and-compare technique — two copies of one
+ * rule that had to stay identical, in two layers, with nothing to keep them so.
+ */
+fun isProgressOnlyUpdate(previous: PlaybackSnapshot, current: PlaybackSnapshot): Boolean =
+    previous.copy(
+        positionMs = current.positionMs,
+        durationMs = current.durationMs,
+        sleepTimerRemainingMs = current.sleepTimerRemainingMs
+    ) == current
+
 data class AppState(
     val screenStack: List<ScreenEntry> = listOf(ScreenEntry(Screen.MainMenu)),
     val library: LibraryState = LibraryState(),

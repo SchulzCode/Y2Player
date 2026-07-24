@@ -5,6 +5,7 @@ import com.schulzcode.y2player.storage.StorageRoot
 import java.io.File
 import java.io.IOException
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ScanCancellation {
@@ -36,7 +37,12 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
     ): ScanOutcome {
         val stack = ArrayDeque<File>()
         val visited = HashSet<String>()
+        // Keyed on the path *below the volume root*, not the absolute path. Both
+        // are unique within one volume scan, but at the 100k-file ceiling the
+        // shorter key is several megabytes less long-lived heap on a device
+        // whose application heap is not large.
         val seenFiles = HashSet<String>()
+        val rootPrefixLength = rootCanonicalPrefixLength(root)
         val audioBuffer = ArrayList<File>(BATCH_SIZE)
         val playlists = ArrayList<File>()
         var processed = 0
@@ -125,11 +131,19 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                     continue
                 }
                 if (!child.isFile) continue
-                val extension = child.extension.lowercase()
+                // Resolved without allocating for the many files that have no
+                // extension at all, or whose extension is neither audio nor a
+                // playlist — the common case on a card with artwork and stray
+                // documents in it.
+                val extension = extensionOf(child.name) ?: continue
                 when {
                     extension in PLAYLIST_EXTENSIONS -> if (playlists.size < MAX_PLAYLIST_FILES) playlists += child
                     extension in SUPPORTED_EXTENSIONS -> {
-                        if (!seenFiles.add(PathIdentity.key(child.absolutePath))) continue
+                        val path = child.absolutePath
+                        val key = PathIdentity.key(
+                            if (path.length > rootPrefixLength) path.substring(rootPrefixLength) else path
+                        )
+                        if (!seenFiles.add(key)) continue
                         if (processed + audioBuffer.size >= MAX_AUDIO_FILES) {
                             incomplete = true
                             limitReached = true
@@ -153,14 +167,43 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             name.equals("System Volume Information", true) || name.equals("Y2Player", true)
     }
 
+    /**
+     * Lower-cased extension, or null when there is none worth looking up. Only
+     * the extension is allocated, and only for files that actually have one.
+     */
+    private fun extensionOf(name: String): String? {
+        val dot = name.lastIndexOf('.')
+        if (dot <= 0 || dot == name.length - 1) return null
+        val length = name.length - dot - 1
+        if (length > MAX_EXTENSION_LENGTH) return null
+        return name.substring(dot + 1).lowercase()
+    }
+
+    /** Length of the volume root prefix that [scan] strips from dedupe keys. */
+    private fun rootCanonicalPrefixLength(root: StorageRoot): Int =
+        root.directory.absolutePath.trimEnd(File.separatorChar).length + 1
+
     companion object {
         const val BATCH_SIZE = 64
         private const val MAX_PLAYLIST_FILES = 1_000
         private const val MAX_AUDIO_FILES = 100_000
+        /** Longest extension in [SUPPORTED_EXTENSIONS] / [PLAYLIST_EXTENSIONS] is 4. */
+        private const val MAX_EXTENSION_LENGTH = 5
         val PLAYLIST_EXTENSIONS = setOf("m3u", "m3u8")
         val SUPPORTED_EXTENSIONS = setOf(
             "mp3", "mp2", "flac", "wav", "wave", "ogg", "oga", "opus", "m4a", "m4r", "aac",
             "ape", "wma", "amr", "wv", "aif", "aiff", "aifc", "ac3", "mka", "dsf", "dff"
         )
     }
+}
+
+/**
+ * Case- and separator-insensitive path key.
+ *
+ * Lives beside its only caller: FAT cards cannot hold two files whose paths
+ * differ only in case, so this is what makes "have I already seen this file"
+ * answerable during a scan.
+ */
+internal object PathIdentity {
+    fun key(path: String): String = path.replace('\\', '/').trimEnd('/').lowercase(Locale.US)
 }

@@ -12,7 +12,9 @@ import android.os.StatFs
 import android.os.SystemClock
 import com.schulzcode.y2player.core.state.DeviceState
 import com.schulzcode.y2player.core.state.StorageVolumeState
-import java.io.File
+import com.schulzcode.y2player.diagnostics.Ev
+import com.schulzcode.y2player.diagnostics.EventLog
+import com.schulzcode.y2player.diagnostics.Sub
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -29,7 +31,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    the broadcast intent, with no filesystem access and no listener dispatch
  *    unless the user-visible value actually changed.
  */
-class StorageMonitor(context: Context) {
+class StorageMonitor(
+    context: Context,
+    private val eventLog: EventLog? = null
+) {
     fun interface Listener { fun onStorageChanged(state: DeviceState) }
 
     /**
@@ -62,6 +67,13 @@ class StorageMonitor(context: Context) {
 
     private val storageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            // Recorded before debouncing: correlating a stock-UMS remount needs
+            // the raw broadcast order, which the coalesced snapshot loses.
+            eventLog?.info(
+                Sub.STORAGE, Ev.STORAGE_BROADCAST,
+                "action" to intent?.action,
+                "data" to intent?.dataString
+            )
             handler.removeCallbacks(deferredPublish)
             handler.postDelayed(deferredPublish, STORAGE_DEBOUNCE_MS)
         }
@@ -152,9 +164,33 @@ class StorageMonitor(context: Context) {
         if (!refreshQueued.compareAndSet(false, true)) return
         executor.execute {
             refreshQueued.set(false)
+            val previous = latest
             val value = runCatching { snapshot() }.getOrElse { latest }
             latest = value
+            logVolumeChanges(previous, value)
             handler.post { listeners.forEach { it.onStorageChanged(value) } }
+        }
+    }
+
+    /**
+     * One event per volume whose availability actually flipped. Transitions
+     * only: a snapshot that changed nothing is not an event, and battery-driven
+     * refreshes must not fill the log with unchanged mount state.
+     */
+    private fun logVolumeChanges(previous: DeviceState, current: DeviceState) {
+        val log = eventLog ?: return
+        current.storageVolumes.forEach { volume ->
+            val before = previous.storageVolumes.firstOrNull { it.id == volume.id }
+            if (before != null && before.available == volume.available) return@forEach
+            log.info(
+                Sub.STORAGE, Ev.STORAGE_VOLUME_CHANGE,
+                "volume" to volume.id,
+                "available" to volume.available,
+                "path" to volume.path,
+                "freeBytes" to volume.freeBytes,
+                "totalBytes" to volume.totalBytes,
+                "first" to (before == null)
+            )
         }
     }
 
@@ -171,39 +207,56 @@ class StorageMonitor(context: Context) {
             publish()
             return
         }
-        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val percent = if (level >= 0 && scale > 0) ((level * 100f) / scale).toInt() else null
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-            status == BatteryManager.BATTERY_STATUS_FULL
-        if (current.batteryPercent == percent && current.charging == charging) return
-        val value = current.copy(batteryPercent = percent, charging = charging)
+        val reading = batteryReading(intent)
+        if (current.batteryPercent == reading.percent && current.charging == reading.charging) return
+        val value = current.copy(batteryPercent = reading.percent, charging = reading.charging)
         latest = value
         handler.post { listeners.forEach { it.onStorageChanged(value) } }
     }
 
+    private data class BatteryReading(val percent: Int?, val charging: Boolean)
+
+    /**
+     * The single place ACTION_BATTERY_CHANGED is interpreted.
+     *
+     * This process registers exactly one receiver for it; [UsbStateMonitor]
+     * deliberately does not, because it only needs the charging *transitions*
+     * that ACTION_POWER_CONNECTED/DISCONNECTED already deliver. Battery
+     * broadcasts fire every few seconds for voltage and temperature, so a second
+     * receiver deriving the same boolean was a wake-up per broadcast for a fact
+     * this process already had.
+     */
+    private fun batteryReading(intent: Intent?): BatteryReading {
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        return BatteryReading(
+            percent = if (level >= 0 && scale > 0) ((level * 100f) / scale).toInt() else null,
+            charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL
+        )
+    }
+
     fun snapshot(): DeviceState {
-        val internal = Y2StoragePaths.roots.first { it.id == "internal" }
-        val removable = Y2StoragePaths.roots.first { it.id == "sdcard" }
+        // Resolved once and passed down. Y2StoragePaths.roots probes the
+        // filesystem on every access, and this method used to evaluate it four
+        // times to build two volumes.
+        val roots = Y2StoragePaths.roots
+        val internal = roots.first { it.id == "internal" }
+        val removable = roots.first { it.id == "sdcard" }
         val battery = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val percent = if (level >= 0 && scale > 0) ((level * 100f) / scale).toInt() else null
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-            status == BatteryManager.BATTERY_STATUS_FULL
+        val reading = batteryReading(battery)
 
         val volumes = listOf(
-            volumeState(internal.id, "Internal Storage", internal.directory),
-            volumeState(removable.id, "SD Card", removable.directory)
+            volumeState(internal, "Internal Storage"),
+            volumeState(removable, "SD Card")
         )
         return DeviceState(
             internalStorageAvailable = volumes.first { it.id == "internal" }.available,
             removableStorageAvailable = volumes.first { it.id == "sdcard" }.available,
             storageVolumes = volumes,
-            batteryPercent = percent,
-            charging = charging,
+            batteryPercent = reading.percent,
+            charging = reading.charging,
             deviceModel = listOf(Build.MANUFACTURER, Build.MODEL)
                 .filter { it.isNotBlank() }
                 .joinToString(" ")
@@ -214,8 +267,9 @@ class StorageMonitor(context: Context) {
         )
     }
 
-    private fun volumeState(id: String, label: String, directory: File): StorageVolumeState {
-        val root = Y2StoragePaths.roots.firstOrNull { it.id == id } ?: StorageRoot(id, directory)
+    private fun volumeState(root: StorageRoot, label: String): StorageVolumeState {
+        val id = root.id
+        val directory = root.directory
         val readable = Y2StoragePaths.isAvailable(root)
         val stats = if (readable) runCatching {
             val statFs = StatFs(directory.absolutePath)

@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import com.schulzcode.y2player.diagnostics.Ev
@@ -54,10 +53,12 @@ class UsbStateMonitor(
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            // A plain battery broadcast (voltage/temperature/percentage) fires every
-            // few seconds and never changes the USB picture. The policy refreshes on
-            // connect/configure and on a genuine charging flip only, so those noisy
-            // broadcasts no longer schedule a worker or read sysfs.
+            // ACTION_BATTERY_CHANGED is deliberately not observed here. It fires
+            // every few seconds for voltage and temperature and never changes the
+            // USB picture; the only thing this monitor wanted from it was the
+            // charging flip, which ACTION_POWER_CONNECTED/DISCONNECTED already
+            // delivers as an edge. StorageMonitor owns the battery broadcast for
+            // the whole process, so it is received once rather than twice.
             val decision = when (intent?.action) {
                 ACTION_USB_STATE -> {
                     broadcastConnected = intent.getBooleanExtra(EXTRA_CONNECTED, false)
@@ -68,12 +69,6 @@ class UsbStateMonitor(
                     UsbRefreshPolicy.onChargingSignal(charging, reportedCharging = true)
                 Intent.ACTION_POWER_DISCONNECTED ->
                     UsbRefreshPolicy.onChargingSignal(charging, reportedCharging = false)
-                Intent.ACTION_BATTERY_CHANGED -> {
-                    val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                    val reported = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                        status == BatteryManager.BATTERY_STATUS_FULL
-                    UsbRefreshPolicy.onChargingSignal(charging, reported)
-                }
                 else -> return
             }
             charging = decision.charging
@@ -99,7 +94,6 @@ class UsbStateMonitor(
                 IntentFilter().apply {
                     addAction(Intent.ACTION_POWER_CONNECTED)
                     addAction(Intent.ACTION_POWER_DISCONNECTED)
-                    addAction(Intent.ACTION_BATTERY_CHANGED)
                 }
             )
         }

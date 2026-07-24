@@ -66,6 +66,18 @@ object ScreenContent {
         Screen.About -> "About"
     }
 
+    /**
+     * Rows for the current screen, memoised for the screens that can be large.
+     *
+     * Building these sorts the whole track list, which is capped at 100k items,
+     * on the main thread inside the reducer — so a cache miss is the most
+     * expensive thing this class can do. The cache holds [ROW_CACHE_ENTRIES]
+     * screens rather than one: a single entry was thrashed by ordinary use,
+     * because `preserveSelection` asks for the previous state's rows and then
+     * the updated state's rows, and moving between two large screens evicted on
+     * every step. Keeping a handful makes back-navigation and the
+     * previous/updated pair free.
+     */
     @Synchronized
     fun rows(state: AppState): List<ScreenRow> {
         if (!isLargeScreen(state.currentScreen)) return buildRows(state)
@@ -76,10 +88,14 @@ object ScreenContent {
             sortOrder = state.preferences.sortOrder,
             queueFingerprint = if (state.currentScreen == Screen.Queue) System.identityHashCode(state.playback.queue) else 0
         )
-        if (key == cachedLargeKey) return cachedLargeRows
-        return buildRows(state).also {
-            cachedLargeKey = key
-            cachedLargeRows = it
+        cachedRows[key]?.let { return it }
+        return buildRows(state).also { rows ->
+            // Least-recently-used eviction: access order is maintained by the
+            // map itself, so the entry dropped is the one longest unused.
+            if (cachedRows.size >= ROW_CACHE_ENTRIES) {
+                cachedRows.keys.iterator().let { if (it.hasNext()) { it.next(); it.remove() } }
+            }
+            cachedRows[key] = rows
         }
     }
 
@@ -127,16 +143,43 @@ object ScreenContent {
         Screen.About -> aboutRows(state)
     }
 
+    /**
+     * The playable track ids on the current screen, plus the position of the
+     * selected one.
+     *
+     * One pass and one list. The previous three-stage pipeline
+     * (`filterIsInstance` → `filter` → `map`, then `indexOf`) allocated three
+     * lists the size of the screen and then scanned one of them, so pressing
+     * play on a 30k-track Songs list did roughly 90,000 list writes and boxed
+     * 30,000 longs on the main thread before playback even started.
+     */
     fun selectedTrackCollection(state: AppState): Pair<List<Long>, Int>? {
         val rows = rows(state)
         val selected = rows.getOrNull(state.selectedIndex) as? ScreenRow.TrackRow ?: return null
-        val ids = rows.filterIsInstance<ScreenRow.TrackRow>().filter { it.track.available }.map { it.track.id }
-        val index = ids.indexOf(selected.track.id)
+        val ids = ArrayList<Long>(rows.size)
+        var index = -1
+        rows.forEach { row ->
+            if (row !is ScreenRow.TrackRow || !row.track.available) return@forEach
+            if (row.track.id == selected.track.id && index < 0) index = ids.size
+            ids.add(row.track.id)
+        }
         return if (index >= 0) ids to index else null
     }
 
-    /** Stable identity used to restore wheel focus after a live list refresh. */
-    /** Allocation-free identity comparison for potentially large refreshed lists. */
+    /** Every playable track id on the current screen, in display order. */
+    fun playableTrackIds(state: AppState): List<Long> {
+        val rows = rows(state)
+        val ids = ArrayList<Long>(rows.size)
+        rows.forEach { row ->
+            if (row is ScreenRow.TrackRow && row.track.available) ids.add(row.track.id)
+        }
+        return ids
+    }
+
+    /**
+     * Stable identity used to restore wheel focus after a live list refresh.
+     * Allocation-free, because it runs across potentially large refreshed lists.
+     */
     fun sameRowIdentity(first: ScreenRow, second: ScreenRow): Boolean = when {
         first is ScreenRow.Action && second is ScreenRow.Action -> first.key == second.key
         first is ScreenRow.TrackRow && second is ScreenRow.TrackRow -> first.track.id == second.track.id
@@ -708,13 +751,19 @@ object ScreenContent {
 
     private data class AlbumAccumulator(var count: Int, var singleArtist: String?)
 
-    @Volatile private var cachedLargeKey: LargeRowsKey? = null
-    @Volatile private var cachedLargeRows: List<ScreenRow> = emptyList()
+    /**
+     * Access-ordered so the eviction in [rows] drops the least recently used
+     * screen. Guarded by the same monitor as [rows] and [clearCachedRows];
+     * LinkedHashMap in access order mutates on read, so it must not be touched
+     * outside that lock.
+     */
+    private val cachedRows = LinkedHashMap<LargeRowsKey, List<ScreenRow>>(
+        ROW_CACHE_ENTRIES + 1, 0.75f, true
+    )
 
     @Synchronized
     fun clearCachedRows() {
-        cachedLargeKey = null
-        cachedLargeRows = emptyList()
+        cachedRows.clear()
     }
 
     private fun isLargeScreen(screen: Screen): Boolean = when (screen) {
@@ -723,6 +772,13 @@ object ScreenContent {
         is Screen.AlbumSongs, is Screen.ArtistSongs, is Screen.Folders, is Screen.PlaylistTracks -> true
         else -> false
     }
+
+    /**
+     * Four screens of rows. Enough to cover a browse path (list → detail → back)
+     * and the previous/updated pair the reducer needs, small enough that the
+     * retained row objects stay a bounded fraction of the track list.
+     */
+    private const val ROW_CACHE_ENTRIES = 4
 
     val BRIGHTNESS_LEVELS = listOf(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
     val TIMEOUT_LEVELS = listOf(15_000, 30_000, 60_000, 120_000, 300_000, 600_000, Int.MAX_VALUE)

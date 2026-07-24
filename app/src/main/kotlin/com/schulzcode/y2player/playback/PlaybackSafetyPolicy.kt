@@ -88,8 +88,12 @@ class PlaybackSafetyPolicy {
         return resume
     }
 
+    /**
+     * False exactly while a route loss is latched, i.e. while automatic starts
+     * are suppressed. Also the assertion tests use to observe latching, so the
+     * policy exposes one predicate rather than two spellings of it.
+     */
     fun canAutomaticallyStart(): Boolean = !routeLossLatched
-    fun isRouteLossLatched(): Boolean = routeLossLatched
     fun hasPendingFocusResume(): Boolean = resumeAfterTransientFocusLoss && !routeLossLatched
 }
 

@@ -104,8 +104,6 @@ sealed interface AppEffect {
 
     /** Escape hatch to the platform Settings app (see docs/PRODUCT_DESIGN.md). */
     data object OpenAndroidSettings : AppEffect
-
-    /** Explicit enable/disable — never a toggle, so the outcome is deterministic. */
 }
 
 data class Reduction(val state: AppState, val effects: List<AppEffect> = emptyList())

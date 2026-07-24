@@ -1,6 +1,7 @@
 package com.schulzcode.y2player.settings
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
@@ -11,7 +12,28 @@ import com.schulzcode.y2player.playback.VolumeMode
 class AppPreferences(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 
-    fun snapshot(): PlayerPreferencesState = PlayerPreferencesState(
+    /**
+     * Last read state, held until a write invalidates it.
+     *
+     * Building this reads twenty-two keys and parses the equaliser band string.
+     * Every mutator asked for it twice — once to read the current value, once to
+     * return the new one — so a single volume detent, which the wheel produces
+     * dozens of times per second on Now Playing, cost forty-four keyed reads and
+     * two band-list parses. The store is the source of truth; this only avoids
+     * asking it the same question repeatedly between writes.
+     *
+     * Reads and writes are serialised on this instance. Without that, a write
+     * landing between another thread's read and its cache store would leave the
+     * pre-write value cached indefinitely — the settings screen and the playback
+     * service call in from different threads, so that interleaving is reachable.
+     * The lock is uncontended in practice and guards only in-memory work.
+     */
+    private var cached: PlayerPreferencesState? = null
+
+    @Synchronized
+    fun snapshot(): PlayerPreferencesState = cached ?: readSnapshot().also { cached = it }
+
+    private fun readSnapshot(): PlayerPreferencesState = PlayerPreferencesState(
         uiSoundEffectsEnabled = boolean(KEY_UI_SOUND_EFFECTS, false),
         verboseDiagnostics = boolean(KEY_VERBOSE_DIAGNOSTICS, false),
         volumeMode = VolumeMode.fromStorage(string(KEY_VOLUME_MODE, null)),
@@ -47,17 +69,15 @@ class AppPreferences(context: Context) {
     fun toggleAudioEffects() = updateBoolean(KEY_EFFECTS_ENABLED, !snapshot().audioEffectsEnabled)
     fun cycleHapticLevel(): PlayerPreferencesState {
         val next = snapshot().hapticLevel.next()
-        preferences.edit().putString(KEY_HAPTIC_LEVEL, next.storageId).apply()
-        return snapshot()
+        return commit { putString(KEY_HAPTIC_LEVEL, next.storageId) }
     }
 
     /** Persists a mode and its transferred in-app level as one atomic edit. */
     fun setVolumeMode(mode: VolumeMode, appLevel: Int): PlayerPreferencesState {
-        preferences.edit()
-            .putString(KEY_VOLUME_MODE, mode.storageId)
-            .putInt(KEY_VOLUME_LEVEL, VolumeCurve.clampLevel(appLevel))
-            .apply()
-        return snapshot()
+        return commit {
+            putString(KEY_VOLUME_MODE, mode.storageId)
+            putInt(KEY_VOLUME_LEVEL, VolumeCurve.clampLevel(appLevel))
+        }
     }
 
     /**
@@ -69,14 +89,12 @@ class AppPreferences(context: Context) {
         if (current.volumeMode != VolumeMode.PERCEPTUAL) return current
         val next = VolumeCurve.adjustLevel(current.volumeLevel, direction)
         if (next == current.volumeLevel) return current
-        preferences.edit().putInt(KEY_VOLUME_LEVEL, next).apply()
-        return snapshot()
+        return commit { putInt(KEY_VOLUME_LEVEL, next) }
     }
 
     fun cycleAudioQuality(): PlayerPreferencesState {
         val next = snapshot().audioQualityMode.next()
-        preferences.edit().putString(KEY_AUDIO_QUALITY, next.storageId).apply()
-        return snapshot()
+        return commit { putString(KEY_AUDIO_QUALITY, next.storageId) }
     }
 
     fun cycleCrossfade(): PlayerPreferencesState = cycleInt(KEY_CROSSFADE, CROSSFADE_LEVELS, snapshot().crossfadeMs)
@@ -97,8 +115,7 @@ class AppPreferences(context: Context) {
             current + 1 >= presetCount -> -1 // Custom bands after the final device preset.
             else -> current + 1
         }
-        preferences.edit().putInt(KEY_EQ_PRESET, next).apply()
-        return snapshot()
+        return commit { putInt(KEY_EQ_PRESET, next) }
     }
 
     fun adjustEqualizerBand(index: Int, deltaSteps: Int, minMb: Int, maxMb: Int, bandCount: Int): PlayerPreferencesState {
@@ -106,30 +123,37 @@ class AppPreferences(context: Context) {
         val levels = snapshot().equalizerBandLevelsMb.toMutableList()
         while (levels.size < bandCount) levels += 0
         levels[index] = (levels[index] + deltaSteps * EQ_STEP_MB).coerceIn(minMb, maxMb)
-        preferences.edit()
-            .putInt(KEY_EQ_PRESET, -1)
-            .putString(KEY_EQ_BANDS, levels.joinToString(","))
-            .apply()
-        return snapshot()
+        return commit {
+            putInt(KEY_EQ_PRESET, -1)
+            putString(KEY_EQ_BANDS, levels.joinToString(","))
+        }
     }
 
     fun cycleBassStrength(): PlayerPreferencesState = cycleInt(KEY_BASS_STRENGTH, BASS_LEVELS, snapshot().bassStrength)
     fun cycleLoudnessGain(): PlayerPreferencesState = cycleInt(KEY_LOUDNESS_GAIN, LOUDNESS_LEVELS, snapshot().loudnessGainMb)
 
-    fun setSortOrder(order: TrackSortOrder): PlayerPreferencesState {
-        preferences.edit().putString(KEY_SORT_ORDER, order.storageId).apply()
-        return snapshot()
-    }
+    fun setSortOrder(order: TrackSortOrder): PlayerPreferencesState =
+        commit { putString(KEY_SORT_ORDER, order.storageId) }
 
-    private fun updateBoolean(key: String, value: Boolean): PlayerPreferencesState {
-        preferences.edit().putBoolean(key, value).apply()
-        return snapshot()
-    }
+    private fun updateBoolean(key: String, value: Boolean): PlayerPreferencesState =
+        commit { putBoolean(key, value) }
 
     private fun cycleInt(key: String, levels: List<Int>, current: Int): PlayerPreferencesState {
         val index = levels.indexOf(current).takeIf { it >= 0 } ?: 0
-        preferences.edit().putInt(key, levels[(index + 1) % levels.size]).apply()
-        return snapshot()
+        return commit { putInt(key, levels[(index + 1) % levels.size]) }
+    }
+
+    /**
+     * The single write path. Invalidating here — rather than at each call site —
+     * is what makes the cache safe: a new setter cannot forget to do it.
+     */
+    @Synchronized
+    private fun commit(block: SharedPreferences.Editor.() -> Unit): PlayerPreferencesState {
+        val editor = preferences.edit()
+        editor.block()
+        editor.apply()
+        cached = null
+        return readSnapshot().also { cached = it }
     }
 
     private fun boolean(key: String, fallback: Boolean): Boolean =

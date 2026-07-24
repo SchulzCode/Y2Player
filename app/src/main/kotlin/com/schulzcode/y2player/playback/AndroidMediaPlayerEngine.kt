@@ -162,7 +162,7 @@ class AndroidMediaPlayerEngine(
     }
 
     override fun start() {
-        if (state !in setOf(EngineState.READY, EngineState.PAUSED, EngineState.PLAYING)) return
+        if (state !in STARTABLE_STATES) return
         runCatching {
             current.player.start()
             current.state = EngineState.PLAYING
@@ -172,7 +172,7 @@ class AndroidMediaPlayerEngine(
     }
 
     override fun pause() {
-        if (state !in setOf(EngineState.PLAYING, EngineState.READY, EngineState.PAUSED)) return
+        if (state !in STARTABLE_STATES) return
         if (isTransitioning) cancelTransition(discardNext = true)
         runCatching {
             if (current.player.isPlaying) current.player.pause()
@@ -344,7 +344,7 @@ class AndroidMediaPlayerEngine(
         }
         if (source !== current.player || isTransitioning) return
         val prepared = next
-        if (gaplessLinked && prepared != null && prepared.state in setOf(EngineState.READY, EngineState.PLAYING)) {
+        if (gaplessLinked && prepared != null && prepared.state in LINKABLE_NEXT_STATES) {
             gaplessLinked = false
             releaseSlot(current)
             current = prepared
@@ -376,6 +376,10 @@ class AndroidMediaPlayerEngine(
             listener?.onNextError(failed.requestId, message)
             return true
         }
+        // Neither slot: a player that was released or replaced is still reporting.
+        // Nothing can be recovered, but silence here is the one case where a
+        // vendor stack misbehaving leaves no trace at all.
+        logger.warn("PlaybackEngine", "$message from an unowned player (state=$state)")
         return true
     }
 
@@ -404,5 +408,9 @@ class AndroidMediaPlayerEngine(
     companion object {
         private const val CROSSFADE_STEP_MS = 50L
         private val PLAYABLE_STATES = setOf(EngineState.READY, EngineState.PLAYING, EngineState.PAUSED)
+        // Hoisted alongside PLAYABLE_STATES: these were allocated on every
+        // start, pause and completion callback.
+        private val STARTABLE_STATES = setOf(EngineState.READY, EngineState.PAUSED, EngineState.PLAYING)
+        private val LINKABLE_NEXT_STATES = setOf(EngineState.READY, EngineState.PLAYING)
     }
 }

@@ -390,11 +390,6 @@ class LibraryRepository(
 
     fun findTrack(id: Long): Track? = current.byId[id] ?: database.findTrack(id)
     fun snapshot(): LibraryState = current
-    fun shutdown() {
-        cancellation?.cancel()
-        scanExecutor.shutdownNow()
-        stateExecutor.shutdownNow()
-    }
 
     private fun loadState(isScanning: Boolean, lastScanAt: Long?): LibraryState {
         val previousAvailability = current.availableTrackIds

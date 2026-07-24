@@ -17,6 +17,9 @@ import com.schulzcode.y2player.core.state.BluetoothDeviceEntry
 import com.schulzcode.y2player.core.state.BluetoothLinkState
 import com.schulzcode.y2player.core.state.BluetoothUiState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
+import com.schulzcode.y2player.diagnostics.Ev
+import com.schulzcode.y2player.diagnostics.EventLog
+import com.schulzcode.y2player.diagnostics.Sub
 import java.util.LinkedHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 
@@ -24,10 +27,27 @@ import java.util.concurrent.CopyOnWriteArraySet
 @Suppress("DEPRECATION")
 class BluetoothController(
     context: Context,
-    private val logger: DiagnosticLogger
+    private val logger: DiagnosticLogger,
+    private val eventLog: EventLog? = null
 ) {
     fun interface Listener { fun onBluetoothChanged(state: BluetoothUiState) }
     data class OperationResult(val accepted: Boolean, val message: String)
+
+    /**
+     * The operation currently awaiting a framework callback.
+     *
+     * Previously these were bare strings compared across four methods and handed
+     * straight to the UI as [BluetoothUiState.pendingOperation]. Rewording the
+     * user-visible text silently broke pair-then-connect and the operation
+     * timeout, with nothing to catch it. The label stays presentational; the
+     * identity is now the enum constant.
+     */
+    enum class Operation(val label: String) {
+        PAIRING("Pairing"),
+        CONNECTION("Connection"),
+        DISCONNECTION("Disconnection"),
+        FORGETTING("Forgetting")
+    }
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -40,7 +60,7 @@ class BluetoothController(
     private var registered = false
     private var started = false
     private var pendingAddress: String? = null
-    private var pendingOperation: String? = null
+    private var pendingOperation: Operation? = null
     private var lastError: String? = null
     private var proxyGeneration = 0L
     private var proxyRequestPending = false
@@ -56,8 +76,14 @@ class BluetoothController(
         val address = pendingAddress
         val operation = pendingOperation
         if (address != null && operation != null) {
-            lastError = "$operation timed out for ${deviceName(address)}"
+            lastError = "${operation.label} timed out for ${deviceName(address)}"
             logger.warn("Bluetooth", lastError.orEmpty())
+            eventLog?.warn(
+                Sub.BLUETOOTH, Ev.BT_OPERATION,
+                "operation" to operation.name,
+                "device" to maskedAddress(address),
+                "result" to "timeout"
+            )
             clearPending()
             // If the UI already left, clearPending has queued the deferred stop;
             // do not open a fresh proxy just to close it on the next main-loop turn.
@@ -119,16 +145,16 @@ class BluetoothController(
             stopWhenIdle = false
             start()
             logger.info("Bluetooth", "UI active: management started")
-        } else if (BluetoothLifecyclePolicy.stopImmediately(pendingOperation != null)) {
+        } else if (pendingOperation == null) {
             stop()
         } else {
             stopWhenIdle = true
-            logger.info("Bluetooth", "UI inactive: stop deferred until '$pendingOperation' finishes")
+            logger.info("Bluetooth", "UI inactive: stop deferred until '${pendingOperation?.label}' finishes")
         }
     }
 
     private fun maybeStopAfterIdle() {
-        if (BluetoothLifecyclePolicy.stopAfterIdle(uiActive, stopWhenIdle, pendingOperation != null)) {
+        if (stopWhenIdle && !uiActive && pendingOperation == null) {
             stopWhenIdle = false
             logger.info("Bluetooth", "stopping after deferred operation finished")
             stop()
@@ -179,7 +205,7 @@ class BluetoothController(
         // wastes power and can glitch the audio, so refuse rather than scan over it.
         if (hasActiveA2dpConnection()) {
             logger.info("Bluetooth", "scan blocked: active A2DP audio present")
-            return OperationResult(false, BluetoothScanPolicy.BLOCKED_MESSAGE)
+            return OperationResult(false, SCAN_BLOCKED_MESSAGE)
         }
         lastError = null
         runCatching { if (local.isDiscovering) local.cancelDiscovery() }
@@ -230,7 +256,7 @@ class BluetoothController(
             publish()
             return OperationResult(false, lastError.orEmpty())
         }
-        setPending(device.address, "Forgetting", CONNECT_TIMEOUT_MS)
+        setPending(device.address, Operation.FORGETTING, CONNECT_TIMEOUT_MS)
         val accepted = invokeHiddenBoolean(device, "removeBond") == true
         if (!accepted) clearPending()
         logger.info("Bluetooth", "forget ${device.displayName()} accepted=$accepted")
@@ -241,7 +267,7 @@ class BluetoothController(
 
     private fun pair(device: BluetoothDevice): OperationResult {
         runCatching { adapter?.cancelDiscovery() }
-        setPending(device.address, "Pairing", PAIR_TIMEOUT_MS)
+        setPending(device.address, Operation.PAIRING, PAIR_TIMEOUT_MS)
         val accepted = runCatching { device.createBond() }.getOrDefault(false)
         if (!accepted) {
             lastError = "Pairing request was rejected"
@@ -270,7 +296,7 @@ class BluetoothController(
                 ?.invoke(proxy, device, 100)
                 ?: error("setPriority method unavailable")
         }.onFailure { logger.warn("Bluetooth", "setPriority failed: ${it.javaClass.simpleName}") }
-        setPending(device.address, "Connection", CONNECT_TIMEOUT_MS)
+        setPending(device.address, Operation.CONNECTION, CONNECT_TIMEOUT_MS)
         val accepted = invokeBoolean(proxy, "connect", device) == true
         if (!accepted) {
             lastError = "A2DP connection request was rejected for ${device.displayName()}"
@@ -288,7 +314,7 @@ class BluetoothController(
             logger.warn("Bluetooth", lastError.orEmpty())
             return OperationResult(false, lastError.orEmpty())
         }
-        setPending(device.address, "Disconnection", CONNECT_TIMEOUT_MS)
+        setPending(device.address, Operation.DISCONNECTION, CONNECT_TIMEOUT_MS)
         val accepted = invokeBoolean(proxy, "disconnect", device) == true
         if (!accepted) {
             lastError = "A2DP disconnect request was rejected for ${device.displayName()}"
@@ -304,12 +330,12 @@ class BluetoothController(
         val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
         logger.info("Bluetooth", "bond ${device.displayName()} state=$state")
         when (state) {
-            BluetoothDevice.BOND_BONDED -> if (pendingAddress == device.address && pendingOperation == "Pairing") {
+            BluetoothDevice.BOND_BONDED -> if (pendingAddress == device.address && pendingOperation == Operation.PAIRING) {
                 clearPending()
                 connectA2dp(device)
             }
             BluetoothDevice.BOND_NONE -> if (pendingAddress == device.address) {
-                if (pendingOperation == "Forgetting") {
+                if (pendingOperation == Operation.FORGETTING) {
                     lastError = null
                     discovered.remove(device.address)
                 } else {
@@ -322,6 +348,7 @@ class BluetoothController(
 
     private fun handleAdapterState() {
         logger.info("Bluetooth", "adapter state=${adapter?.state}")
+        eventLog?.info(Sub.BLUETOOTH, Ev.BT_ADAPTER_STATE, "state" to adapter?.state)
         if (adapter?.state == BluetoothAdapter.STATE_ON) {
             proxyRetryCount = 0
             requestA2dpProxy()
@@ -338,14 +365,22 @@ class BluetoothController(
         discovered[device.address] = device
         val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
         logger.info("Bluetooth", "A2DP ${device.displayName()} state=$state")
+        // Addresses are masked: a field log should be shareable without
+        // identifying the reporter's headset.
+        eventLog?.info(
+            Sub.BLUETOOTH, Ev.BT_A2DP_STATE,
+            "device" to maskedAddress(device.address),
+            "state" to state,
+            "pending" to pendingOperation?.name
+        )
         when (state) {
             BluetoothProfile.STATE_CONNECTED -> {
-                if (pendingAddress == device.address && pendingOperation == "Connection") clearPending()
+                if (pendingAddress == device.address && pendingOperation == Operation.CONNECTION) clearPending()
                 lastError = null
                 cancelDiscoveryForActiveAudio("A2DP connected")
             }
             BluetoothProfile.STATE_DISCONNECTED -> {
-                if (pendingAddress == device.address && pendingOperation == "Disconnection") clearPending()
+                if (pendingAddress == device.address && pendingOperation == Operation.DISCONNECTION) clearPending()
                 playingAddresses.remove(device.address)
             }
         }
@@ -355,6 +390,11 @@ class BluetoothController(
         val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothA2dp.STATE_NOT_PLAYING)
         if (state == BluetoothA2dp.STATE_PLAYING) playingAddresses += device.address else playingAddresses -= device.address
         logger.info("Bluetooth", "A2DP playing ${device.displayName()} state=$state")
+        eventLog?.info(
+            Sub.BLUETOOTH, Ev.BT_PLAYING_STATE,
+            "device" to maskedAddress(device.address),
+            "playing" to (state == BluetoothA2dp.STATE_PLAYING)
+        )
         if (state == BluetoothA2dp.STATE_PLAYING) cancelDiscoveryForActiveAudio("A2DP playing")
     }
 
@@ -371,8 +411,7 @@ class BluetoothController(
         val profileConnected = runCatching {
             adapter?.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothAdapter.STATE_CONNECTED
         }.getOrDefault(false)
-        val anyConnected = proxyConnected || profileConnected
-        return BluetoothScanPolicy.hasActiveA2dp(anyConnected, playingAddresses.isNotEmpty())
+        return proxyConnected || profileConnected || playingAddresses.isNotEmpty()
     }
 
     /**
@@ -382,8 +421,7 @@ class BluetoothController(
      */
     private fun cancelDiscoveryForActiveAudio(reason: String) {
         val local = adapter ?: return
-        val discovering = runCatching { local.isDiscovering }.getOrDefault(false)
-        if (!BluetoothScanPolicy.shouldCancelDiscovery(discovering)) return
+        if (!runCatching { local.isDiscovering }.getOrDefault(false)) return
         val cancelled = runCatching { local.cancelDiscovery() }.getOrDefault(false)
         if (cancelled) logger.info("Bluetooth", "discovery cancelled: $reason")
     }
@@ -501,7 +539,7 @@ class BluetoothController(
             },
             isDiscovering = local.isDiscovering,
             devices = rows,
-            pendingOperation = pendingOperation,
+            pendingOperation = pendingOperation?.label,
             lastError = lastError
         )
     }
@@ -552,10 +590,16 @@ class BluetoothController(
     private fun maskedAddress(address: String): String = "**:**:**:${address.takeLast(8)}"
     private fun deviceName(address: String): String = runCatching { adapter?.getRemoteDevice(address)?.displayName() }.getOrNull() ?: address
 
-    private fun setPending(address: String, operation: String, timeoutMs: Long) {
+    private fun setPending(address: String, operation: Operation, timeoutMs: Long) {
         clearPending()
         pendingAddress = address
         pendingOperation = operation
+        eventLog?.info(
+            Sub.BLUETOOTH, Ev.BT_OPERATION,
+            "operation" to operation.name,
+            "device" to maskedAddress(address),
+            "timeoutMs" to timeoutMs
+        )
         mainHandler.postDelayed(timeoutRunnable, timeoutMs)
     }
 
@@ -588,6 +632,7 @@ class BluetoothController(
     }
 
     companion object {
+        const val SCAN_BLOCKED_MESSAGE = "Disconnect Bluetooth audio before scanning"
         private const val PUBLISH_DEBOUNCE_MS = 250L
         private const val PAIR_TIMEOUT_MS = 45_000L
         private const val CONNECT_TIMEOUT_MS = 20_000L

@@ -18,12 +18,25 @@ import java.util.concurrent.TimeUnit
  *
  * Callers include the playback thread and broadcast receivers on the main thread, so
  * `info`/`warn`/`error` only enqueue: a synchronous open/append/close per line on slow
- * eMMC would add latency to track transitions and jank to the UI. One daemon thread
- * drains the queue in batches. Under overflow the oldest line is dropped — losing a
- * diagnostic line is better than blocking audio. The uncaught-exception handler uses
- * [crash], which writes synchronously because the process is about to die.
+ * eMMC would add latency to track transitions and jank to the UI. The shared
+ * [LogWriter] thread drains the queue in batches. Under overflow the oldest line is
+ * dropped — losing a diagnostic line is better than blocking audio. The
+ * uncaught-exception handler uses [crash], which writes synchronously because the
+ * process is about to die.
+ *
+ * ## Verbosity
+ * [info] is gated on [setVerbose], which follows the same user preference as
+ * [EventLog]. Without the gate this logger wrote several lines to internal flash
+ * on every track change, route change and discovered Bluetooth device even with
+ * diagnostics switched off — an unbounded flash and battery cost the user had no
+ * way to decline. [warn], [error] and [crash] are never gated: they describe
+ * faults, and a fault that goes unrecorded because logging was quiet is the one
+ * case where the log has failed at its job.
  */
-class DiagnosticLogger(context: Context) {
+class DiagnosticLogger(
+    context: Context,
+    private val writer: LogWriter = LogWriter("y2-diagnostics")
+) : LogWriter.Sink {
     private val appContext = context.applicationContext
     private val directory = File(appContext.filesDir, "diagnostics").apply { mkdirs() }
     private val activeFile = File(directory, "y2player.log")
@@ -37,14 +50,26 @@ class DiagnosticLogger(context: Context) {
 
     private val queue = ArrayBlockingQueue<Entry>(QUEUE_CAPACITY)
     @Volatile private var writerDisabled = false
+    @Volatile private var verbose = true
     private var consecutiveWriteFailures = 0
-    @Suppress("unused")
-    private val worker = Thread(::drainLoop, "y2-diagnostics").apply {
-        isDaemon = true
-        start()
+
+    init {
+        writer.register(this)
     }
 
-    fun info(category: String, message: String) = enqueue("I", category, message)
+    /**
+     * Follows the user's verbose-diagnostics preference. Defaults to `true` so
+     * that startup — everything logged before preferences are readable — is
+     * always recorded; [Y2Application] applies the stored value immediately
+     * after the container is built.
+     */
+    fun setVerbose(value: Boolean) { verbose = value }
+
+    fun info(category: String, message: String) {
+        if (!verbose) return
+        enqueue("I", category, message)
+    }
+
     fun warn(category: String, message: String) = enqueue("W", category, message)
     fun error(category: String, message: String, error: Throwable? = null) {
         val detail = error?.let(::boundedStackTrace)
@@ -100,31 +125,37 @@ class DiagnosticLogger(context: Context) {
         val entry = Line(System.currentTimeMillis(), level, category, message)
         // Drop-oldest under overflow; never block the caller.
         while (!queue.offer(entry)) queue.poll()
+        writer.wake()
     }
 
     private fun awaitFlush(timeoutMs: Long) {
         val latch = CountDownLatch(1)
         if (queue.offer(Flush(latch))) {
+            writer.wake()
             runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
         }
     }
 
-    private fun drainLoop() {
+    /**
+     * A warning, an error or a pending flush must not sit in the coalescing
+     * window. Scanning the queue is bounded by [QUEUE_CAPACITY] and only happens
+     * once per wake, on the writer thread.
+     */
+    override fun hasUrgentPending(): Boolean = queue.any {
+        it is Flush || (it is Line && it.level != "I")
+    }
+
+    override fun drainAndWrite() {
         val batch = ArrayList<Entry>(DRAIN_BATCH)
+        // Drain in DRAIN_BATCH-sized passes so one wake clears a full queue
+        // without holding an unbounded list.
         while (true) {
-            try {
-                val first = queue.take()
-                batch.clear()
-                batch.add(first)
-                queue.drainTo(batch, DRAIN_BATCH - 1)
-                val lines = batch.filterIsInstance<Line>()
-                if (lines.isNotEmpty()) writeLines(lines)
-                batch.forEach { if (it is Flush) it.latch.countDown() }
-            } catch (_: InterruptedException) {
-                return
-            } catch (_: Throwable) {
-                // Logging must never become a secondary application crash.
-            }
+            batch.clear()
+            queue.drainTo(batch, DRAIN_BATCH)
+            if (batch.isEmpty()) return
+            val lines = batch.filterIsInstance<Line>()
+            if (lines.isNotEmpty()) writeLines(lines)
+            batch.forEach { if (it is Flush) it.latch.countDown() }
         }
     }
 

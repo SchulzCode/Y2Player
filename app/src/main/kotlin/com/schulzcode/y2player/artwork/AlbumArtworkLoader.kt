@@ -9,7 +9,6 @@ import android.util.LruCache
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
     private val executor = ThreadPoolExecutor(
@@ -22,7 +21,6 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
         ThreadPoolExecutor.DiscardOldestPolicy()
     )
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val closed = AtomicBoolean(false)
     private val cache = object : LruCache<String, Bitmap>(cacheBytes.coerceAtLeast(MIN_CACHE_BYTES)) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
@@ -32,28 +30,24 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
      * view and the RemoteControlClient both request the same 256 px decode per track,
      * so sharing halves the retriever/decode work at every track change. Cache keys
      * include the target size so differently sized requests can never collide.
+     *
+     * There is no shutdown: the loader lives for the process, and its executor
+     * is a daemon. The previous `closed` flag was checked four times per load
+     * but could never become true, because nothing ever called the method that
+     * set it.
      */
     fun load(path: String, targetSize: Int, callback: (String, Bitmap?) -> Unit) {
-        if (closed.get()) return
         val safeTargetSize = targetSize.coerceIn(MIN_TARGET_SIZE, MAX_TARGET_SIZE)
         val key = "$path#$safeTargetSize"
         cache.get(key)?.let { bitmap -> callback(path, bitmap); return }
         executor.execute {
-            if (closed.get()) return@execute
             val bitmap = read(path, safeTargetSize)
-            if (!closed.get() && bitmap != null) cache.put(key, bitmap)
-            if (!closed.get()) mainHandler.post { if (!closed.get()) callback(path, bitmap) }
+            if (bitmap != null) cache.put(key, bitmap)
+            mainHandler.post { callback(path, bitmap) }
         }
     }
 
     fun trimMemory() { cache.evictAll() }
-
-    fun shutdown() {
-        if (!closed.compareAndSet(false, true)) return
-        cache.evictAll()
-        executor.shutdownNow()
-        mainHandler.removeCallbacksAndMessages(null)
-    }
 
     private fun read(path: String, targetSize: Int): Bitmap? {
         val retriever = MediaMetadataRetriever()

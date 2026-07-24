@@ -103,7 +103,12 @@ class Y2Application : Application() {
             }
         }
 
-        container.eventLog.setEnabled(container.preferences.snapshot().verboseDiagnostics)
+        // Both logs follow the one user preference. Applied as early as possible:
+        // until this runs the human-readable log stays verbose so that a failure
+        // during container construction is still recorded.
+        val verbose = container.preferences.snapshot().verboseDiagnostics
+        container.eventLog.setEnabled(verbose)
+        container.logger.setVerbose(verbose)
         container.eventLog.info(
             Sub.APP, Ev.APP_START,
             "safeMode" to safeMode,
@@ -180,13 +185,20 @@ class Y2Application : Application() {
         )
     }
 
+    /**
+     * Not called on a real device — the platform kills the process instead — so
+     * this exists for emulator and instrumentation runs only. It must therefore
+     * not *create* anything: [AppContainer.bluetoothControllerOrNull] stops the
+     * controller if the Bluetooth screen ever built one and does nothing if it
+     * did not.
+     */
     override fun onTerminate() {
         container.storageMonitor.removeListener(storageCoordinator)
         container.storageMonitor.removeContentListener(contentCoordinator)
         container.storageMonitor.stop()
         container.usbStateMonitor.removeListener(usbCoordinator)
         container.usbStateMonitor.stop()
-        container.bluetoothController.stop()
+        container.bluetoothControllerOrNull()?.stop()
         super.onTerminate()
     }
 

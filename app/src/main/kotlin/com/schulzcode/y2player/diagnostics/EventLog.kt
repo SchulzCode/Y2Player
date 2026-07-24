@@ -21,10 +21,12 @@ import java.util.concurrent.atomic.AtomicLong
  *   keeps it legal to call from the playback thread and from input handling.
  * - **Bounded with visible loss.** Overflow drops the oldest entry and counts it;
  *   the next serialized event carries a `dropped` count field so a gap is never silent.
- * - **Idle costs nothing.** The writer blocks on `take()`; no timer, no polling,
- *   no wakeups when the device is doing nothing.
- * - **Batched.** After the first event the writer drains for up to
- *   [BATCH_WINDOW_MS] or [BATCH_MAX] events, so a burst becomes one write.
+ *   This queue is private to this log — see [LogWriter] for why the shared writer
+ *   thread deliberately does not share a queue.
+ * - **Idle costs nothing.** The shared [LogWriter] thread blocks with no timeout;
+ *   no timer, no polling, no wakeups when the device is doing nothing.
+ * - **Batched.** The writer holds a wake for up to [LogWriter.BATCH_WINDOW_MS]
+ *   and then drains in [BATCH_MAX] passes, so a burst becomes one write.
  *   Warnings and errors bypass the window and flush immediately.
  * - **Survives restart and reboot** by construction (plain files), and survives a
  *   crash because the uncaught handler calls [crashFlush].
@@ -49,8 +51,9 @@ class EventLog(
     private val mirrorProvider: () -> File? = { null },
     private val appVersion: String,
     private val buildId: String = "unknown",
-    private val sessionId: String = generateSessionId()
-) {
+    private val sessionId: String = generateSessionId(),
+    private val writer: LogWriter = LogWriter("y2-eventlog")
+) : LogWriter.Sink {
     /** Supplies the compact state snapshot attached to every event. */
     fun interface StateProvider { fun snapshot(): Map<String, Any?> }
 
@@ -97,11 +100,8 @@ class EventLog(
     /** Guarded by [logRateLimited]'s @Synchronized; consulted on caller threads. */
     private val rateLimiter = HashMap<String, Long>()
 
-    @Suppress("unused")
-    private val worker = Thread(::drainLoop, "y2-eventlog").apply {
-        isDaemon = true
-        priority = Thread.MIN_PRIORITY
-        start()
+    init {
+        writer.register(this)
     }
 
     fun setStateProvider(provider: StateProvider) { stateProvider = provider }
@@ -137,6 +137,7 @@ class EventLog(
             dropped.incrementAndGet()
             queue.offer(entry)
         }
+        writer.wake()
     }
 
     fun debug(sub: Sub, ev: Ev, vararg data: Pair<String, Any?>) = log(Sev.DEBUG, sub, ev, *data)
@@ -172,6 +173,7 @@ class EventLog(
     fun flush(timeoutMs: Long = 1_000L) {
         val latch = CountDownLatch(1)
         if (queue.offer(Flush(latch))) {
+            writer.wake()
             runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
         }
     }
@@ -208,33 +210,29 @@ class EventLog(
 
     // ------------------------------------------------------------------ writer
 
-    private fun drainLoop() {
-        val batch = ArrayList<Any>(BATCH_MAX)
-        while (true) {
-            try {
-                batch.clear()
-                batch.add(queue.take())
-                val deadline = SystemClock.elapsedRealtime() + BATCH_WINDOW_MS
-                // Collect until the window closes, the batch is full, or an entry
-                // that must not wait (warn/error/flush) appears.
-                while (batch.size < BATCH_MAX && !mustFlushNow(batch)) {
-                    val remaining = deadline - SystemClock.elapsedRealtime()
-                    if (remaining <= 0) break
-                    val next = queue.poll(remaining, TimeUnit.MILLISECONDS) ?: break
-                    batch.add(next)
-                }
-                writeBatch(batch.filterIsInstance<Entry>())
-                batch.forEach { if (it is Flush) it.latch.countDown() }
-            } catch (_: InterruptedException) {
-                return
-            } catch (_: Throwable) {
-                // Diagnostics must never become a second fault.
-            }
-        }
+    /**
+     * A warning, an error or a pending flush must not sit in the writer's
+     * coalescing window. The scan is bounded by [QUEUE_CAPACITY] and runs once
+     * per wake, on the writer thread.
+     */
+    override fun hasUrgentPending(): Boolean = queue.any {
+        it is Flush || (it is Entry && (it.sev == Sev.WARN || it.sev == Sev.ERROR))
     }
 
-    private fun mustFlushNow(batch: List<Any>): Boolean = batch.any {
-        it is Flush || (it is Entry && (it.sev == Sev.WARN || it.sev == Sev.ERROR))
+    /**
+     * Drains in [BATCH_MAX] passes so one wake clears a full queue without ever
+     * materialising an unbounded batch. Mirror state changes log through [log],
+     * which simply lands in the queue and is picked up by the next pass.
+     */
+    override fun drainAndWrite() {
+        val batch = ArrayList<Any>(BATCH_MAX)
+        while (true) {
+            batch.clear()
+            queue.drainTo(batch, BATCH_MAX)
+            if (batch.isEmpty()) return
+            writeBatch(batch.filterIsInstance<Entry>())
+            batch.forEach { if (it is Flush) it.latch.countDown() }
+        }
     }
 
     private fun writeBatch(entries: List<Entry>) {
@@ -413,7 +411,6 @@ class EventLog(
         const val ACTIVE_NAME = "events.ndjson"
         const val QUEUE_CAPACITY = 512
         const val BATCH_MAX = 64
-        const val BATCH_WINDOW_MS = 5_000L
         const val MAX_FILE_BYTES = 512L * 1024L
         const val BACKUP_COUNT = 4
         private const val MAX_IO_FAILURES = 3

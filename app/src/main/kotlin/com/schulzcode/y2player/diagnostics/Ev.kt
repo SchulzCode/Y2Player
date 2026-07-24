@@ -18,6 +18,7 @@ enum class Sub(val code: String) {
     APP("app"),
     ACTIVITY("activity"),
     PLAYBACK("playback"),
+    BLUETOOTH("bluetooth"),
     INPUT("input"),
     USB("usb"),
     SCANNER("scanner"),
@@ -38,6 +39,12 @@ enum class Ev(val code: String) {
     ACTIVITY_PAUSE("activity_pause"),
     ACTIVITY_STOP("activity_stop"),
     ACTIVITY_DESTROY("activity_destroy"),
+
+    // bluetooth
+    BT_ADAPTER_STATE("bt_adapter_state"),
+    BT_A2DP_STATE("bt_a2dp_state"),
+    BT_PLAYING_STATE("bt_playing_state"),
+    BT_OPERATION("bt_operation"),
 
     // playback
     VOLUME_MODE("volume_mode"),

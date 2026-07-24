@@ -14,7 +14,6 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Toast
 import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.bluetooth.BluetoothController
 import com.schulzcode.y2player.core.model.AudioQualityMode
@@ -24,6 +23,7 @@ import com.schulzcode.y2player.core.state.AppEffect
 import com.schulzcode.y2player.core.state.AppStore
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
+import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.DiagnosticsRepository
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
@@ -67,6 +67,7 @@ class MainActivity : Activity() {
     private lateinit var hapticController: HapticController
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var eventLog: EventLog
+    private lateinit var logger: DiagnosticLogger
     private val mainHandler = Handler(Looper.getMainLooper())
     private val backgroundExecutor = ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue(8),
@@ -193,6 +194,7 @@ class MainActivity : Activity() {
         // Assigned first: everything below may log, and an event dropped during
         // onCreate is one lost from exactly the window a startup failure lives in.
         eventLog = container.eventLog
+        logger = container.logger
         store = container.appStore
         libraryRepository = container.libraryRepository
         diagnosticsRepository = container.diagnosticsRepository
@@ -321,6 +323,13 @@ class MainActivity : Activity() {
         hapticController.resume()
     }
 
+    override fun onPause() {
+        // Completes the lifecycle trail. Diagnosing "playback stopped when the
+        // screen went off" needs the pause in the timeline, not just the stop.
+        eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_PAUSE)
+        super.onPause()
+    }
+
     override fun onStop() {
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_STOP)
         uiStarted = false
@@ -333,6 +342,9 @@ class MainActivity : Activity() {
         unbindPlaybackServiceIfNeeded()
         unregisterVisibleStateListeners()
         inputController.resetHeldKeys()
+        // The screen is going away; the next key must re-read the real state
+        // rather than a cached "screen on" from while the UI was visible.
+        HardwareKeyGate.invalidateScreenState()
         // No motor activity while the UI is gone, and none left running into a
         // shutdown or reboot.
         hapticController.suspend()
@@ -472,7 +484,11 @@ class MainActivity : Activity() {
             AppEffect.ToggleVerboseDiagnostics -> {
                 val value = preferences.toggleVerboseDiagnostics()
                 applyPlaybackPreferences(value)
+                // Both logs follow this one switch; without the second call the
+                // human-readable log would keep writing to flash after the user
+                // turned diagnostics off.
                 eventLog.setEnabled(value.verboseDiagnostics)
+                logger.setVerbose(value.verboseDiagnostics)
                 // Always recorded: this is a WARN-level marker so the transition
                 // is visible in the log even when verbose mode is being turned off.
                 eventLog.warn(Sub.DIAG, Ev.ACTION, "verbose" to value.verboseDiagnostics)
@@ -577,15 +593,6 @@ class MainActivity : Activity() {
     }
 
     /**
-     * One volume step. Exactly one layer responds: either Android's music stream
-     * (with the system volume panel as feedback) or the in-app gain. Stacking
-     * both would square the attenuation and make the bottom of the range unusable.
-     *
-     * The SharedPreferences write is a small `apply()` — asynchronous commit, no
-     * blocking I/O on the main thread — and only happens when the level actually
-     * moves, so holding a key at either end writes nothing.
-     */
-    /**
      * Input entry point. Everything reaching here has already survived
      * [HardwareKeyGate], so duplicates and bounces are gone.
      *
@@ -611,6 +618,15 @@ class MainActivity : Activity() {
         if (pulse) hapticController.wheelDetent()
     }
 
+    /**
+     * One volume step. Exactly one layer responds: either Android's music stream
+     * (with the system volume panel as feedback) or the in-app gain. Stacking
+     * both would square the attenuation and make the bottom of the range unusable.
+     *
+     * The SharedPreferences write is a small `apply()` — asynchronous commit, no
+     * blocking I/O on the main thread — and only happens when the level actually
+     * moves, so holding a key at either end writes nothing.
+     */
     private fun adjustVolume(direction: Int) {
         if (store.state.preferences.volumeMode != VolumeMode.PERCEPTUAL) {
             (getSystemService(Context.AUDIO_SERVICE) as AudioManager).adjustStreamVolume(
@@ -693,9 +709,17 @@ class MainActivity : Activity() {
         playbackBinder?.applyPreferences(value)
     }
 
+    /**
+     * Runs [block] against the bound service, or reports that it is not ready.
+     *
+     * Reported through the in-app status line rather than a Toast: this is an
+     * appliance whose UI owns every pixel, and the same message is already shown
+     * that way from [cycleVolumeMode]. A system-styled Toast for one of the two
+     * was the odd one out.
+     */
     private fun requirePlayback(block: (PlaybackService.LocalBinder) -> Unit) {
         val binder = playbackBinder
-        if (binder == null) Toast.makeText(this, "Playback is starting", Toast.LENGTH_SHORT).show() else block(binder)
+        if (binder == null) showMessage("Playback is starting") else block(binder)
     }
 
     private fun showOperation(result: BluetoothController.OperationResult) {
@@ -704,10 +728,11 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Starts Bluetooth management only while the user is on the Bluetooth screen
-     * and the Activity is visible, and never in Safe Mode. Called on every state
-     * change and on start/stop; the tracked flag keeps it to real transitions so
-     * repeated states are cheap no-ops.
+     * Starts the playback service and binds to it.
+     *
+     * Started *and* bound: the start keeps music playing after the Activity
+     * stops, while the binding is what makes this a counted client, so an idle
+     * service can stop itself once the UI goes away.
      */
     private fun bindPlaybackServiceIfNeeded() {
         if (playbackBound) return
@@ -743,6 +768,12 @@ class MainActivity : Activity() {
         stateListenerRegistered = false
     }
 
+    /**
+     * Starts Bluetooth management only while the user is on the Bluetooth screen
+     * and the Activity is visible, and never in Safe Mode. Called on every state
+     * change and on start/stop; the tracked flag keeps it to real transitions so
+     * repeated states are cheap no-ops.
+     */
     private fun evaluateBluetoothUi() {
         val wantActive = uiStarted &&
             !safeModeManager.isSafeMode() &&

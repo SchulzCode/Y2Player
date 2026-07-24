@@ -40,12 +40,6 @@ object VolumeCurve {
         return Math.pow(10.0, rangeDb * (1.0 - x) / 20.0).toFloat()
     }
 
-    /** Cube-law mapping for comparison tests and hardware evaluation; not used for playback. */
-    fun cubeGain(position: Float): Float {
-        val x = position.coerceIn(0f, 1f)
-        return x * x * x
-    }
-
     /**
      * Linear amplitude for a discrete level in `0..`[STEPS].
      *

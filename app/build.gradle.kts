@@ -49,6 +49,14 @@ android {
         applicationId = "com.schulzcode.y2player"
         minSdk = 19
         targetSdk = 19
+        // 1.0 is the first released version. Documents describing a 1.3-1.9
+        // lineage referred to pre-history development builds that were never
+        // released under those numbers and are not part of this repository.
+        //
+        // Increment on every release that could reach a device as a package
+        // upgrade: Android refuses to install a lower versionCode over a higher
+        // one, and the firmware image path (system/priv-app) does not remove
+        // that constraint for anyone who sideloads.
         versionCode = 1
         versionName = "1.0"
 

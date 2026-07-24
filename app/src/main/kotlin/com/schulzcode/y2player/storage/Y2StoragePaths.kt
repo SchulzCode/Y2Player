@@ -12,11 +12,35 @@ object Y2StoragePaths {
         "sdcard" to listOf("/storage/sdcard1", "/mnt/sdcard2", "/mnt/extSdCard", "/storage/extSdCard")
     )
 
+    /**
+     * The two volume roots, re-probed at most once per [ROOT_CACHE_MS].
+     *
+     * Selecting a root stats every candidate path, and this property is read on
+     * paths that repeat: the device snapshot builds two volumes from it, and the
+     * event log re-resolves its card mirror on every write batch. Caching for
+     * the same short window already used for `/proc/mounts` keeps a mount
+     * transition visible within half a second while removing the repeated
+     * syscalls between them.
+     */
     val roots: List<StorageRoot>
-        get() = listOf(selectRoot("internal"), selectRoot("sdcard"))
+        get() {
+            val now = SystemClock.uptimeMillis()
+            val cached = cachedRoots
+            if (cached != null && now - rootsReadAt <= ROOT_CACHE_MS) return cached
+            return synchronized(this) {
+                val current = cachedRoots
+                if (current != null && now - rootsReadAt <= ROOT_CACHE_MS) current
+                else listOf(selectRoot("internal"), selectRoot("sdcard")).also {
+                    cachedRoots = it
+                    rootsReadAt = now
+                }
+            }
+        }
 
     @Volatile private var mountsReadAt = Long.MIN_VALUE
     @Volatile private var mountedPaths: Set<String> = emptySet()
+    @Volatile private var rootsReadAt = Long.MIN_VALUE
+    @Volatile private var cachedRoots: List<StorageRoot>? = null
 
     fun availableRoots(): List<StorageRoot> = roots.filter(::isAvailable)
 
@@ -71,4 +95,5 @@ object Y2StoragePaths {
     }
 
     private const val MOUNT_CACHE_MS = 500L
+    private const val ROOT_CACHE_MS = 500L
 }

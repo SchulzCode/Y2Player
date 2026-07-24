@@ -10,7 +10,6 @@ class PlaybackSafetyPolicyTest {
         policy.onExplicitPlaybackRequest(PrivateRouteSnapshot(wired = true))
 
         assertTrue(policy.onRoutesChanged(PrivateRouteSnapshot(), becomingNoisy = false, speakerFallbackAllowed = false))
-        assertTrue(policy.isRouteLossLatched())
         assertFalse(policy.canAutomaticallyStart())
     }
 
@@ -26,7 +25,7 @@ class PlaybackSafetyPolicyTest {
         policy.onExplicitPlaybackRequest(PrivateRouteSnapshot(bluetooth = true))
 
         assertTrue(policy.onRoutesChanged(PrivateRouteSnapshot(), becomingNoisy = false, speakerFallbackAllowed = true))
-        assertTrue(policy.isRouteLossLatched())
+        assertFalse(policy.canAutomaticallyStart())
     }
 
     @Test fun duplicateBluetoothLossBroadcastIsConsumedOnce() {

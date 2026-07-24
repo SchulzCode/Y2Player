@@ -19,17 +19,65 @@ object HardwareKeyGate {
     private var lastDeviceId = 0
     private var lastRepeatCount = 0
 
-    /** API-19 screen/lock policy shared by Activity and broadcast input paths. */
+    /**
+     * API-19 screen/lock policy shared by Activity and broadcast input paths.
+     *
+     * `isScreenOn` and `inKeyguardRestrictedInputMode` are both binder calls, and
+     * the wheel arrives here as DPAD_UP/DOWN — two key events per detent, dozens
+     * of detents per second during a spin. Asking the system server four times
+     * per detent put IPC directly in the input-latency path on a Cortex-A7, so
+     * the answer is cached for [SCREEN_STATE_CACHE_MS]: far shorter than any
+     * screen-off or unlock transition a user can produce, long enough that a
+     * whole spin costs a handful of calls instead of hundreds. The service
+     * handles are held rather than looked up per call for the same reason.
+     */
     @Suppress("DEPRECATION")
     fun isInputAllowed(context: Context, keyCode: Int, source: Source = Source.ACTIVITY): Boolean {
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        // Cheap, purely static answers first: these never depend on screen state,
+        // so the common wheel and transport cases can skip the cache entirely.
+        if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source)) return true
+        val state = screenState(context)
         return isInputAllowed(
             keyCode = keyCode,
-            screenOn = powerManager?.isScreenOn == true,
-            keyguardLocked = keyguardManager?.inKeyguardRestrictedInputMode() != false,
+            screenOn = state.screenOn,
+            keyguardLocked = state.keyguardLocked,
             source = source
         )
+    }
+
+    private class ScreenState(val screenOn: Boolean, val keyguardLocked: Boolean)
+
+    @Volatile private var cachedScreenState: ScreenState? = null
+    @Volatile private var screenStateReadAt = Long.MIN_VALUE
+    @Volatile private var powerManager: PowerManager? = null
+    @Volatile private var keyguardManager: KeyguardManager? = null
+
+    @Suppress("DEPRECATION")
+    private fun screenState(context: Context): ScreenState {
+        val now = SystemClock.uptimeMillis()
+        val cached = cachedScreenState
+        if (cached != null && now - screenStateReadAt <= SCREEN_STATE_CACHE_MS) return cached
+        val appContext = context.applicationContext
+        val power = powerManager
+            ?: (appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.also { powerManager = it }
+        val keyguard = keyguardManager
+            ?: (appContext.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.also { keyguardManager = it }
+        val state = ScreenState(
+            screenOn = runCatching { power?.isScreenOn == true }.getOrDefault(false),
+            // Absent service means "assume locked": the conservative answer, and
+            // the same one the previous `!= false` comparison produced.
+            keyguardLocked = runCatching { keyguard?.inKeyguardRestrictedInputMode() != false }.getOrDefault(true)
+        )
+        cachedScreenState = state
+        screenStateReadAt = now
+        return state
+    }
+
+    /** Drops the cached screen/lock answer; used by tests and on explicit resets. */
+    @Synchronized
+    fun invalidateScreenState() {
+        cachedScreenState = null
+        screenStateReadAt = Long.MIN_VALUE
     }
 
     /**
@@ -120,8 +168,10 @@ object HardwareKeyGate {
         lastDownTime = Long.MIN_VALUE
         lastDeviceId = 0
         lastRepeatCount = 0
+        invalidateScreenState()
     }
 
     private const val DUPLICATE_WINDOW_MS = 180L
     private const val BOUNCE_WINDOW_MS = 45L
+    private const val SCREEN_STATE_CACHE_MS = 250L
 }

@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.MotionEvent
 import android.view.View
+import android.view.accessibility.AccessibilityManager
 import com.schulzcode.y2player.artwork.AlbumArtworkLoader
 import com.schulzcode.y2player.core.model.AudioCodecLabels
 import com.schulzcode.y2player.core.model.AudioQualityMode
@@ -24,6 +25,7 @@ import com.schulzcode.y2player.core.state.BluetoothLinkState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.core.state.ScreenRow
+import com.schulzcode.y2player.core.state.isProgressOnlyUpdate
 import com.schulzcode.y2player.util.TimeFormat
 
 /**
@@ -56,6 +58,9 @@ class Y2PlayerView(
         style = Paint.Style.FILL
     }
     private val iconPainter = Y2IconPainter(paint, density)
+    /** Held rather than looked up per render; `isEnabled` is a local field read. */
+    private val accessibilityManager =
+        context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
     private val reusableRect = Rect()
     private val reusableRectF = RectF()
 
@@ -136,13 +141,12 @@ class Y2PlayerView(
 
     fun render(newState: AppState) {
         val oldState = state
-        val progressOnly = oldState.copy(
-            playback = oldState.playback.copy(
-                positionMs = newState.playback.positionMs,
-                durationMs = newState.playback.durationMs,
-                sleepTimerRemainingMs = newState.playback.sleepTimerRemainingMs
-            )
-        ) == newState
+        // Shared with the reducer so the two layers cannot drift; see
+        // isProgressOnlyUpdate. The outer comparison additionally requires that
+        // nothing *else* in the state changed, which is what makes the cheap
+        // partial repaint below safe.
+        val progressOnly = isProgressOnlyUpdate(oldState.playback, newState.playback) &&
+            oldState.copy(playback = newState.playback) == newState
         val sameScreenPath = oldState.screenStack.size == newState.screenStack.size &&
             oldState.screenStack.indices.all { oldState.screenStack[it].screen == newState.screenStack[it].screen }
         val selectionOnly = sameScreenPath && oldState.copy(screenStack = newState.screenStack) == newState
@@ -151,7 +155,7 @@ class Y2PlayerView(
         if (selectionOnly) {
             ensureSelectionVisible()
             updateFooterPosition()
-            contentDescription = buildContentDescription(newState)
+            updateContentDescription(newState)
             invalidate(0, headerHeight.toInt(), width, height)
             return
         }
@@ -181,7 +185,7 @@ class Y2PlayerView(
         updatePresentationCache()
         invalidateRowCache()
         ensureSelectionVisible()
-        contentDescription = buildContentDescription(newState)
+        updateContentDescription(newState)
         invalidate()
     }
 
@@ -1587,6 +1591,25 @@ class Y2PlayerView(
         }
         val end = Y2UiLogic.safeTextBoundary(text, measuredEnd)
         return text.substring(0, end) + suffix
+    }
+
+    /**
+     * Publishes the accessibility description, but only when someone is listening.
+     *
+     * This used to be assigned on every render — including the selection-only
+     * path, i.e. once per wheel detent — building a string and firing an
+     * accessibility state change for a description that nothing on this device
+     * reads. Gating on [AccessibilityManager.isEnabled] keeps the behaviour
+     * identical for a real accessibility client while costing one field read
+     * per render when, as here, no service is running.
+     *
+     * Deliberately `setContentDescription` rather than an override of the
+     * getter: overriding the getter hides the value from the accessibility
+     * node, which is the opposite of the point.
+     */
+    private fun updateContentDescription(value: AppState) {
+        if (accessibilityManager?.isEnabled != true) return
+        contentDescription = buildContentDescription(value)
     }
 
     private fun buildContentDescription(value: AppState): String {

@@ -76,14 +76,24 @@ class DiagnosticsRepository(
         val output = logger.exportTo(destination)
 
         // Flush pending events first, then copy the rotated set beside the report.
+        var eventFiles = 0
         eventLog?.let { log ->
             log.flush()
             val stamp = output.nameWithoutExtension.removePrefix("y2-diagnostics-")
             log.logFiles().forEachIndexed { index, source ->
                 runCatching { source.copyTo(File(destination, "y2-events-$stamp-$index.ndjson"), overwrite = true) }
+                    .onSuccess { eventFiles += 1 }
             }
         }
         publish { it.copy(exportedPath = output.absolutePath, lastError = null) }
+        // Recorded after the copy so the exported bundle itself does not contain
+        // the record of its own export, which would always be the last line.
+        eventLog?.info(
+            Sub.DIAG, Ev.DIAGNOSTICS_EXPORT,
+            "destination" to destination.path,
+            "report" to output.name,
+            "eventFiles" to eventFiles
+        )
         output
     }.onFailure { setError(it.message ?: it.javaClass.simpleName) }
 
