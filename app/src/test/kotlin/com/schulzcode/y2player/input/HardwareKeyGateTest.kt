@@ -107,6 +107,74 @@ class HardwareKeyGateTest {
         )
     }
 
+    /**
+     * The Y2's own play button emits KEYCODE_MEDIA_PLAY_PAUSE and arrives on the
+     * vendor broadcast. Enabling headset stem control previously enabled it too,
+     * so the player could be started from a pocket.
+     */
+    @Test fun screenOffLocalPlayButtonIsBlockedOnTheVendorBroadcast() {
+        val transportKeys = intArrayOf(
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_HEADSETHOOK
+        )
+        transportKeys.forEach { keyCode ->
+            assertFalse(
+                "vendor broadcast key $keyCode must not act while the screen is off",
+                HardwareKeyGate.isInputAllowed(
+                    keyCode,
+                    screenOn = false,
+                    keyguardLocked = true,
+                    source = HardwareKeyGate.Source.Y2_BROADCAST
+                )
+            )
+        }
+    }
+
+    /** The same button must still work normally with the UI up. */
+    @Test fun screenOnLocalPlayButtonStillWorks() {
+        assertTrue(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                screenOn = true,
+                keyguardLocked = false,
+                source = HardwareKeyGate.Source.Y2_BROADCAST
+            )
+        )
+    }
+
+    /**
+     * A physical key carries an evdev scan code; an AVRCP command synthesized by
+     * the framework does not. Some builds re-dispatch local media keys through
+     * ACTION_MEDIA_BUTTON, where the source alone cannot tell them apart.
+     */
+    @Test fun screenOffLocalKeyIsBlockedEvenOnTheFrameworkBroadcast() {
+        assertFalse(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                screenOn = false,
+                keyguardLocked = true,
+                source = HardwareKeyGate.Source.MEDIA_BROADCAST,
+                fromLocalHardware = true
+            )
+        )
+    }
+
+    @Test fun screenOffHeadsetStemPressIsStillAllowed() {
+        assertTrue(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                screenOn = false,
+                keyguardLocked = true,
+                source = HardwareKeyGate.Source.MEDIA_BROADCAST,
+                fromLocalHardware = false
+            )
+        )
+    }
+
     @Test fun powerAndVolumeRemainAllowedRegardlessOfDisplayState() {
         val systemKeys = intArrayOf(
             KeyEvent.KEYCODE_POWER,

@@ -19,7 +19,12 @@ class MediaButtonReceiver : BroadcastReceiver() {
         event ?: return
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
         val serviceRequest = MediaButtonPolicy.serviceRequest(event.keyCode, source) ?: return
-        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source)) return
+        // A nonzero scan code is the kernel evdev code of a real key on this
+        // device. An AVRCP command synthesized by the framework carries none, so
+        // this separates the Y2's own play button from a headset stem press even
+        // when the platform routes both through ACTION_MEDIA_BUTTON.
+        val fromLocalHardware = event.scanCode != 0
+        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source, fromLocalHardware)) return
         if (!HardwareKeyGate.accept(event, source)) return
         if (!MediaButtonPressGate.shouldDispatch(
                 keyCode = event.keyCode,
@@ -41,12 +46,16 @@ class MediaButtonReceiver : BroadcastReceiver() {
     private fun logIncomingEvent(context: Context, intentAction: String?, event: KeyEvent?) {
         if (!MediaButtonDiagnosticBudget.take()) return
         val logger = (context.applicationContext as? Y2Application)?.container?.logger ?: return
+        // scanCode and inputSource are what separate a local key from a headset
+        // command; without them a report of "the play button still works with
+        // the screen off" cannot be told apart from a stem press.
         logger.info(
             "MediaButtonInput",
             "intentAction=$intentAction keyCode=${event?.keyCode ?: KeyEvent.KEYCODE_UNKNOWN} " +
                 "eventAction=${event?.action ?: -1} repeat=${event?.repeatCount ?: -1} " +
-                "deviceId=${event?.deviceId ?: -1} downTime=${event?.downTime ?: -1L} " +
-                "eventTime=${event?.eventTime ?: -1L}"
+                "deviceId=${event?.deviceId ?: -1} scanCode=${event?.scanCode ?: -1} " +
+                "inputSource=${event?.source ?: -1} flags=${event?.flags ?: -1} " +
+                "downTime=${event?.downTime ?: -1L} eventTime=${event?.eventTime ?: -1L}"
         )
     }
 

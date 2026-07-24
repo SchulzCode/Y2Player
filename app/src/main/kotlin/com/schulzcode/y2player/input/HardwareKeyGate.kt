@@ -32,16 +32,22 @@ object HardwareKeyGate {
      * handles are held rather than looked up per call for the same reason.
      */
     @Suppress("DEPRECATION")
-    fun isInputAllowed(context: Context, keyCode: Int, source: Source = Source.ACTIVITY): Boolean {
+    fun isInputAllowed(
+        context: Context,
+        keyCode: Int,
+        source: Source = Source.ACTIVITY,
+        fromLocalHardware: Boolean = false
+    ): Boolean {
         // Cheap, purely static answers first: these never depend on screen state,
         // so the common wheel and transport cases can skip the cache entirely.
-        if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source)) return true
+        if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source, fromLocalHardware)) return true
         val state = screenState(context)
         return isInputAllowed(
             keyCode = keyCode,
             screenOn = state.screenOn,
             keyguardLocked = state.keyguardLocked,
-            source = source
+            source = source,
+            fromLocalHardware = fromLocalHardware
         )
     }
 
@@ -88,9 +94,10 @@ object HardwareKeyGate {
         keyCode: Int,
         screenOn: Boolean,
         keyguardLocked: Boolean,
-        source: Source = Source.ACTIVITY
+        source: Source = Source.ACTIVITY,
+        fromLocalHardware: Boolean = false
     ): Boolean = isPowerOrVolume(keyCode) ||
-        isRemoteTransport(keyCode, source) ||
+        isRemoteTransport(keyCode, source, fromLocalHardware) ||
         (screenOn && !keyguardLocked)
 
     private fun isPowerOrVolume(keyCode: Int): Boolean = when (keyCode) {
@@ -101,8 +108,32 @@ object HardwareKeyGate {
         else -> false
     }
 
-    private fun isRemoteTransport(keyCode: Int, source: Source): Boolean {
+    /**
+     * Whether this command came from something other than the device's own keys.
+     *
+     * Only a genuine remote — a Bluetooth headset's transport control — may act
+     * while the screen is off. The player's own play button must not, or it
+     * fires from a pocket.
+     *
+     * Two things arrive as `KEYCODE_MEDIA_PLAY_PAUSE` with the screen off: an
+     * AirPods stem press, and the Y2's own play button. They are separated by
+     * where they arrive from, not by what they are:
+     *
+     * - [Source.Y2_BROADCAST] is `com.innioasis.y2.key`, the vendor broadcast
+     *   carrying this device's physical keys. It is never remote, whatever
+     *   keycode it holds. Treating it as remote is what let the local play
+     *   button work while the screen was off — the other vendor keys were
+     *   unaffected because DPAD_LEFT/RIGHT already fall through to the
+     *   screen-on test below.
+     * - [Source.MEDIA_BROADCAST] is normally a real remote, but the platform
+     *   also re-dispatches local media keys through it on some builds.
+     *   [fromLocalHardware] carries the evdev scan code's presence for that
+     *   case: a synthesized AVRCP event has no scan code, a physical key does.
+     */
+    private fun isRemoteTransport(keyCode: Int, source: Source, fromLocalHardware: Boolean): Boolean {
         if (source == Source.ACTIVITY) return false
+        if (source == Source.Y2_BROADCAST) return false
+        if (fromLocalHardware) return false
         if (source == Source.MEDIA_BROADCAST &&
             (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
         ) return true
