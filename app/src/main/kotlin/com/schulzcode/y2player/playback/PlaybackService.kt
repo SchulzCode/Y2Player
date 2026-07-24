@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
@@ -92,7 +91,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             if (queue.moveItem(index, delta)) {
                 refreshSnapshot()
                 persistQueueState()
-                refreshPreload()
+                armNearEndPreload()
                 publishSnapshot()
             }
         }
@@ -101,7 +100,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             queue.clearUpcoming()
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
 
@@ -117,7 +116,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             queue.addNext(trackId)
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
 
@@ -125,7 +124,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             queue.append(trackId)
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
 
@@ -133,7 +132,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             queue.toggleShuffle()
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
 
@@ -141,7 +140,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             queue.cycleRepeat()
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
 
@@ -199,7 +198,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private lateinit var preferences: AppPreferences
     private lateinit var safeModeManager: SafeModeManager
     private lateinit var logger: DiagnosticLogger
-    private lateinit var mediaButtonComponent: ComponentName
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var routeMonitor: AudioRouteMonitor
 
@@ -218,7 +216,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var currentRetryCount = 0
     private var preloadRetryCount = 0
     private var consecutiveErrors = 0
-    private var lastPersistedPositionBucket = -1L
+    private var lastPeriodicPersistedPositionMs = Long.MIN_VALUE
     private var lastPublishedProgressSecond = -1L
     private var currentPreparationRecorded = false
     private var requestCounter = 0L
@@ -264,13 +262,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         dacController.applyDirectMode(requestedPreferences.audioQualityMode == AudioQualityMode.DIRECT_DAC)
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        mediaButtonComponent = ComponentName(this, MediaButtonReceiver::class.java)
 
         playbackThread = HandlerThread("y2-playback").apply { start() }
         playbackHandler = Handler(playbackThread.looper)
         routeMonitor = AudioRouteMonitor(this) { event -> post { handleRouteEvent(event) } }
         routeMonitor.start()
-        audioManager.registerMediaButtonEventReceiver(mediaButtonComponent)
         storageMonitor.addListener(storageListener)
 
         post {
@@ -300,11 +296,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onBind(intent: Intent?): IBinder {
         boundClients += 1
+        logger.info("Playback", "client bound count=$boundClients")
+        post(::refreshProgressForNewClient)
         return binder
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         boundClients = (boundClients - 1).coerceAtLeast(0)
+        logger.info("Playback", "client unbound count=$boundClients")
         post(::stopSelfIfIdle)
         // Returning true makes Android call onRebind for later clients, keeping
         // boundClients accurate when an activity is recreated.
@@ -313,14 +312,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onRebind(intent: Intent?) {
         boundClients += 1
+        logger.info("Playback", "client rebound count=$boundClients")
+        post(::refreshProgressForNewClient)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_MEDIA_BUTTON) {
-            val event = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+            val keyCode = intent.getIntExtra(EXTRA_MEDIA_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN)
             // The non-exported service trusts the receiver's source-scoped key
-            // mapping; repeating the Activity screen gate would block AirPods.
-            if (event?.action == KeyEvent.ACTION_UP) handleMediaKey(event.keyCode)
+            // mapping and edge normalization; repeating either gate here would
+            // block valid DOWN-only or UP-only API-19 vendor delivery.
+            if (keyCode != KeyEvent.KEYCODE_UNKNOWN) handleMediaKey(keyCode)
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
             START_STICKY
@@ -332,7 +334,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     override fun onDestroy() {
         shuttingDown = true
         if (::routeMonitor.isInitialized) routeMonitor.stop()
-        runCatching { audioManager.unregisterMediaButtonEventReceiver(mediaButtonComponent) }
         if (::storageMonitor.isInitialized) storageMonitor.removeListener(storageListener)
         mainHandler.removeCallbacksAndMessages(null)
 
@@ -379,6 +380,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         post {
             cancelVolumeFade()
             clearPreload()
+            // Allow one later near-end recovery so gapless self-heals if pressure eases.
+            autoPreloadAttemptedForRequest = 0L
             logger.warn("Playback", "low memory: secondary player and transitions released")
         }
     }
@@ -394,6 +397,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             post {
                 cancelVolumeFade()
                 clearPreload()
+                // Allow one later near-end recovery so gapless self-heals if pressure eases.
+                autoPreloadAttemptedForRequest = 0L
                 logger.warn("Playback", "trim memory level=$level: secondary player released")
             }
         }
@@ -459,7 +464,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         pendingPositionMs = 0
         pendingAutoPlay = false
         persistSession()
-        refreshPreload()
+        armNearEndPreload()
         publishSnapshot()
     }
 
@@ -508,7 +513,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             pauseReason = PauseReason.NONE
         )
         persistSession(positionOverride = snapshot.positionMs)
-        refreshPreload()
+        armNearEndPreload()
         scheduleProgress()
         publishSnapshot()
     }
@@ -680,7 +685,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         lastNotificationKey = notificationKey()
         snapshot = buildSnapshot(PlaybackStatus.PLAYING, engine.currentPositionMs(), engine.durationMs(), PauseReason.NONE)
         scheduleProgress()
-        refreshPreload()
+        armNearEndPreload()
         publishSnapshot()
     }
 
@@ -690,7 +695,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // buttons (AirPods stem presses, car controls). One cheap AudioManager
         // call at every engine start returns them to this player exactly when
         // the user demonstrates intent to control it.
-        runCatching { audioManager.registerMediaButtonEventReceiver(mediaButtonComponent) }
+        MediaButtonReceiver.register(this, logger)
         cancelVolumeFade()
         val duration = currentPreferences.pauseResumeFadeMs.toLong()
         if (duration > 0) setOutputVolume(0f)
@@ -720,7 +725,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (snapshot.status == PlaybackStatus.PREPARING) {
             cancelActivePreparation()
         } else if (::engine.isInitialized) {
-            if (engine.isTransitioning) clearPreload()
+            // A paused track holds no second MediaPlayer: release any preloaded next
+            // player (this also handles the mid-crossfade case, which clearPreload
+            // cancels safely). Near-end preload re-arms when playback resumes.
+            clearPreload()
             val fadeDuration = if (useFade) currentPreferences.pauseResumeFadeMs.toLong() else 0L
             if (engine.isPlaying() && fadeDuration > 0) {
                 fadeToVolume(0f, fadeDuration) {
@@ -768,7 +776,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         engine.seekTo(target)
         snapshot = buildSnapshot(snapshot.status, target, duration, snapshot.pauseReason, snapshot.errorMessage)
         persistSession(positionOverride = target)
-        refreshPreload()
+        armNearEndPreload()
         publishSnapshot()
     }
 
@@ -852,7 +860,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         } else {
             refreshSnapshot()
             persistQueueState()
-            refreshPreload()
+            armNearEndPreload()
             publishSnapshot()
         }
     }
@@ -924,25 +932,90 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         scheduleCurrentWatchdog(activeRequestId)
     }
 
-    private fun refreshPreload() {
-        if (!::engine.isInitialized || currentTrack == null || snapshot.status !in PRELOADABLE_STATUSES ||
-            queue.snapshot().repeatMode == RepeatMode.ONE
+    /** The next track the queue would advance to, respecting the sleep-timer mode. */
+    private fun expectedNextTrackId(): Long? = when (sleepTimerMode) {
+        SleepTimerMode.END_TRACK -> null
+        SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.peekNextInCurrentPass()
+        else -> queue.peekNext()
+    }
+
+    /**
+     * Re-evaluates preload eligibility after a discrete change (prepare, transition,
+     * start, seek, queue edit, preference or sleep-timer change). Drops a preload
+     * that no longer matches the current next track and re-opens the per-track
+     * attempt so the near-end check can run again. It never prepares the next player
+     * here — that happens near the end of the track in [maybePreloadNearEnd].
+     */
+    private fun armNearEndPreload() {
+        if (!::engine.isInitialized) return
+        // Re-open a fresh near-end attempt for the current request.
+        autoPreloadAttemptedForRequest = 0L
+        // Drop any held next player whose eligibility has been lost: no current
+        // track, Repeat One, no valid next item, or a sleep-timer boundary. This
+        // never prepares a player — near-end preparation happens in the progress
+        // loop once the current track approaches its end.
+        val expectedNextId = expectedNextTrackId()
+        if (currentTrack == null ||
+            queue.snapshot().repeatMode == RepeatMode.ONE ||
+            expectedNextId == null
         ) {
             clearPreload()
             return
         }
-        val nextId = when (sleepTimerMode) {
-            SleepTimerMode.END_TRACK -> null
-            SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.peekNextInCurrentPass()
-            else -> queue.peekNext()
-        } ?: run { clearPreload(); return }
-        val nextTrack = libraryRepository.findTrack(nextId)?.let(::resolvePlayableTrack) ?: run { clearPreload(); return }
-        if (shouldStopBefore(nextTrack)) {
+        val nextTrack = libraryRepository.findTrack(expectedNextId)?.let(::resolvePlayableTrack)
+        if (nextTrack == null || shouldStopBefore(nextTrack)) {
             clearPreload()
             return
         }
-        if (preloadedTrack?.id == nextTrack.id && preloadedRequestId != null) return
+        // A queue edit may have changed which track comes next; drop a stale preload.
+        if (preloadedTrack != null && preloadedTrack?.id != expectedNextId) clearPreload()
+        // Short tracks begin inside the window. Check immediately instead of
+        // waiting for the first periodic tick, which may be several seconds away
+        // with the display off.
+        maybePreloadNearEnd(snapshot.positionMs, snapshot.durationMs, nextTrack)
+    }
+
+    /**
+     * Prepares the next track once the current one is within the near-end window.
+     * Called every progress tick; the pure [NearEndPreloadPolicy] decides, and the
+     * per-track attempt guard keeps a failed preparation from retrying every tick.
+     */
+    private fun maybePreloadNearEnd(positionMs: Long, durationMs: Long, resolvedNext: Track? = null) {
+        if (!::engine.isInitialized || currentTrack == null) return
+        val crossfadeMs = currentPreferences.crossfadeMs.toLong()
+        val remainingMs = durationMs - positionMs
+        // This cheap time check must precede queue/library/file resolution. A long
+        // track therefore does no next-track work on ordinary progress ticks.
+        if (!NearEndPreloadPolicy.isWithinWindow(remainingMs, crossfadeMs)) return
+        if (snapshot.status != PlaybackStatus.PLAYING || !engine.isPlaying()) return
+        if (queue.snapshot().repeatMode == RepeatMode.ONE) return
+        if (preloadedRequestId != null || engine.isTransitioning) return
+        if (autoPreloadAttemptedForRequest == activeRequestId) return
+        val nextId = expectedNextTrackId() ?: return
+        val nextTrack = resolvedNext?.takeIf { it.id == nextId }
+            ?: libraryRepository.findTrack(nextId)?.let(::resolvePlayableTrack)
+            ?: return
+        val inputs = NearEndPreloadPolicy.Inputs(
+            isPlaying = true,
+            hasCurrentTrack = true,
+            hasNextItem = true,
+            repeatOne = queue.snapshot().repeatMode == RepeatMode.ONE,
+            stopAfterCurrent = shouldStopBefore(nextTrack),
+            alreadyPreparedOrPreparing = preloadedRequestId != null,
+            transitioning = engine.isTransitioning,
+            attemptedForThisRequest = autoPreloadAttemptedForRequest == activeRequestId,
+            remainingMs = remainingMs,
+            crossfadeMs = crossfadeMs
+        )
+        if (!NearEndPreloadPolicy.shouldPreload(inputs)) return
+        autoPreloadAttemptedForRequest = activeRequestId
         preloadRetryCount = 0
+        logger.info(
+            "Playback",
+            "near-end preload request=$activeRequestId remainingMs=${inputs.remainingMs} " +
+                "thresholdMs=${NearEndPreloadPolicy.effectiveThresholdMs(crossfadeMs)} nextTrack=${nextTrack.id} " +
+                "gapless=${currentPreferences.gaplessEnabled && crossfadeMs <= 0} crossfadeMs=$crossfadeMs"
+        )
         preloadTrack(nextTrack)
     }
 
@@ -986,14 +1059,28 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun scheduleProgress() {
         playbackHandler.removeCallbacks(progressRunnable)
-        playbackHandler.postDelayed(progressRunnable, progressInterval())
+        val duration = if (::engine.isInitialized) engine.durationMs() else 0L
+        val remaining = if (duration > 0L && engine.isPlaying()) {
+            (duration - engine.currentPositionMs()).coerceAtLeast(0L)
+        } else null
+        playbackHandler.postDelayed(progressRunnable, progressInterval(remaining))
     }
 
     private fun progressInterval(remainingMs: Long? = null): Long {
         val crossfade = currentPreferences.crossfadeMs.toLong()
-        return if (crossfade > 0 && remainingMs != null &&
-            remainingMs <= crossfade + CROSSFADE_APPROACH_WINDOW_MS
-        ) CROSSFADE_POLL_INTERVAL_MS else PROGRESS_INTERVAL_MS
+        // Approaching a crossfade: always poll fast so the transition isn't missed.
+        if (crossfade > 0 && remainingMs != null && remainingMs <= crossfade + CROSSFADE_APPROACH_WINDOW_MS) {
+            return CROSSFADE_POLL_INTERVAL_MS
+        }
+        // Screen off (no UI bound): poll slowly to save power, but tighten back to
+        // the 1 s cadence as the near-end preload threshold approaches so the
+        // preparation trigger is never missed.
+        if (boundClients == 0) {
+            val threshold = NearEndPreloadPolicy.effectiveThresholdMs(crossfade)
+            val nearPreloadBoundary = remainingMs != null && remainingMs <= threshold + BACKGROUND_PROGRESS_INTERVAL_MS
+            return if (nearPreloadBoundary) PROGRESS_INTERVAL_MS else BACKGROUND_PROGRESS_INTERVAL_MS
+        }
+        return PROGRESS_INTERVAL_MS
     }
 
     private val progressRunnable = object : Runnable {
@@ -1003,17 +1090,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val duration = engine.durationMs()
             if (consecutiveErrors > 0 && position >= STABLE_PLAYBACK_RESET_MS) consecutiveErrors = 0
             val remaining = (duration - position).coerceAtLeast(0)
-            // If memory pressure released the preload (onTrimMemory/onLowMemory), restore it
-            // once near the end of the track so gapless self-heals without pinning a second
-            // player for the whole duration. Guarded to one attempt per active request so a
-            // permanently failing preload cannot retry every tick.
-            if (preloadedRequestId == null && !engine.isTransitioning &&
-                autoPreloadAttemptedForRequest != activeRequestId &&
-                remaining in 1..PRELOAD_RESTORE_WINDOW_MS
-            ) {
-                autoPreloadAttemptedForRequest = activeRequestId
-                refreshPreload()
-            }
+            // Prepare the next track only once we are within the near-end window.
+            // The policy and the per-track attempt guard keep this to a single
+            // preparation, so a failed preload does not retry every tick and a
+            // long track never allocates the second player near its start.
+            maybePreloadNearEnd(position, duration)
             val crossfadeMs = currentPreferences.crossfadeMs.toLong()
             val preloadRequest = preloadedRequestId
             if (crossfadeMs > 0 && !engine.isTransitioning && preloadRequest != null &&
@@ -1025,12 +1106,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val progressSecond = position / 1_000L
             if (progressSecond != lastPublishedProgressSecond) {
                 lastPublishedProgressSecond = progressSecond
-                snapshot = buildSnapshot(PlaybackStatus.PLAYING, position, duration, PauseReason.NONE)
-                publishSnapshot()
+                // Always keep the internal position current (persistence, remote-control
+                // position provider, next bind), but only wake UI listeners when one is
+                // actually bound. Periodic progress never takes the material path, so it
+                // does not rewrite RemoteControlClient state or the notification.
+                updateInternalProgress(position, duration)
+                publishUiProgressIfBound()
             }
-            val bucket = position / POSITION_PERSIST_INTERVAL_MS
-            if (bucket != lastPersistedPositionBucket) {
-                lastPersistedPositionBucket = bucket
+            // Persist less often in the background to spare the eMMC while the
+            // screen is off; foreground keeps the tighter 5 s cadence.
+            val persistInterval = if (boundClients == 0) BACKGROUND_POSITION_PERSIST_INTERVAL_MS else POSITION_PERSIST_INTERVAL_MS
+            val lastPosition = lastPeriodicPersistedPositionMs
+            if (lastPosition == Long.MIN_VALUE || position < lastPosition || position - lastPosition >= persistInterval) {
+                lastPeriodicPersistedPositionMs = position
                 submitPersistence("position persistence") {
                     database.updatePlaybackPosition(if (currentPreferences.resumePosition) position else 0)
                 }
@@ -1235,7 +1323,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             sleepTimerCallback = callback
             playbackHandler.postDelayed(callback, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1))
         }
-        refreshPreload()
+        armNearEndPreload()
         refreshSnapshot()
         publishSnapshot()
     }
@@ -1306,7 +1394,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
         dacController.applyDirectMode(value.audioQualityMode == AudioQualityMode.DIRECT_DAC)
         audioEffectsState = audioEffectsController.apply(effective)
-        if (modeChanged || transitionChanged) refreshPreload()
+        if (modeChanged || transitionChanged) armNearEndPreload()
         refreshSnapshot()
         publishSnapshot()
     }
@@ -1549,6 +1637,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun removeListener(listener: Listener) { listeners -= listener }
 
+    /**
+     * Material update: track/status/route/queue/sleep-timer changes. Pushes the
+     * RemoteControlClient metadata and state, wakes every UI listener, and
+     * refreshes the notification. This is the full path — not for periodic ticks.
+     */
     private fun publishSnapshot() {
         val value = snapshot
         if (::remoteControl.isInitialized) remoteControl.update(value, currentTrack)
@@ -1556,6 +1649,39 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             listeners.forEach { it.onPlaybackChanged(value) }
             updateNotificationIfNeeded(value)
         }
+    }
+
+    /** Keeps the internal snapshot position current without publishing anything. */
+    private fun updateInternalProgress(position: Long, duration: Long) {
+        snapshot = buildSnapshot(PlaybackStatus.PLAYING, position, duration, PauseReason.NONE)
+    }
+
+    /**
+     * Delivers a periodic progress tick to bound UI only. When nothing is bound
+     * (screen off), it does no work: no listener wake, no RemoteControlClient
+     * rewrite (its position comes from the position provider), no notification.
+     */
+    private fun publishUiProgressIfBound() {
+        if (boundClients == 0) return
+        val value = snapshot
+        mainHandler.post { listeners.forEach { it.onPlaybackChanged(value) } }
+    }
+
+    /**
+     * A UI client just bound: pull the live engine position, publish a full
+     * snapshot so the screen is current immediately instead of waiting for the
+     * next background tick, and restore the tighter foreground cadence.
+     */
+    private fun refreshProgressForNewClient() {
+        if (!::engine.isInitialized) return
+        if (snapshot.status == PlaybackStatus.PLAYING && engine.isPlaying()) {
+            val position = engine.currentPositionMs()
+            val duration = engine.durationMs()
+            updateInternalProgress(position, duration)
+            lastPublishedProgressSecond = position / 1_000L
+            scheduleProgress()
+        }
+        publishSnapshot()
     }
 
     private fun updateNotificationIfNeeded(value: PlaybackSnapshot) {
@@ -1586,7 +1712,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun stopSelfIfIdle() {
-        if (boundClients == 0 && snapshot.status !in ACTIVE_STATUSES && !safetyPolicy.hasPendingFocusResume()) stopSelf()
+        if (boundClients == 0 && snapshot.status !in ACTIVE_STATUSES && !safetyPolicy.hasPendingFocusResume()) {
+            logger.info("Playback", "idle with no bound clients: stopping service")
+            stopSelf()
+        }
     }
 
     private fun createNotification(): Notification {
@@ -1603,8 +1732,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     companion object {
         const val ACTION_MEDIA_BUTTON = "com.schulzcode.y2player.action.MEDIA_BUTTON"
+        const val EXTRA_MEDIA_KEY_CODE = "com.schulzcode.y2player.extra.MEDIA_KEY_CODE"
         private const val NOTIFICATION_ID = 19
         private const val PROGRESS_INTERVAL_MS = 1_000L
+        // Screen off with no UI bound: poll every 5 s and persist at most every 10 s.
+        private const val BACKGROUND_PROGRESS_INTERVAL_MS = 5_000L
+        private const val BACKGROUND_POSITION_PERSIST_INTERVAL_MS = 10_000L
         private const val CROSSFADE_POLL_INTERVAL_MS = 250L
         private const val CROSSFADE_APPROACH_WINDOW_MS = 1_000L
         // 5 s bounds the position lost to a battery pull / hard crash to the stated
@@ -1615,7 +1748,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         private const val SHUTDOWN_TIMEOUT_MS = 2_000L
         private const val PREPARE_TIMEOUT_MS = 15_000L
         private const val PRELOAD_TIMEOUT_MS = 15_000L
-        private const val PRELOAD_RESTORE_WINDOW_MS = 30_000L
         private const val MAX_TRACK_RETRIES = 1
         private const val STABLE_PLAYBACK_RESET_MS = 2_000L
         private const val MIN_CROSSFADE_MS = 100L
@@ -1624,7 +1756,5 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         private const val VOLUME_FADE_STEP_MS = 25L
         private const val ROUTE_LOSS_MESSAGE = "Private audio output disconnected - playback paused"
         private val ACTIVE_STATUSES = setOf(PlaybackStatus.PLAYING, PlaybackStatus.PREPARING)
-        /** States in which preparing the next track ahead of time makes sense. */
-        private val PRELOADABLE_STATUSES = setOf(PlaybackStatus.PLAYING, PlaybackStatus.PAUSED)
     }
 }

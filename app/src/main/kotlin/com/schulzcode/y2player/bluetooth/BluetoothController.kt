@@ -45,6 +45,8 @@ class BluetoothController(
     private var proxyGeneration = 0L
     private var proxyRequestPending = false
     private var proxyRetryCount = 0
+    private var uiActive = false
+    private var stopWhenIdle = false
 
     private val proxyReconnectRunnable = Runnable {
         if (started) requestA2dpProxy()
@@ -57,7 +59,9 @@ class BluetoothController(
             lastError = "$operation timed out for ${deviceName(address)}"
             logger.warn("Bluetooth", lastError.orEmpty())
             clearPending()
-            refreshA2dpProxy()
+            // If the UI already left, clearPending has queued the deferred stop;
+            // do not open a fresh proxy just to close it on the next main-loop turn.
+            if (!stopWhenIdle) refreshA2dpProxy()
             publish()
         }
     }
@@ -102,9 +106,39 @@ class BluetoothController(
         publish()
     }
 
+    /**
+     * Ties Bluetooth management to the Bluetooth screen. Activating opens the
+     * receiver and A2DP proxy; deactivating closes them — which never disconnects
+     * the headset, since the system owns the A2DP link. A deactivation requested
+     * while an operation is in flight is deferred so the proxy is never torn down
+     * mid pair/connect/disconnect/forget.
+     */
+    fun setUiActive(active: Boolean) {
+        uiActive = active
+        if (active) {
+            stopWhenIdle = false
+            start()
+            logger.info("Bluetooth", "UI active: management started")
+        } else if (BluetoothLifecyclePolicy.stopImmediately(pendingOperation != null)) {
+            stop()
+        } else {
+            stopWhenIdle = true
+            logger.info("Bluetooth", "UI inactive: stop deferred until '$pendingOperation' finishes")
+        }
+    }
+
+    private fun maybeStopAfterIdle() {
+        if (BluetoothLifecyclePolicy.stopAfterIdle(uiActive, stopWhenIdle, pendingOperation != null)) {
+            stopWhenIdle = false
+            logger.info("Bluetooth", "stopping after deferred operation finished")
+            stop()
+        }
+    }
+
     fun stop() {
         if (!started) return
         started = false
+        stopWhenIdle = false
         mainHandler.removeCallbacks(proxyReconnectRunnable)
         mainHandler.removeCallbacks(publishRunnable)
         proxyRetryCount = 0
@@ -141,6 +175,12 @@ class BluetoothController(
     fun startScan(): OperationResult {
         val local = adapter ?: return OperationResult(false, "Bluetooth hardware is unavailable")
         if (!local.isEnabled) return OperationResult(false, "Turn Bluetooth on first")
+        // Single-radio hardware: inquiry scanning while A2DP is connected or playing
+        // wastes power and can glitch the audio, so refuse rather than scan over it.
+        if (hasActiveA2dpConnection()) {
+            logger.info("Bluetooth", "scan blocked: active A2DP audio present")
+            return OperationResult(false, BluetoothScanPolicy.BLOCKED_MESSAGE)
+        }
         lastError = null
         runCatching { if (local.isDiscovering) local.cancelDiscovery() }
         discovered.entries.removeAll { (_, value) -> value.bondState != BluetoothDevice.BOND_BONDED }
@@ -190,7 +230,9 @@ class BluetoothController(
             publish()
             return OperationResult(false, lastError.orEmpty())
         }
+        setPending(device.address, "Forgetting", CONNECT_TIMEOUT_MS)
         val accepted = invokeHiddenBoolean(device, "removeBond") == true
+        if (!accepted) clearPending()
         logger.info("Bluetooth", "forget ${device.displayName()} accepted=$accepted")
         if (!accepted) lastError = "Could not forget ${device.displayName()}"
         publish()
@@ -267,7 +309,12 @@ class BluetoothController(
                 connectA2dp(device)
             }
             BluetoothDevice.BOND_NONE -> if (pendingAddress == device.address) {
-                lastError = "Pairing failed for ${device.displayName()}"
+                if (pendingOperation == "Forgetting") {
+                    lastError = null
+                    discovered.remove(device.address)
+                } else {
+                    lastError = "Pairing failed for ${device.displayName()}"
+                }
                 clearPending()
             }
         }
@@ -295,6 +342,7 @@ class BluetoothController(
             BluetoothProfile.STATE_CONNECTED -> {
                 if (pendingAddress == device.address && pendingOperation == "Connection") clearPending()
                 lastError = null
+                cancelDiscoveryForActiveAudio("A2DP connected")
             }
             BluetoothProfile.STATE_DISCONNECTED -> {
                 if (pendingAddress == device.address && pendingOperation == "Disconnection") clearPending()
@@ -307,6 +355,37 @@ class BluetoothController(
         val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothA2dp.STATE_NOT_PLAYING)
         if (state == BluetoothA2dp.STATE_PLAYING) playingAddresses += device.address else playingAddresses -= device.address
         logger.info("Bluetooth", "A2DP playing ${device.displayName()} state=$state")
+        if (state == BluetoothA2dp.STATE_PLAYING) cancelDiscoveryForActiveAudio("A2DP playing")
+    }
+
+    /**
+     * True when an A2DP device is connected or streaming. The connected-devices
+     * query is a binder call that can fail if the proxy is mid-restart, so it is
+     * guarded and treated as "not connected" on failure rather than crashing.
+     */
+    private fun hasActiveA2dpConnection(): Boolean {
+        val proxyConnected = runCatching { a2dp?.connectedDevices?.isNotEmpty() == true }.getOrDefault(false)
+        // The aggregate adapter state remains available while the UI-scoped
+        // profile proxy is still connecting, closing a race that could otherwise
+        // allow inquiry over an already-connected headset.
+        val profileConnected = runCatching {
+            adapter?.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothAdapter.STATE_CONNECTED
+        }.getOrDefault(false)
+        val anyConnected = proxyConnected || profileConnected
+        return BluetoothScanPolicy.hasActiveA2dp(anyConnected, playingAddresses.isNotEmpty())
+    }
+
+    /**
+     * Cancels an in-flight inquiry when audio takes over the radio. Only touches
+     * discovery — never the connection, codec, or transmit power — and does
+     * nothing when no scan is running, so repeat events do not spam cancel calls.
+     */
+    private fun cancelDiscoveryForActiveAudio(reason: String) {
+        val local = adapter ?: return
+        val discovering = runCatching { local.isDiscovering }.getOrDefault(false)
+        if (!BluetoothScanPolicy.shouldCancelDiscovery(discovering)) return
+        val cancelled = runCatching { local.cancelDiscovery() }.getOrDefault(false)
+        if (cancelled) logger.info("Bluetooth", "discovery cancelled: $reason")
     }
 
     private fun requestA2dpProxy() {
@@ -484,6 +563,10 @@ class BluetoothController(
         mainHandler.removeCallbacks(timeoutRunnable)
         pendingAddress = null
         pendingOperation = null
+        // Posted, not called inline: a chained operation (e.g. auto-connect right
+        // after pairing) re-sets a pending op synchronously after this returns, so
+        // by the time the check runs it correctly sees the follow-up in flight.
+        if (stopWhenIdle) mainHandler.post { maybeStopAfterIdle() }
     }
 
     /**

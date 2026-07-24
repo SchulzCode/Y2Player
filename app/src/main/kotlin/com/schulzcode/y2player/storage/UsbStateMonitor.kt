@@ -23,8 +23,8 @@ import java.util.concurrent.Executors
  * `USB_STATE` for connect/configure, `ACTION_POWER_CONNECTED/DISCONNECTED` and
  * `ACTION_BATTERY_CHANGED` for charging. Polling sysfs on a timer would keep the
  * CPU out of idle on a battery-powered player to learn nothing new. The sysfs
- * nodes are read once per broadcast, on a worker thread, and only to refine what
- * the broadcast already said.
+ * nodes are read once per relevant transition, on a worker thread, and only to
+ * refine what the broadcast already said. Unchanged battery broadcasts are ignored.
  *
  * ## Why the reads are guarded so heavily
  * The nodes under `/sys/class/android_usb/android0` are frequently unreadable to an
@@ -54,21 +54,30 @@ class UsbStateMonitor(
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
+            // A plain battery broadcast (voltage/temperature/percentage) fires every
+            // few seconds and never changes the USB picture. The policy refreshes on
+            // connect/configure and on a genuine charging flip only, so those noisy
+            // broadcasts no longer schedule a worker or read sysfs.
+            val decision = when (intent?.action) {
                 ACTION_USB_STATE -> {
                     broadcastConnected = intent.getBooleanExtra(EXTRA_CONNECTED, false)
                     broadcastConfigured = intent.getBooleanExtra(EXTRA_CONFIGURED, false)
+                    UsbRefreshPolicy.onUsbState(charging)
                 }
-                Intent.ACTION_POWER_CONNECTED -> charging = true
-                Intent.ACTION_POWER_DISCONNECTED -> charging = false
+                Intent.ACTION_POWER_CONNECTED ->
+                    UsbRefreshPolicy.onChargingSignal(charging, reportedCharging = true)
+                Intent.ACTION_POWER_DISCONNECTED ->
+                    UsbRefreshPolicy.onChargingSignal(charging, reportedCharging = false)
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                    charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    val reported = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                         status == BatteryManager.BATTERY_STATUS_FULL
+                    UsbRefreshPolicy.onChargingSignal(charging, reported)
                 }
                 else -> return
             }
-            refresh()
+            charging = decision.charging
+            if (decision.refresh) refresh()
         }
     }
 
@@ -155,4 +164,15 @@ class UsbStateMonitor(
         const val EXTRA_CONNECTED = "connected"
         const val EXTRA_CONFIGURED = "configured"
     }
+}
+
+/** Pure transition policy kept beside its only Android consumer. */
+internal object UsbRefreshPolicy {
+    data class Decision(val charging: Boolean, val refresh: Boolean)
+
+    fun onUsbState(currentCharging: Boolean): Decision =
+        Decision(charging = currentCharging, refresh = true)
+
+    fun onChargingSignal(currentCharging: Boolean, reportedCharging: Boolean): Decision =
+        Decision(charging = reportedCharging, refresh = reportedCharging != currentCharging)
 }

@@ -58,6 +58,8 @@ class MainActivity : Activity() {
     private lateinit var displayController: DisplayController
     private lateinit var uiSoundEffectsController: UiSoundEffectsController
     private lateinit var bluetoothController: BluetoothController
+    private var bluetoothUiActive = false
+    private var uiStarted = false
     private lateinit var safeModeManager: SafeModeManager
     private lateinit var formatProbeController: FormatProbeController
     private lateinit var playerView: Y2PlayerView
@@ -73,6 +75,8 @@ class MainActivity : Activity() {
     )
 
     private var playbackBinder: PlaybackService.LocalBinder? = null
+    private var playbackBound = false
+    private var stateListenerRegistered = false
     private var startupSafeModeDeadline = 0L
     private var lastTransientMessage: String? = null
     private var lastKeepScreenOn = false
@@ -93,6 +97,7 @@ class MainActivity : Activity() {
             val timeoutMs = Y2UiLogic.statusMessageTimeoutMs(state.transientMessage)
             if (timeoutMs > 0L) mainHandler.postDelayed(clearMessageRunnable, timeoutMs)
         }
+        evaluateBluetoothUi()
     }
 
     private val clearMessageRunnable = Runnable { store.dispatch(AppAction.ShowMessage(null)) }
@@ -161,6 +166,9 @@ class MainActivity : Activity() {
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            // A callback can race with onStop/unbind on old vendor framework
+            // builds. Never attach a listener to a no-longer-visible Activity.
+            if (!playbackBound || !uiStarted) return
             playbackBinder = service as? PlaybackService.LocalBinder
             playbackBinder?.addListener(playbackListener)
             playbackBinder?.applyPreferences(preferences.snapshot())
@@ -245,7 +253,10 @@ class MainActivity : Activity() {
         }
         eventLog.info(Sub.ACTIVITY, Ev.ACTIVITY_CREATE, "safeMode" to startupSafeMode)
 
-        store.addStateListener(stateListener)
+        // The UI-facing state listener is registered per visible lifecycle in
+        // onStart/onStop so a stopped Activity never renders. Effect and action
+        // listeners stay process-long: effects can be produced by background
+        // dispatches (route loss, storage) that must not be dropped while stopped.
         store.addEffectListener(effectListener)
         store.addActionListener(actionLogger)
         libraryRepository.addListener(libraryListener, emitImmediately = false)
@@ -261,9 +272,8 @@ class MainActivity : Activity() {
 
         if (!startupSafeMode) libraryRepository.loadCached()
 
-        val serviceIntent = Intent(this, PlaybackService::class.java)
-        startService(serviceIntent)
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        // The playback service is started and bound in onStart, so a stopped and
+        // unbound Activity stops being a bound client and an idle service can exit.
         mainHandler.postDelayed(markStableRunnable, STARTUP_STABLE_DELAY_MS)
     }
 
@@ -283,6 +293,13 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_START)
+        uiStarted = true
+        // Visible again: render current state, then (re)start and bind the service.
+        registerVisibleStateListeners()
+        bindPlaybackServiceIfNeeded()
+        // Re-arm Bluetooth management if the screen came back while on the
+        // Bluetooth screen; rebuilds the bonded/connected snapshot from scratch.
+        evaluateBluetoothUi()
         backgroundExecutor.execute {
             diagnosticsRepository.refresh()
         }
@@ -306,6 +323,15 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_STOP)
+        uiStarted = false
+        // The Activity is no longer visible: release Bluetooth management (deferred
+        // if an operation is mid-flight). Never disconnects an active headset.
+        evaluateBluetoothUi()
+        // Stop being a bound client and stop rendering. Music keeps playing: the
+        // started foreground service outlives the unbind. An idle (paused) service
+        // sees zero bound clients and can now stop itself.
+        unbindPlaybackServiceIfNeeded()
+        unregisterVisibleStateListeners()
         inputController.resetHeldKeys()
         // No motor activity while the UI is gone, and none left running into a
         // shutdown or reboot.
@@ -336,14 +362,15 @@ class MainActivity : Activity() {
         mainHandler.removeCallbacks(clearMessageRunnable)
         mainHandler.removeCallbacks(markStableRunnable)
         formatProbeController.shutdown()
-        playbackBinder?.removeListener(playbackListener)
-        runCatching { unbindService(serviceConnection) }
+        // Guarded: onStop normally already unbound and unregistered these, so both
+        // are no-ops here. Safe if the Activity is destroyed without a prior onStop.
+        unbindPlaybackServiceIfNeeded()
         libraryRepository.removeListener(libraryListener)
         diagnosticsRepository.removeListener(diagnosticsListener)
         bluetoothController.removeListener(bluetoothListener)
         storageMonitor.removeListener(storageListener)
         eventLog.info(Sub.ACTIVITY, Ev.ACTIVITY_DESTROY, "finishing" to isFinishing)
-        store.removeStateListener(stateListener)
+        unregisterVisibleStateListeners()
         store.removeEffectListener(effectListener)
         store.removeActionListener(actionLogger)
         playerView.release()
@@ -521,6 +548,7 @@ class MainActivity : Activity() {
             AppEffect.EnterSafeMode -> {
                 safeModeManager.forceSafeMode()
                 libraryRepository.cancelScan("safe mode")
+                bluetoothUiActive = false
                 bluetoothController.stop()
                 requirePlayback { it.setSafeMode(true) }
                 store.dispatch(AppAction.SafeModeChanged(true))
@@ -529,7 +557,8 @@ class MainActivity : Activity() {
             AppEffect.ExitSafeMode -> {
                 safeModeManager.exitSafeMode()
                 store.dispatch(AppAction.SafeModeChanged(false))
-                bluetoothController.start()
+                // Bluetooth stays UI-scoped: it re-arms only if the user is on the
+                // Bluetooth screen, which the state change above re-evaluates.
                 requirePlayback { it.setSafeMode(false) }
                 libraryRepository.scan()
                 showMessage("Safe Mode disabled")
@@ -672,6 +701,55 @@ class MainActivity : Activity() {
     private fun showOperation(result: BluetoothController.OperationResult) {
         showMessage(result.message)
         store.dispatch(AppAction.BluetoothChanged(bluetoothController.snapshot()))
+    }
+
+    /**
+     * Starts Bluetooth management only while the user is on the Bluetooth screen
+     * and the Activity is visible, and never in Safe Mode. Called on every state
+     * change and on start/stop; the tracked flag keeps it to real transitions so
+     * repeated states are cheap no-ops.
+     */
+    private fun bindPlaybackServiceIfNeeded() {
+        if (playbackBound) return
+        val serviceIntent = Intent(this, PlaybackService::class.java)
+        startService(serviceIntent)
+        // Set the guard before calling into the framework so even a synchronous
+        // vendor callback observes a live binding request.
+        playbackBound = true
+        val accepted = runCatching {
+            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        }.getOrDefault(false)
+        if (!accepted) playbackBound = false
+    }
+
+    private fun unbindPlaybackServiceIfNeeded() {
+        if (!playbackBound) return
+        playbackBinder?.removeListener(playbackListener)
+        playbackBinder = null
+        runCatching { unbindService(serviceConnection) }
+        playbackBound = false
+    }
+
+    private fun registerVisibleStateListeners() {
+        if (stateListenerRegistered) return
+        // emitImmediately renders the latest store state as soon as we re-register.
+        store.addStateListener(stateListener)
+        stateListenerRegistered = true
+    }
+
+    private fun unregisterVisibleStateListeners() {
+        if (!stateListenerRegistered) return
+        store.removeStateListener(stateListener)
+        stateListenerRegistered = false
+    }
+
+    private fun evaluateBluetoothUi() {
+        val wantActive = uiStarted &&
+            !safeModeManager.isSafeMode() &&
+            store.state.currentScreen == Screen.Bluetooth
+        if (wantActive == bluetoothUiActive) return
+        bluetoothUiActive = wantActive
+        bluetoothController.setUiActive(wantActive)
     }
 
     private fun showMessage(message: String) {

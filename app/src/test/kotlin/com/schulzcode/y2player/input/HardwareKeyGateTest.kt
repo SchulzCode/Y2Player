@@ -31,7 +31,7 @@ class HardwareKeyGateTest {
         assertTrue(accept(400, HardwareKeyGate.Source.Y2_BROADCAST))
     }
 
-    @Test fun wheelMediaAndNavigationKeysRequireAnOnAndUnlockedDisplay() {
+    @Test fun activityWheelMediaAndNavigationKeysRequireAnOnAndUnlockedDisplay() {
         val blockedKeys = intArrayOf(
             KeyEvent.KEYCODE_DPAD_UP,
             KeyEvent.KEYCODE_DPAD_CENTER,
@@ -46,6 +46,65 @@ class HardwareKeyGateTest {
             assertFalse(HardwareKeyGate.isInputAllowed(keyCode, screenOn = true, keyguardLocked = true))
             assertTrue(HardwareKeyGate.isInputAllowed(keyCode, screenOn = true, keyguardLocked = false))
         }
+    }
+
+    @Test fun screenOffRemoteTransportKeysAreAllowed() {
+        val remoteKeys = intArrayOf(
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_HEADSETHOOK
+        )
+        remoteKeys.forEach { keyCode ->
+            assertTrue(
+                HardwareKeyGate.isInputAllowed(
+                    keyCode,
+                    screenOn = false,
+                    keyguardLocked = true,
+                    source = HardwareKeyGate.Source.MEDIA_BROADCAST
+                )
+            )
+        }
+    }
+
+    @Test fun screenOffWheelAndNavigationBroadcastsRemainBlocked() {
+        val physicalKeys = intArrayOf(
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_BACK,
+            KeyEvent.KEYCODE_HOME
+        )
+        physicalKeys.forEach { keyCode ->
+            assertFalse(
+                HardwareKeyGate.isInputAllowed(
+                    keyCode,
+                    screenOn = false,
+                    keyguardLocked = true,
+                    source = HardwareKeyGate.Source.Y2_BROADCAST
+                )
+            )
+        }
+    }
+
+    @Test fun frameworkCenterCanRepresentRemotePlayPauseButActivityCenterCannot() {
+        assertTrue(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_DPAD_CENTER, false, true,
+                HardwareKeyGate.Source.MEDIA_BROADCAST
+            )
+        )
+        assertFalse(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_DPAD_CENTER, false, true,
+                HardwareKeyGate.Source.ACTIVITY
+            )
+        )
     }
 
     @Test fun powerAndVolumeRemainAllowedRegardlessOfDisplayState() {

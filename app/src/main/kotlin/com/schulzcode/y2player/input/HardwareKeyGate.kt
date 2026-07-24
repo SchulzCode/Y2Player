@@ -21,19 +21,29 @@ object HardwareKeyGate {
 
     /** API-19 screen/lock policy shared by Activity and broadcast input paths. */
     @Suppress("DEPRECATION")
-    fun isInputAllowed(context: Context, keyCode: Int): Boolean {
+    fun isInputAllowed(context: Context, keyCode: Int, source: Source = Source.ACTIVITY): Boolean {
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         return isInputAllowed(
             keyCode = keyCode,
             screenOn = powerManager?.isScreenOn == true,
-            keyguardLocked = keyguardManager?.inKeyguardRestrictedInputMode() != false
+            keyguardLocked = keyguardManager?.inKeyguardRestrictedInputMode() != false,
+            source = source
         )
     }
 
-    /** Power and volume remain system-operable even while every other key is blocked. */
-    internal fun isInputAllowed(keyCode: Int, screenOn: Boolean, keyguardLocked: Boolean): Boolean =
-        isPowerOrVolume(keyCode) || (screenOn && !keyguardLocked)
+    /**
+     * Remote transport commands remain usable while locked. Activity keys and
+     * vendor wheel/navigation broadcasts still require an awake, unlocked UI.
+     */
+    internal fun isInputAllowed(
+        keyCode: Int,
+        screenOn: Boolean,
+        keyguardLocked: Boolean,
+        source: Source = Source.ACTIVITY
+    ): Boolean = isPowerOrVolume(keyCode) ||
+        isRemoteTransport(keyCode, source) ||
+        (screenOn && !keyguardLocked)
 
     private fun isPowerOrVolume(keyCode: Int): Boolean = when (keyCode) {
         KeyEvent.KEYCODE_POWER,
@@ -41,6 +51,25 @@ object HardwareKeyGate {
         KeyEvent.KEYCODE_VOLUME_DOWN,
         KeyEvent.KEYCODE_VOLUME_MUTE -> true
         else -> false
+    }
+
+    private fun isRemoteTransport(keyCode: Int, source: Source): Boolean {
+        if (source == Source.ACTIVITY) return false
+        if (source == Source.MEDIA_BROADCAST &&
+            (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
+        ) return true
+        return when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_MEDIA_STOP,
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.KEYCODE_HEADSETHOOK -> true
+            else -> false
+        }
     }
 
     @Synchronized

@@ -7,6 +7,7 @@ import android.os.SystemClock
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.library.ScanReason
+import com.schulzcode.y2player.playback.MediaButtonReceiver
 import com.schulzcode.y2player.storage.StorageMonitor
 import com.schulzcode.y2player.storage.RemountScanGate
 import com.schulzcode.y2player.storage.StorageTransitionPolicy
@@ -110,6 +111,11 @@ class Y2Application : Application() {
         )
         logEnvironment()
 
+        // Keep only the lightweight API-19 receiver registration process-wide.
+        // The playback service may stop while paused without surrendering remote
+        // ownership; the manifest receiver can then cold-start it on the next key.
+        MediaButtonReceiver.register(this, container.logger)
+
         // Resolve measured hardware facts off the main thread and record them once.
         // Every later diagnostic can then be read against a known device identity
         // instead of trusting ro.product.model, which is known to lie on this family.
@@ -140,7 +146,9 @@ class Y2Application : Application() {
         // Diagnostics only: reports USB state, never changes it.
         container.usbStateMonitor.addListener(usbCoordinator, emitImmediately = false)
         container.usbStateMonitor.start()
-        if (!safeMode) container.bluetoothController.start()
+        // Bluetooth management is scoped to the Bluetooth screen (see MainActivity),
+        // so nothing is started process-wide here. Route safety for playback is
+        // handled independently by AudioRouteMonitor.
     }
 
     /**
