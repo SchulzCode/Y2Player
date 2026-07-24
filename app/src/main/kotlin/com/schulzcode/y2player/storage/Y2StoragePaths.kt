@@ -41,8 +41,37 @@ object Y2StoragePaths {
     @Volatile private var mountedPaths: Set<String> = emptySet()
     @Volatile private var rootsReadAt = Long.MIN_VALUE
     @Volatile private var cachedRoots: List<StorageRoot>? = null
+    private var mountedVolumesReadAt = Long.MIN_VALUE
+    private val mountedVolumes = HashMap<String, Boolean>()
 
     fun availableRoots(): List<StorageRoot> = roots.filter(::isAvailable)
+
+    /**
+     * Whether the volume behind a stored track is mounted *now*.
+     *
+     * Playback asks this instead of trusting `Track.available`, which only
+     * records what the last scan concluded and can outlive reality — most
+     * visibly after a boot where the card mounted later than the startup grace
+     * period.
+     *
+     * Memoised for the same short window as [roots], because the caller that
+     * matters is the skip-to-next-playable loop: with a removed card that walks
+     * the whole queue, and an uncached answer would stat the volume directory
+     * once per item.
+     */
+    @Synchronized
+    fun isVolumeMounted(volumeId: String): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - mountedVolumesReadAt > ROOT_CACHE_MS) {
+            mountedVolumes.clear()
+            mountedVolumesReadAt = now
+        }
+        mountedVolumes[volumeId]?.let { return it }
+        // Reentrant: roots and currentMounts take this same monitor.
+        val mounted = roots.firstOrNull { it.id == volumeId }?.let(::isAvailable) == true
+        mountedVolumes[volumeId] = mounted
+        return mounted
+    }
 
     fun isAvailable(root: StorageRoot): Boolean {
         val directory = root.directory

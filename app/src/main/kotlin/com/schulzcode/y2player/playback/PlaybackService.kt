@@ -678,10 +678,28 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             PlaybackStatus.PREPARING -> pauseInternal(PauseReason.USER)
             PlaybackStatus.PAUSED -> {
                 beginExplicitPlaybackRequest()
-                if (currentTrack == null) currentTrack = queue.currentTrackId()?.let(libraryRepository::findTrack)
-                val track = currentTrack ?: return
+                // Re-read rather than reuse: the held Track is an immutable copy
+                // taken when the session was restored, which on a cold boot is
+                // before the card has finished mounting. Reusing it made a
+                // restored session that failed once fail forever, because every
+                // later press re-tested the same stale object. One indexed
+                // lookup per play press is not a cost worth that.
+                val restored = queue.currentTrackId()?.let(libraryRepository::findTrack)
+                val track = restored ?: currentTrack ?: return
+                currentTrack = track
                 val playable = resolvePlayableTrack(track)
                 if (playable == null) {
+                    logger.warn(
+                        "Playback",
+                        "resume refused track=${track.id} volume=${track.volumeId} path=${track.absolutePath}"
+                    )
+                    eventLog.warn(
+                        Sub.PLAYBACK, Ev.PLAYBACK_SOURCE_LOST,
+                        "track" to track.id,
+                        "volume" to track.volumeId,
+                        "mounted" to Y2StoragePaths.isVolumeMounted(track.volumeId),
+                        "reason" to "resume_unresolved"
+                    )
                     snapshot = snapshot.copy(errorMessage = "Track is unavailable", pauseReason = PauseReason.STORAGE_REMOVED)
                     publishSnapshot()
                     return
@@ -1451,8 +1469,26 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         else -> false
     }
 
+    /**
+     * Resolves a stored track to a file that can actually be opened right now.
+     *
+     * Deliberately does **not** consult `Track.available`. That flag records
+     * what the last scan concluded, not what the filesystem currently holds, and
+     * the two disagree after an ordinary reboot: as the HOME app this process
+     * starts before the card is mounted, so a card that takes longer than
+     * BOOT_STORAGE_GRACE_MS to appear gets its whole volume flagged unavailable.
+     * A restored session captured while that flag was false could then never be
+     * resumed — the check failed before ever touching the file, and the copy of
+     * the track held by the service was never re-read, so it stayed broken even
+     * after the card mounted and the rescan set the flag back.
+     *
+     * The volume check that replaces it is live rather than remembered, so a
+     * genuinely absent card still short-circuits without stat-ing every queue
+     * item, which is what the flag was really protecting.
+     */
     private fun resolvePlayableTrack(track: Track): Track? {
-        if (!track.available || track.absolutePath.isBlank() || track.relativePath.isBlank()) return null
+        if (track.absolutePath.isBlank() || track.relativePath.isBlank()) return null
+        if (!Y2StoragePaths.isVolumeMounted(track.volumeId)) return null
         val path = Y2StoragePaths.resolveReadablePath(track.volumeId, track.relativePath, track.absolutePath) ?: return null
         return if (path == track.absolutePath) track else track.copy(absolutePath = path)
     }
