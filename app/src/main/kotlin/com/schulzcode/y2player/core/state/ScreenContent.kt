@@ -2,7 +2,9 @@ package com.schulzcode.y2player.core.state
 
 import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.core.model.AudioCodecLabels
+import com.schulzcode.y2player.core.model.AudioCodecSupport
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.CodecSupport
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackSortOrder
@@ -22,6 +24,16 @@ sealed interface ScreenRow {
         override val subtitle: String = buildString {
             append(track.displayArtist)
             if (!track.available) append(" · unavailable")
+            // Short here because the row is narrow; the track's own screen spells
+            // it out. Two independent reasons, either of which is enough:
+            // this device has already failed to decode the file, or the codec is
+            // one API 19 is known to lack. A format the firmware happens to
+            // support is never labelled on suspicion alone.
+            if (track.decodeFailed ||
+                AudioCodecSupport.of(track.codec, track.extension) == CodecSupport.UNSUPPORTED
+            ) {
+                append(" · not playable")
+            }
             if (track.favorite) append(" · ★")
         }
     }
@@ -681,6 +693,15 @@ object ScreenContent {
         track.bitDepth?.let { add("$it-bit") }
         if (track.durationMs > 0) add(duration(track.durationMs))
         val probe = state.diagnostics.formatProbeResults.firstOrNull { it.extension.equals(extension, true) }
+        // Order of authority: what this device actually did, then a passing
+        // device test, then the static expectation. Measurement outranks
+        // prediction in both directions.
+        val support = AudioCodecSupport.of(track.codec, track.extension)
+        when {
+            track.decodeFailed -> add("playback failed on this device")
+            support == CodecSupport.UNSUPPORTED && probe?.success != true ->
+                add("format not supported on this device")
+        }
         add(when {
             probe == null -> "discovered · not device-tested"
             probe.success -> "device-tested ✓"

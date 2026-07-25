@@ -22,10 +22,333 @@ class AudioHeaderParser {
             "wv" -> readWavPack(file)
             "dsf" -> readDsf(file)
             "dff" -> readDff(file)
+            "mp3", "mp2" -> readMpegAudio(file)
+            "m4a", "m4r", "mp4" -> readMp4(file)
+            "aac" -> readAdts(file)
+            "ogg", "oga", "opus" -> readOgg(file)
+            "amr" -> readAmr(file)
             else -> null
         }
     } catch (_: Exception) {
         null
+    }
+
+    // ---------------------------------------------------------------- MP4 family
+
+    private data class Atom(val type: String, val dataStart: Long, val end: Long)
+
+    /**
+     * MP4 / M4A. Reads the sample entry's four-character code, which is the only
+     * place the actual codec is written down.
+     *
+     * This is what separates AAC from ALAC in an identical `.m4a`. Without it the
+     * codec fell back to the retriever's container MIME type, which
+     * `AudioCodecLabels` maps to "AAC" — so an ALAC file was reported as AAC and
+     * then failed at prepare, because API 19 has no ALAC decoder (that arrived in
+     * API 31).
+     */
+    private fun readMp4(file: File): Result? = RandomAccessFile(file, "r").use { input ->
+        val length = input.length()
+        if (length < 16) return null
+        val moov = findAtom(input, 0, length, "moov") ?: return null
+        // A file may carry several tracks; only a sound track describes the audio.
+        var cursor = moov.dataStart
+        var guard = 0
+        while (cursor + 8 <= moov.end && guard++ < MAX_ATOMS) {
+            val trak = readAtomHeader(input, cursor, moov.end) ?: break
+            if (trak.type == "trak") {
+                readMp4SoundTrack(input, trak.dataStart, trak.end)?.let { return it }
+            }
+            cursor = trak.end
+        }
+        null
+    }
+
+    private fun readMp4SoundTrack(input: RandomAccessFile, start: Long, limit: Long): Result? {
+        val mdia = findAtom(input, start, limit, "mdia") ?: return null
+        val hdlr = findAtom(input, mdia.dataStart, mdia.end, "hdlr")
+        if (hdlr != null && hdlr.dataStart + 12 <= hdlr.end) {
+            input.seek(hdlr.dataStart + 8)
+            if (input.readAscii(4) != "soun") return null
+        }
+
+        var timescale = 0L
+        var units = 0L
+        findAtom(input, mdia.dataStart, mdia.end, "mdhd")?.let { mdhd ->
+            if (mdhd.dataStart + 20 <= mdhd.end) {
+                input.seek(mdhd.dataStart)
+                val version = input.readUnsignedByte()
+                input.skipBytes(3) // flags
+                if (version == 1 && mdhd.dataStart + 32 <= mdhd.end) {
+                    input.skipBytes(16) // creation + modification
+                    timescale = input.readUInt32BE()
+                    units = input.readUInt64BE()
+                } else {
+                    input.skipBytes(8) // creation + modification
+                    timescale = input.readUInt32BE()
+                    units = input.readUInt32BE()
+                }
+            }
+        }
+
+        val stsd = findPath(input, mdia.dataStart, mdia.end, "minf", "stbl", "stsd") ?: return null
+        // stsd carries version/flags and an entry count before the first entry.
+        val entry = readAtomHeader(input, stsd.dataStart + 8, stsd.end) ?: return null
+        if (entry.dataStart + AUDIO_SAMPLE_ENTRY_BYTES > entry.end) return null
+
+        input.seek(entry.dataStart + 16)
+        var channels = input.readUInt16BE().validChannels()
+        var bitDepth = input.readUInt16BE().validBitDepth()
+        input.skipBytes(4) // pre_defined + reserved
+        // 16.16 fixed point: the integer part cannot express rates above 65535,
+        // which is why the ALAC config below is preferred when present.
+        var sampleRate = (input.readUInt32BE() ushr 16).validSampleRate()
+
+        val codec = when (val type = entry.type.trim().lowercase()) {
+            "mp4a" -> "audio/mp4a-latm"
+            "alac" -> "audio/alac"
+            ".mp3", "mp3" -> "audio/mpeg"
+            "ac-3", "ec-3" -> "audio/ac3"
+            else -> "audio/$type"
+        }
+
+        if (codec == "audio/alac") {
+            readAlacConfig(input, entry.dataStart + AUDIO_SAMPLE_ENTRY_BYTES, entry.end)?.let { config ->
+                config.bitDepth?.let { bitDepth = it }
+                config.channels?.let { channels = it }
+                config.sampleRate?.let { sampleRate = it }
+            }
+        }
+
+        val duration = if (timescale > 0) safeScaledDuration(units, 1_000L, timescale) else null
+        return Result(codec, sampleRate, bitDepth, channels, duration)
+    }
+
+    private data class AlacConfig(val sampleRate: Int?, val bitDepth: Int?, val channels: Int?)
+
+    /** ALACSpecificConfig, which holds the true depth and rate for an ALAC track. */
+    private fun readAlacConfig(input: RandomAccessFile, start: Long, limit: Long): AlacConfig? {
+        val box = findAtom(input, start, limit, "alac") ?: return null
+        if (box.dataStart + 28 > box.end) return null
+        input.seek(box.dataStart + 4) // version + flags
+        input.skipBytes(4) // frameLength
+        input.skipBytes(1) // compatibleVersion
+        val bitDepth = input.readUnsignedByte().validBitDepth()
+        input.skipBytes(3) // pb, mb, kb
+        val channels = input.readUnsignedByte().validChannels()
+        input.skipBytes(2) // maxRun
+        input.skipBytes(8) // maxFrameBytes + avgBitRate
+        val sampleRate = input.readUInt32BE().validSampleRate()
+        return AlacConfig(sampleRate, bitDepth, channels)
+    }
+
+    private fun readAtomHeader(input: RandomAccessFile, position: Long, limit: Long): Atom? {
+        if (position < 0 || position + 8 > limit) return null
+        input.seek(position)
+        var size = input.readUInt32BE()
+        val type = input.readAscii(4)
+        var dataStart = position + 8
+        when {
+            // 1 means the real size is a 64-bit value that follows the header.
+            size == 1L -> {
+                if (dataStart + 8 > limit) return null
+                size = input.readUInt64BE()
+                dataStart += 8
+                if (size < 16) return null
+            }
+            // 0 means "to the end of the enclosing box".
+            size == 0L -> size = limit - position
+            size < 8L -> return null
+        }
+        val end = position + size
+        if (end <= position || end > limit || dataStart > end) return null
+        return Atom(type, dataStart, end)
+    }
+
+    private fun findAtom(input: RandomAccessFile, start: Long, limit: Long, type: String): Atom? {
+        var cursor = start
+        var guard = 0
+        while (cursor + 8 <= limit && guard++ < MAX_ATOMS) {
+            val atom = readAtomHeader(input, cursor, limit) ?: return null
+            if (atom.type == type) return atom
+            cursor = atom.end
+        }
+        return null
+    }
+
+    private fun findPath(input: RandomAccessFile, start: Long, limit: Long, vararg path: String): Atom? {
+        var from = start
+        var to = limit
+        var found: Atom? = null
+        for (type in path) {
+            found = findAtom(input, from, to, type) ?: return null
+            from = found.dataStart
+            to = found.end
+        }
+        return found
+    }
+
+    // ---------------------------------------------------------------- MPEG audio
+
+    /**
+     * MP3 / MP2. Reads the first valid frame header after any ID3v2 tag.
+     *
+     * Sample rate is not otherwise obtainable on this platform: API 19's
+     * `MediaMetadataRetriever` has no sample-rate key (added in API 31), so
+     * without this the most common format in any library displayed no
+     * resolution at all. Bit depth is deliberately absent — the format is lossy
+     * and has none.
+     */
+    private fun readMpegAudio(file: File): Result? = RandomAccessFile(file, "r").use { input ->
+        val length = input.length()
+        var position = skipId3v2(input, length)
+        val scanLimit = minOf(length, position + FRAME_SCAN_BYTES)
+        while (position + 4 <= scanLimit) {
+            input.seek(position)
+            val first = input.readUnsignedByte()
+            if (first != 0xFF) {
+                position += 1
+                continue
+            }
+            val second = input.readUnsignedByte()
+            if (second and 0xE0 != 0xE0) {
+                position += 1
+                continue
+            }
+            val versionBits = (second shr 3) and 0x03
+            val layerBits = (second shr 1) and 0x03
+            if (versionBits == 1 || layerBits == 0) {
+                position += 1
+                continue
+            }
+            val third = input.readUnsignedByte()
+            val bitrateIndex = (third shr 4) and 0x0F
+            val rateIndex = (third shr 2) and 0x03
+            if (bitrateIndex == 0 || bitrateIndex == 15 || rateIndex == 3) {
+                position += 1
+                continue
+            }
+            val fourth = input.readUnsignedByte()
+            val rates = when (versionBits) {
+                3 -> MPEG1_RATES
+                2 -> MPEG2_RATES
+                else -> MPEG25_RATES
+            }
+            val sampleRate = rates.getOrNull(rateIndex)?.takeIf { it > 0 }
+            val channels = if ((fourth shr 6) and 0x03 == 3) 1 else 2
+            // Layer II and Layer III are distinguished so the UI can label them
+            // differently; both are carried in the same container.
+            val codec = if (layerBits == 2) "audio/mp2" else "audio/mpeg"
+            return Result(codec, sampleRate, null, channels, null)
+        }
+        null
+    }
+
+    /** ADTS-framed AAC. */
+    private fun readAdts(file: File): Result? = RandomAccessFile(file, "r").use { input ->
+        val length = input.length()
+        var position = skipId3v2(input, length)
+        val scanLimit = minOf(length, position + FRAME_SCAN_BYTES)
+        while (position + 4 <= scanLimit) {
+            input.seek(position)
+            val first = input.readUnsignedByte()
+            val second = input.readUnsignedByte()
+            // 12-bit sync word, then a layer field that must be zero for ADTS.
+            if (first != 0xFF || (second and 0xF6) != 0xF0) {
+                position += 1
+                continue
+            }
+            val third = input.readUnsignedByte()
+            val fourth = input.readUnsignedByte()
+            val rateIndex = (third shr 2) and 0x0F
+            val sampleRate = ADTS_RATES.getOrNull(rateIndex)?.takeIf { it > 0 }
+            val channelConfig = ((third and 0x01) shl 2) or ((fourth shr 6) and 0x03)
+            val channels = ADTS_CHANNELS.getOrNull(channelConfig)?.takeIf { it > 0 }
+            if (sampleRate == null) {
+                position += 1
+                continue
+            }
+            return Result("audio/aac", sampleRate, null, channels, null)
+        }
+        null
+    }
+
+    /**
+     * Total length of an ID3v2 tag at the start of the file, or 0.
+     *
+     * MP3 and AAC files routinely begin with one, and a tag can contain byte
+     * pairs that look like a frame sync — so the scan must start past it.
+     */
+    private fun skipId3v2(input: RandomAccessFile, length: Long): Long {
+        if (length < 10) return 0
+        input.seek(0)
+        if (input.readAscii(3) != "ID3") return 0
+        input.skipBytes(2) // version
+        val flags = input.readUnsignedByte()
+        // Syncsafe integer: seven bits per byte.
+        var size = 0L
+        repeat(4) { size = (size shl 7) or (input.readUnsignedByte() and 0x7F).toLong() }
+        val footer = if (flags and 0x10 != 0) 10L else 0L
+        val total = 10L + size + footer
+        return if (total in 0..length) total else 0
+    }
+
+    // ---------------------------------------------------------------- Ogg family
+
+    /** Ogg: Vorbis and Opus identification headers live in the first page. */
+    private fun readOgg(file: File): Result? = RandomAccessFile(file, "r").use { input ->
+        val length = input.length()
+        if (length < 32) return null
+        input.seek(0)
+        if (input.readAscii(4) != "OggS") return null
+        input.skipBytes(1) // stream structure version
+        input.skipBytes(1) // header type
+        input.skipBytes(8) // granule position
+        input.skipBytes(4) // serial
+        input.skipBytes(4) // sequence
+        input.skipBytes(4) // checksum
+        val segments = input.readUnsignedByte()
+        if (segments <= 0) return null
+        input.skipBytes(segments) // segment table
+        val packet = input.filePointer
+        if (packet + 16 > length) return null
+
+        input.seek(packet)
+        val magic = input.readAscii(8)
+        return when {
+            magic == "OpusHead" -> {
+                input.skipBytes(1) // version
+                val channels = input.readUnsignedByte().validChannels()
+                input.skipBytes(2) // pre-skip
+                // Opus always decodes at 48 kHz; this records the original rate.
+                val sampleRate = input.readUInt32LE().validSampleRate()
+                Result("audio/opus", sampleRate, null, channels, null)
+            }
+            magic.startsWith("\u0001vorbis") -> {
+                input.seek(packet + 7)
+                input.skipBytes(4) // vorbis version
+                val channels = input.readUnsignedByte().validChannels()
+                val sampleRate = input.readUInt32LE().validSampleRate()
+                Result("audio/vorbis", sampleRate, null, channels, null)
+            }
+            // FLAC-in-Ogg: 0x7F "FLAC", then a native STREAMINFO block.
+            magic.startsWith("\u007FFLAC") -> Result("audio/flac", null, null, null, null)
+            else -> null
+        }
+    }
+
+    // ---------------------------------------------------------------------- AMR
+
+    /** AMR narrow- and wide-band, which have fixed rates and are always mono. */
+    private fun readAmr(file: File): Result? = RandomAccessFile(file, "r").use { input ->
+        if (input.length() < 6) return null
+        input.seek(0)
+        val header = input.readAscii(minOf(9L, input.length()).toInt())
+        return when {
+            header.startsWith("#!AMR-WB\n") -> Result("audio/amr-wb", 16_000, null, 1, null)
+            header.startsWith("#!AMR\n") -> Result("audio/amr", 8_000, null, 1, null)
+            else -> null
+        }
     }
 
     private fun readWave(file: File): Result? = RandomAccessFile(file, "r").use { input ->
@@ -269,6 +592,28 @@ class AudioHeaderParser {
         private const val MAX_CHANNELS = 64
         private const val MAX_BIT_DEPTH = 64
         private const val UINT32_MAX = 0xffff_ffffL
+
+        /** Bounds the atom walk so a malformed file cannot spin. */
+        private const val MAX_ATOMS = 512
+
+        /** SampleEntry (8) + AudioSampleEntry (20) before any child box. */
+        private const val AUDIO_SAMPLE_ENTRY_BYTES = 28L
+
+        /**
+         * How far past any ID3v2 tag to look for a frame sync. A valid stream
+         * starts immediately; this only tolerates a little junk or padding.
+         */
+        private const val FRAME_SCAN_BYTES = 64L * 1024L
+
+        private val MPEG1_RATES = intArrayOf(44_100, 48_000, 32_000)
+        private val MPEG2_RATES = intArrayOf(22_050, 24_000, 16_000)
+        private val MPEG25_RATES = intArrayOf(11_025, 12_000, 8_000)
+        private val ADTS_RATES = intArrayOf(
+            96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000,
+            22_050, 16_000, 12_000, 11_025, 8_000, 7_350
+        )
+        /** Indexed by ADTS channel configuration; 0 means "described elsewhere". */
+        private val ADTS_CHANNELS = intArrayOf(0, 1, 2, 3, 4, 5, 6, 8)
         private val WAVPACK_RATES = intArrayOf(
             6_000, 8_000, 9_600, 11_025, 12_000, 16_000, 22_050, 24_000,
             32_000, 44_100, 48_000, 64_000, 88_200, 96_000, 192_000, 0
