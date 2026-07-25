@@ -57,8 +57,8 @@ android {
         // upgrade: Android refuses to install a lower versionCode over a higher
         // one, and the firmware image path (system/priv-app) does not remove
         // that constraint for anyone who sideloads.
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         buildConfigField("String", "BUILD_ID", "\"$resolvedBuildId\"")
     }

@@ -191,6 +191,7 @@ $RECYCLE.BIN/
 !/.gitignore
 !/.gitattributes
 !/AGENTS.md
+!/CHANGELOG.md
 !/LICENSE
 !/README.md
 !/app/
