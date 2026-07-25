@@ -395,7 +395,12 @@ class Y2PlayerView(
         paint.color = color
         val textWidth = if (cachedBatteryText.isEmpty()) 0f else {
             canvas.drawText(cachedBatteryText, rightEdge, 28f * density, paint)
-            paint.measureText(cachedBatteryText) + 5f * density
+            // A fixed reservation rather than the measured string. The text is
+            // right-aligned so its own position is stable, but measuring it would
+            // drag the glyph and the route icon sideways every time the level
+            // crossed a digit — now that the percent is permanent, that would be a
+            // header that visibly twitches on its own.
+            paint.measureText(BATTERY_TEXT_REFERENCE) + 5f * density
         }
 
         val nubWidth = 2f * density
@@ -1110,9 +1115,10 @@ class Y2PlayerView(
             else -> null
         }
         cachedBatteryPercent = state.device.batteryPercent
-        // The glyph already shows the level; percent text appears only when it is
-        // actionable information (charging or low).
-        cachedBatteryText = state.device.batteryPercent?.takeIf { state.device.charging || it <= 20 }?.let { "$it%" } ?: ""
+        // Always shown when known, by request. Empty only while the level is still
+        // unknown — before the first ACTION_BATTERY_CHANGED arrives — where the
+        // glyph alone is honest and "0%" would not be.
+        cachedBatteryText = state.device.batteryPercent?.let { "$it%" } ?: ""
         updateFooterPosition()
         val track = state.playback.currentTrackId?.let(state.library.byId::get)
         cachedNowFavorite = track?.favorite == true
@@ -1626,6 +1632,9 @@ class Y2PlayerView(
 
     companion object {
         private const val MAX_VISIBLE_ROWS = 12
+
+        /** Widest battery reading, so the header reserves a constant width for it. */
+        private const val BATTERY_TEXT_REFERENCE = "100%"
         const val SHARED_ARTWORK_SIZE_PX = 256
         private val NAVIGATION_KEYS = setOf(
             "songs", "albums", "artists", "playlists", "folders", "settings",
