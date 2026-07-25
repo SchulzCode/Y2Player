@@ -37,6 +37,15 @@ data class Track(
     val extension: String get() = absolutePath.substringAfterLast('.', "").lowercase()
 
     /**
+     * Name on disk.
+     *
+     * Album files are conventionally named with their position — `01. Foreword.flac`
+     * — which makes this the best available recovery of the intended order when the
+     * tags do not carry a track number.
+     */
+    val fileName: String get() = relativePath.substringAfterLast('/')
+
+    /**
      * True when this device has already proven it cannot decode the file.
      *
      * Stronger evidence than [AudioCodecSupport], which only reasons about what

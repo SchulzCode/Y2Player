@@ -629,7 +629,10 @@ object ScreenContent {
         }
         return buildList {
             folders.sortedWith(::compareText).forEach { add(ScreenRow.Folder(it, screen.volumeId, (prefix + it).trim('/'))) }
-            sorted(directTracks, TrackSortOrder.TITLE).forEach { add(ScreenRow.TrackRow(it)) }
+            // A folder is what is on the card, so it is listed the way the card is
+            // laid out: album order for a numbered album folder, which a title sort
+            // scrambled. Play from here therefore follows the album too.
+            albumSorted(directTracks).forEach { add(ScreenRow.TrackRow(it)) }
         }
     }
 
@@ -645,21 +648,40 @@ object ScreenContent {
         TrackSortOrder.ALBUM -> tracks.sortedWith { first, second ->
             compareText(first.displayAlbum, second.displayAlbum).takeUnless { it == 0 }
                 ?: compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
-                ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE)
+                ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE).takeUnless { it == 0 }
+                // Untagged tracks all collapse to MAX_VALUE, so without this an
+                // untagged album is left in whatever order the query returned.
+                ?: NaturalOrder.compare(first.fileName, second.fileName)
         }
         TrackSortOrder.ADDED -> tracks.sortedByDescending { it.addedAt }
         TrackSortOrder.RECENT -> tracks.sortedByDescending { it.modifiedAt }
     }
 
-    private fun albumSorted(tracks: List<Track>): List<Track> = tracks.sortedWith { first, second ->
-        compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
-            ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE).takeUnless { it == 0 }
-            ?: compareText(first.title, second.title)
+    /**
+     * Album order, falling back to filenames when the tags cannot supply it.
+     *
+     * Track numbers are only trusted when *every* track on the album has one. A
+     * partially numbered album sorted by number scatters the untagged tracks to the
+     * end — the reported symptom was an order like 5, 1, 2, 6, 3, 4 — whereas
+     * filenames put the whole album right, because album files are named with their
+     * position. All-or-nothing is also the honest reading of the evidence: numbering
+     * that covers half a folder is not numbering anyone can rely on.
+     */
+    private fun albumSorted(tracks: List<Track>): List<Track> {
+        val numbered = tracks.all { it.trackNumber != null }
+        return tracks.sortedWith { first, second ->
+            compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
+                ?: (if (numbered) compareValues(first.trackNumber, second.trackNumber).takeUnless { it == 0 } else null)
+                ?: NaturalOrder.compare(first.fileName, second.fileName).takeUnless { it == 0 }
+                ?: compareText(first.title, second.title)
+        }
     }
+
     private fun artistSorted(tracks: List<Track>): List<Track> = tracks.sortedWith { first, second ->
         compareText(first.displayAlbum, second.displayAlbum).takeUnless { it == 0 }
             ?: compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
             ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE).takeUnless { it == 0 }
+            ?: NaturalOrder.compare(first.fileName, second.fileName).takeUnless { it == 0 }
             ?: compareText(first.title, second.title)
     }
     private fun compareText(first: String, second: String): Int = String.CASE_INSENSITIVE_ORDER.compare(first, second)
@@ -689,6 +711,10 @@ object ScreenContent {
     private fun formatTrack(state: AppState, track: Track): String = buildList {
         val extension = track.extension.uppercase(Locale.US)
         add(AudioCodecLabels.label(track.codec, track.extension))
+        // Stated either way. Whether a file carries a track number is the one thing
+        // needed to explain an album that lists in an unexpected order, and it was
+        // not visible anywhere before.
+        add(track.trackNumber?.let { "track $it" } ?: "no track number")
         track.sampleRate?.let { add("${it / 1000.0} kHz") }
         track.bitDepth?.let { add("$it-bit") }
         if (track.durationMs > 0) add(duration(track.durationMs))
@@ -822,4 +848,71 @@ object ScreenContent {
 
     val BRIGHTNESS_LEVELS = listOf(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
     val TIMEOUT_LEVELS = listOf(15_000, 30_000, 60_000, 120_000, 300_000, 600_000, Int.MAX_VALUE)
+}
+
+/**
+ * Filename ordering that reads embedded numbers as numbers.
+ *
+ * Lives beside its only caller. A plain string compare puts `10. Numb.flac` before
+ * `2. Faint.flac`, which would make the filename fallback in [ScreenContent] worse
+ * than useless on any album with more than nine tracks.
+ *
+ * Allocation-free and overflow-free by construction: digit runs are compared by
+ * length after leading zeros are dropped, then character by character, so a
+ * filename full of digits cannot overflow an Int the way parsing it would.
+ */
+internal object NaturalOrder {
+    fun compare(first: String, second: String): Int {
+        var i = 0
+        var j = 0
+        while (i < first.length && j < second.length) {
+            val left = first[i]
+            val right = second[j]
+            if (left.isDigit() && right.isDigit()) {
+                val endLeft = digitRunEnd(first, i)
+                val endRight = digitRunEnd(second, j)
+                compareDigitRuns(first, i, endLeft, second, j, endRight).takeIf { it != 0 }?.let { return it }
+                i = endLeft
+                j = endRight
+            } else {
+                val result = left.lowercaseChar().compareTo(right.lowercaseChar())
+                if (result != 0) return result
+                i++
+                j++
+            }
+        }
+        // Whichever still has characters left is the longer name.
+        return (first.length - i) - (second.length - j)
+    }
+
+    private fun digitRunEnd(text: String, from: Int): Int {
+        var index = from
+        while (index < text.length && text[index].isDigit()) index++
+        return index
+    }
+
+    private fun compareDigitRuns(
+        first: String,
+        startFirst: Int,
+        endFirst: Int,
+        second: String,
+        startSecond: Int,
+        endSecond: Int
+    ): Int {
+        var left = startFirst
+        var right = startSecond
+        // Leading zeros carry no value, so "007" and "7" must compare equal.
+        while (left < endFirst - 1 && first[left] == '0') left++
+        while (right < endSecond - 1 && second[right] == '0') right++
+        val lengthLeft = endFirst - left
+        val lengthRight = endSecond - right
+        if (lengthLeft != lengthRight) return lengthLeft - lengthRight
+        while (left < endFirst) {
+            val result = first[left].compareTo(second[right])
+            if (result != 0) return result
+            left++
+            right++
+        }
+        return 0
+    }
 }
