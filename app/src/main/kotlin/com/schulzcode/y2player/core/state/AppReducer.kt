@@ -1,5 +1,6 @@
 package com.schulzcode.y2player.core.state
 
+import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.state.AppEffect.*
 import com.schulzcode.y2player.core.state.ScreenRow.Action
@@ -80,7 +81,13 @@ object AppReducer {
             is Screen.TrackOptions -> confirmTrackOptions(state, screen, row)
             is Screen.AddToPlaylist -> confirmAddToPlaylist(state, screen.trackId, row)
             is Screen.QueueOptions -> confirmQueueOptions(state, row)
-            Screen.Queue -> Reduction(pushState(state, Screen.NowPlaying), listOf(PlayQueueIndex(state.selectedIndex)))
+            // Compared by queue position, not track id: the same track can sit in
+            // the queue twice, and only one of those rows is the one playing.
+            Screen.Queue ->
+                if (state.selectedIndex == state.playback.currentQueueIndex &&
+                    isTrackLoaded(state, state.playback.currentTrackId)
+                ) Reduction(pushState(state, Screen.NowPlaying))
+                else Reduction(pushState(state, Screen.NowPlaying), listOf(PlayQueueIndex(state.selectedIndex)))
             Screen.NowPlayingOptions -> confirmNowPlayingOptions(state, row)
             Screen.Settings -> confirmSettings(state, row)
             Screen.PlaybackSettings -> confirmPlaybackSettings(state, row)
@@ -355,8 +362,28 @@ object AppReducer {
     private fun playSelected(state: AppState): Reduction {
         val selection = ScreenContent.selectedTrackCollection(state) ?: return Reduction(state)
         // Music first: starting playback lands on Now Playing; Back returns to the list.
+        if (isTrackLoaded(state, selection.first.getOrNull(selection.second))) {
+            return Reduction(pushState(state, Screen.NowPlaying))
+        }
         return Reduction(pushState(state, Screen.NowPlaying), listOf(PlayCollection(selection.first, selection.second)))
     }
+
+    /**
+     * Whether this track is the one the engine already has open.
+     *
+     * Pressing the row that is already playing reads as "show me this", not "start
+     * it over": restarting loses the listening position, and rebuilding the queue
+     * around the visible list would also discard the album or queue order being
+     * played. So that press only navigates — position, queue and pause state are
+     * left untouched.
+     *
+     * Gated on the track actually being loaded. When playback is idle or errored
+     * the row is only a leftover of what played last, and pressing it should start
+     * it in the normal way.
+     */
+    private fun isTrackLoaded(state: AppState, trackId: Long?): Boolean =
+        trackId != null && state.playback.currentTrackId == trackId &&
+            (state.playback.status == PlaybackStatus.PLAYING || state.playback.status == PlaybackStatus.PAUSED)
 
     private fun playWholeCollection(state: AppState): Reduction {
         val ids = ScreenContent.playableTrackIds(state)

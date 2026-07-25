@@ -1,6 +1,8 @@
 package com.schulzcode.y2player.core.state
 
 import com.schulzcode.y2player.core.model.LibraryState
+import com.schulzcode.y2player.core.model.PlaybackSnapshot
+import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
@@ -48,6 +50,112 @@ class AppReducerTest {
         val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
         assertEquals(listOf(1L), effect.trackIds)
         assertEquals(0, effect.startIndex)
+    }
+
+    /**
+     * Pressing the row that is already playing should show it, not start it over.
+     * Restarting cost the listening position, and rebuilding the queue from the
+     * visible list discarded the album or queue order being played.
+     */
+    @Test fun confirmingTheAlreadyPlayingTrackOnlyOpensNowPlaying() {
+        val second = track.copy(id = 2, title = "Second")
+        val state = selectTrack(
+            AppState(
+                screenStack = listOf(ScreenEntry(Screen.Songs)),
+                library = LibraryState(tracks = listOf(track, second)),
+                playback = PlaybackSnapshot(
+                    status = PlaybackStatus.PLAYING,
+                    currentTrackId = 2L,
+                    positionMs = 42_000,
+                    // A queue from somewhere else entirely: it must survive the press.
+                    queue = listOf(9L, 2L, 7L),
+                    currentQueueIndex = 1
+                )
+            ),
+            trackId = 2L
+        )
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+        assertTrue("The press must not restart or requeue", result.effects.isEmpty())
+        assertEquals(listOf(9L, 2L, 7L), result.state.playback.queue)
+    }
+
+    @Test fun confirmingTheCurrentTrackWhilePausedDoesNotRestartOrResume() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Songs)),
+            library = LibraryState(tracks = listOf(track)),
+            playback = PlaybackSnapshot(status = PlaybackStatus.PAUSED, currentTrackId = 1L, positionMs = 5_000)
+        )
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    /**
+     * Idle means the row is only a leftover of what played last — after a reboot,
+     * for instance — so the press has to start it in the normal way.
+     */
+    @Test fun confirmingTheLastPlayedTrackWhileIdleStillStartsIt() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Songs)),
+            library = LibraryState(tracks = listOf(track)),
+            playback = PlaybackSnapshot(status = PlaybackStatus.IDLE, currentTrackId = 1L)
+        )
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        assertEquals(listOf(1L), effect.trackIds)
+    }
+
+    @Test fun confirmingADifferentTrackStillPlaysIt() {
+        val second = track.copy(id = 2, title = "Second")
+        val state = selectTrack(
+            AppState(
+                screenStack = listOf(ScreenEntry(Screen.Songs)),
+                library = LibraryState(tracks = listOf(track, second)),
+                playback = PlaybackSnapshot(status = PlaybackStatus.PLAYING, currentTrackId = 1L)
+            ),
+            trackId = 2L
+        )
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        assertEquals(2L, effect.trackIds[effect.startIndex])
+    }
+
+    @Test fun confirmingTheCurrentQueueRowOnlyOpensNowPlaying() {
+        val second = track.copy(id = 2, title = "Second")
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
+            library = LibraryState(tracks = listOf(track, second)),
+            playback = PlaybackSnapshot(
+                status = PlaybackStatus.PLAYING,
+                currentTrackId = 2L,
+                queue = listOf(1L, 2L),
+                currentQueueIndex = 1
+            )
+        )
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    /**
+     * The same track can appear in the queue twice, so the queue screen compares
+     * positions. Pressing the *other* copy has to move playback to it.
+     */
+    @Test fun confirmingADuplicateQueueRowPlaysThatPosition() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
+            library = LibraryState(tracks = listOf(track)),
+            playback = PlaybackSnapshot(
+                status = PlaybackStatus.PLAYING,
+                currentTrackId = 1L,
+                queue = listOf(1L, 1L),
+                currentQueueIndex = 0
+            )
+        )
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayQueueIndex
+        assertEquals(1, effect.index)
     }
 
     @Test fun albumDetailStartsWithTheFirstTrackAndPlaysTheCollection() {
@@ -353,6 +461,15 @@ class AppReducerTest {
         val longState = state.copy(preferences = state.preferences.copy(longSeekStepMs = 60_000))
         assertEquals(AppEffect.SeekBy(-60_000), AppReducer.reduce(longState, AppAction.SeekBackwardLong).effects.single())
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
+    }
+
+    /** Selects a track by id, so a test does not depend on the screen's sort order. */
+    private fun selectTrack(state: AppState, trackId: Long): AppState {
+        val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.TrackRow)?.track?.id == trackId }
+        require(index >= 0) { "Missing track $trackId on ${state.currentScreen}" }
+        return state.copy(
+            screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index)
+        )
     }
 
     private fun selectKey(state: AppState, key: String): AppState {
