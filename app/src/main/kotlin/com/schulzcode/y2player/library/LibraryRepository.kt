@@ -150,6 +150,9 @@ class LibraryRepository(
         scanExecutor.execute {
             var failure: Throwable? = null
             var allVolumesComplete = false
+            // First gap encountered, so the message can name what actually went
+            // wrong instead of a generic "incomplete" the user cannot act on.
+            var coverageGap: CoverageGap? = null
             // Aggregate counters. Deliberately totals, never per-file events: a
             // full card is tens of thousands of files and one event each would
             // evict every other event from the bounded queue.
@@ -178,6 +181,7 @@ class LibraryRepository(
                             discoveredPlaylists += outcome.playlistFiles
                         } else {
                             allVolumesComplete = false
+                            if (coverageGap == null) coverageGap = outcome.coverageGap
                         }
                         database.recordScanEnd(
                             scanId,
@@ -187,7 +191,7 @@ class LibraryRepository(
                                 else -> "INCOMPLETE"
                             },
                             outcome.processedFiles,
-                            if (outcome.recoverableErrors > 0) "${outcome.recoverableErrors} recoverable I/O errors" else null
+                            scanNote(outcome)
                         )
                         totalProcessed += outcome.processedFiles.toLong()
                         totalErrors += outcome.recoverableErrors.toLong()
@@ -201,6 +205,7 @@ class LibraryRepository(
                             "files" to outcome.processedFiles,
                             "errors" to outcome.recoverableErrors,
                             "complete" to outcome.complete,
+                            "gap" to outcome.coverageGap?.name,
                             "cancelled" to outcome.cancelled
                         )
                     } catch (error: Throwable) {
@@ -221,6 +226,7 @@ class LibraryRepository(
             }
             val cancelled = localCancellation.isCancelled()
             val complete = allVolumesComplete
+            val localGap = coverageGap
             val localFailure = failure
             stateExecutor.execute {
                 if (localFailure != null) {
@@ -234,7 +240,12 @@ class LibraryRepository(
                         isScanning = false,
                         lastScanAt = if (complete && !cancelled) System.currentTimeMillis() else current.lastScanAt
                     ).let { state ->
-                        if (complete) state else state.copy(errorMessage = "Storage scan incomplete; existing tracks were preserved")
+                        // Only a genuine coverage gap raises the alert. Cancelling is
+                        // not a fault — nothing was lost and the next scan picks it
+                        // up — so it stays silent rather than leaving behind a
+                        // warning the user has no way to clear.
+                        val gap = if (complete || cancelled) null else coverageGapMessage(localGap)
+                        if (gap == null) state else state.copy(errorMessage = gap)
                     })
                 }
             }
@@ -245,6 +256,7 @@ class LibraryRepository(
                 "reason" to activeReason.code,
                 "ms" to elapsedMs,
                 "complete" to complete,
+                "gap" to localGap?.name,
                 "volumes" to volumesScanned,
                 "files" to totalProcessed,
                 "errors" to totalErrors,
@@ -490,6 +502,31 @@ class LibraryRepository(
             lastScanAt = lastScanAt,
             errorMessage = null
         )
+    }
+
+    /**
+     * The alert text for a scan that could not cover a volume.
+     *
+     * Named per cause: the previous single "Storage scan incomplete" message gave a
+     * user reporting a stuck alert nothing to act on, and gave us nothing to ask
+     * about either.
+     */
+    private fun coverageGapMessage(gap: CoverageGap?): String = when (gap) {
+        CoverageGap.ROOT_UNREADABLE -> "Storage could not be read; existing tracks were kept"
+        CoverageGap.DIRECTORY_UNREADABLE -> "Some folders could not be read; existing tracks were kept"
+        CoverageGap.FILE_LIMIT ->
+            "More than ${LibraryScanner.MAX_AUDIO_FILES} audio files; the rest were skipped"
+        // Reachable only when no volume was mounted to scan at all, since every
+        // other not-complete path now carries a gap or was cancelled.
+        null -> "No storage was available to scan; existing tracks were kept"
+    }
+
+    /** Scan-history note. Recoverable errors are worth recording even on success. */
+    private fun scanNote(outcome: ScanOutcome): String? {
+        val parts = ArrayList<String>(2)
+        outcome.coverageGap?.let { parts += it.name.lowercase() }
+        if (outcome.recoverableErrors > 0) parts += "${outcome.recoverableErrors} skipped files"
+        return parts.joinToString(", ").ifEmpty { null }
     }
 
     private fun publishProgress(volumeId: String, path: String, count: Int) {
