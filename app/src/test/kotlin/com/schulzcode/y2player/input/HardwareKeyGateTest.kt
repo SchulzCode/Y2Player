@@ -138,6 +138,89 @@ class HardwareKeyGateTest {
         }
     }
 
+    /**
+     * The opt-in that reverses the rule above.
+     *
+     * Users asked to keep the wheel usable in a pocket. It has to clear the
+     * keyguard test as well as the screen test: on this device the screen going off
+     * puts the keyguard into restricted input mode, so relaxing only `screenOn`
+     * would have produced a setting that changed nothing.
+     */
+    @Test fun screenOffLocalKeypadTransportIsAllowedWhenOptedIn() {
+        listOf(HardwareKeyGate.Source.Y2_BROADCAST, HardwareKeyGate.Source.MEDIA_BROADCAST).forEach { source ->
+            transportKeys.forEach { keyCode ->
+                assertTrue(
+                    "keypad key $keyCode on $source must act while the screen is off once opted in",
+                    HardwareKeyGate.isInputAllowed(
+                        keyCode,
+                        screenOn = false,
+                        keyguardLocked = true,
+                        source = source,
+                        fromLocalKeypad = true,
+                        localKeysWhileScreenOff = true
+                    )
+                )
+            }
+        }
+    }
+
+    /** The wheel itself, which is the whole point of the setting. */
+    @Test fun screenOffWheelAndNavigationFollowTheSameOptIn() {
+        val wheelAndButtons = intArrayOf(
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_BACK
+        )
+        wheelAndButtons.forEach { keyCode ->
+            assertFalse(
+                "wheel key $keyCode must be inert while the screen is off by default",
+                HardwareKeyGate.isInputAllowed(keyCode, screenOn = false, keyguardLocked = true)
+            )
+            assertTrue(
+                "wheel key $keyCode must act while the screen is off once opted in",
+                HardwareKeyGate.isInputAllowed(
+                    keyCode,
+                    screenOn = false,
+                    keyguardLocked = true,
+                    localKeysWhileScreenOff = true
+                )
+            )
+        }
+    }
+
+    /** Default off, so an untouched install behaves exactly as it does today. */
+    @Test fun theOptInDefaultsToOff() {
+        assertFalse(
+            HardwareKeyGate.isInputAllowed(
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                screenOn = false,
+                keyguardLocked = true,
+                source = HardwareKeyGate.Source.Y2_BROADCAST,
+                fromLocalKeypad = true
+            )
+        )
+    }
+
+    /** Bluetooth remotes were never gated, and the setting must not change that. */
+    @Test fun remoteTransportIsUnaffectedByTheOptIn() {
+        listOf(false, true).forEach { optIn ->
+            assertTrue(
+                "a headset press must act with the screen off, optIn=$optIn",
+                HardwareKeyGate.isInputAllowed(
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                    screenOn = false,
+                    keyguardLocked = true,
+                    source = HardwareKeyGate.Source.MEDIA_BROADCAST,
+                    fromLocalKeypad = false,
+                    localKeysWhileScreenOff = optIn
+                )
+            )
+        }
+    }
+
     /** The same button must still work normally with the UI up. */
     @Test fun screenOnLocalKeypadTransportStillWorks() {
         assertTrue(

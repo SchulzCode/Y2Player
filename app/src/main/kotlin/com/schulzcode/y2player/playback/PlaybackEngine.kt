@@ -34,6 +34,16 @@ interface PlaybackEngine {
     fun pause()
     fun seekTo(positionMs: Long)
     fun setVolume(volume: Float)
+
+    /**
+     * Left/right balance in `-100..100`; see [AudioBalance].
+     *
+     * Separate from [setVolume] because the two compose: volume is the ramping
+     * value that fades and crossfades own, balance is a fixed per-channel scale on
+     * top of it. Folding balance into the volume argument would have meant every
+     * ramp step recomputing it, and a ramp that forgot to would silently recentre.
+     */
+    fun setBalance(balance: Int)
     fun currentPositionMs(): Long
     fun durationMs(): Long
     fun isPlaying(): Boolean
@@ -56,6 +66,7 @@ internal class UnavailablePlaybackEngine(private val reason: String) : PlaybackE
     override fun pause() = Unit
     override fun seekTo(positionMs: Long) = Unit
     override fun setVolume(volume: Float) = Unit
+    override fun setBalance(balance: Int) = Unit
     override fun currentPositionMs(): Long = 0
     override fun durationMs(): Long = 0
     override fun isPlaying(): Boolean = false

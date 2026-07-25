@@ -9,6 +9,7 @@ import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.input.HapticLevel
+import com.schulzcode.y2player.playback.AudioBalance
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
 import java.io.File
@@ -71,6 +72,8 @@ object ScreenContent {
         Screen.SortOrder -> "Sort Order"
         Screen.Bluetooth -> "Bluetooth"
         Screen.Display -> "Display"
+        Screen.Controls -> "Controls"
+        Screen.Balance -> "Balance"
         Screen.Brightness -> "Brightness"
         Screen.ScreenTimeout -> "Screen Timeout"
         Screen.Storage -> "Storage"
@@ -149,6 +152,8 @@ object ScreenContent {
         Screen.SortOrder -> sortOrderRows(state)
         Screen.Bluetooth -> bluetoothRows(state)
         Screen.Display -> displayRows(state)
+        Screen.Controls -> controlsRows(state)
+        Screen.Balance -> balanceRows(state)
         Screen.Brightness -> brightnessRows(state)
         Screen.ScreenTimeout -> timeoutRows(state)
         Screen.Storage -> storageRows(state)
@@ -420,6 +425,7 @@ object ScreenContent {
         }
         return buildList {
             add(ScreenRow.Action("Audio Quality", state.preferences.audioQualityMode.label, "audio_quality"))
+            add(ScreenRow.Action("Balance", AudioBalance.label(state.preferences.balance), "balance"))
             add(ScreenRow.Group(
                 "CS43131 DAC",
                 when {
@@ -500,13 +506,20 @@ object ScreenContent {
 
     private fun displayRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Brightness", "${state.display.brightnessPercent}%", "brightness"))
+        add(ScreenRow.Action("Theme", if (state.preferences.lightTheme) "Light" else "Dark", "theme"))
         add(ScreenRow.Action("Screen Timeout", timeoutLabel(state.display.screenTimeoutMs), "timeout"))
         add(ScreenRow.Action("Keep Display On", if (state.preferences.keepScreenOnWhilePlaying) "While playing" else "Off", "keep_screen_on"))
+    }
+
+    private fun controlsRows(state: AppState): List<ScreenRow> = buildList {
+        // First because it is the only one that changes what the device *does*
+        // rather than how it feels doing it.
         add(
             ScreenRow.Action(
-                "System UI Sounds",
-                if (state.preferences.uiSoundEffectsEnabled) "On" else "Off · recommended",
-                "ui_sounds"
+                "Wheel When Screen Off",
+                if (state.preferences.localKeysWhileScreenOff) "Active · can act in a pocket"
+                else "Off · stem controls only",
+                "screen_off_keys"
             )
         )
         // Omitted entirely when the device has no motor: a setting that provably
@@ -514,7 +527,27 @@ object ScreenContent {
         if (state.device.hapticsAvailable) {
             add(ScreenRow.Action("Wheel Haptics", hapticLabel(state.preferences.hapticLevel), "haptics"))
         }
+        add(
+            ScreenRow.Action(
+                "System UI Sounds",
+                if (state.preferences.uiSoundEffectsEnabled) "On" else "Off · recommended",
+                "ui_sounds"
+            )
+        )
     }
+
+    /**
+     * Both values at a glance, the way the Display row shows brightness and timeout.
+     * Haptics are left out when the device has no motor, so the summary never
+     * advertises something the screen behind it will not offer.
+     */
+    private fun controlsSummary(state: AppState): String = buildList {
+        if (state.device.hapticsAvailable) {
+            add("Haptics ${if (state.preferences.hapticLevel == HapticLevel.OFF) "off" else state.preferences.hapticLevel.label.lowercase(Locale.US)}")
+        }
+        add("Sounds ${if (state.preferences.uiSoundEffectsEnabled) "on" else "off"}")
+        if (state.preferences.localKeysWhileScreenOff) add("screen-off wheel")
+    }.joinToString(" · ")
 
     /**
      * States the pulse duration because that is literally what the level is.
@@ -523,6 +556,22 @@ object ScreenContent {
      */
     private fun hapticLabel(level: HapticLevel): String =
         if (level == HapticLevel.OFF) "Off" else "${level.label} · ${level.durationMs} ms pulse"
+
+    /**
+     * One row per offered balance step.
+     *
+     * Reached from the Sound screen and placed above its effects rows, outside their
+     * availability check: balance is a player gain rather than an AudioEffect, so it
+     * has to stay reachable on firmware with no effect framework — which is exactly
+     * the firmware an accessibility setting must not depend on.
+     */
+    private fun balanceRows(state: AppState): List<ScreenRow> = AudioBalance.LEVELS.map { value ->
+        ScreenRow.Action(
+            AudioBalance.label(value),
+            if (value == state.preferences.balance) "Selected" else null,
+            "balance:$value"
+        )
+    }
 
     private fun brightnessRows(state: AppState): List<ScreenRow> = BRIGHTNESS_LEVELS.map { percent ->
         ScreenRow.Action("$percent%", null, "brightness:$percent")

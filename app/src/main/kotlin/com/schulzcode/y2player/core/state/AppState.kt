@@ -6,6 +6,7 @@ import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 import com.schulzcode.y2player.input.HapticLevel
+import com.schulzcode.y2player.playback.AudioBalance
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
 
@@ -99,6 +100,23 @@ data class PlayerPreferencesState(
     /** Wheel detent feedback. Off by default; see [HapticLevel] for why it is a duration. */
     val hapticLevel: HapticLevel = HapticLevel.OFF,
     val keepScreenOnWhilePlaying: Boolean = false,
+    /**
+     * Renders the interface on paper rather than ink. Off by default: the dark
+     * design is the original and stays the default.
+     *
+     * On a transmissive LCD this is also the readable choice outdoors, because a
+     * light background lets the backlight through instead of blocking it.
+     */
+    val lightTheme: Boolean = false,
+    /**
+     * Lets the click wheel and its buttons act while the screen is off.
+     *
+     * Off by default, which is the safe reading of an appliance that lives in a
+     * pocket: with the screen off only a Bluetooth remote, the volume keys and
+     * power respond. Turning it on trades that protection for being able to skip
+     * a track without waking the display.
+     */
+    val localKeysWhileScreenOff: Boolean = false,
     val pauseOnDisconnect: Boolean = true,
     val resumePosition: Boolean = true,
     val sortOrder: TrackSortOrder = TrackSortOrder.TITLE,
@@ -114,7 +132,15 @@ data class PlayerPreferencesState(
     val equalizerPreset: Int = 0,
     val equalizerBandLevelsMb: List<Int> = emptyList(),
     val bassStrength: Int = 0,
-    val loudnessGainMb: Int = 0
+    val loudnessGainMb: Int = 0,
+    /**
+     * Left/right channel balance in `-100..100`; see [AudioBalance].
+     *
+     * Centred by default. Not part of the audio-effects group even though it shapes
+     * the output: it is a per-channel gain on the player, so unlike the equalizer it
+     * works on firmware with no effect framework and is not bypassed by Direct DAC.
+     */
+    val balance: Int = AudioBalance.CENTRE
 )
 
 /**

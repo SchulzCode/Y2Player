@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import com.schulzcode.y2player.R
 import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.bluetooth.BluetoothController
 import com.schulzcode.y2player.core.model.AudioQualityMode
@@ -184,6 +185,7 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        applyThemeResource()
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LOW_PROFILE
@@ -287,7 +289,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (HardwareKeyGate.isInputAllowed(this, KeyEvent.KEYCODE_HOME)) {
+        if (inputAllowed(KeyEvent.KEYCODE_HOME)) {
             store.dispatch(AppAction.NavigateHome)
         }
     }
@@ -403,7 +405,7 @@ class MainActivity : Activity() {
             }
             return true
         }
-        if (!HardwareKeyGate.isInputAllowed(this, event.keyCode)) return true
+        if (!inputAllowed(event.keyCode)) return true
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN &&
             event.repeatCount >= 3 && SystemClock.uptimeMillis() <= startupSafeModeDeadline
         ) {
@@ -416,7 +418,7 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (HardwareKeyGate.isInputAllowed(this, KeyEvent.KEYCODE_BACK)) store.dispatch(AppAction.Back)
+        if (inputAllowed(KeyEvent.KEYCODE_BACK)) store.dispatch(AppAction.Back)
     }
 
     private fun handleEffect(effect: AppEffect) {
@@ -497,6 +499,10 @@ class MainActivity : Activity() {
                 showMessage(if (value.verboseDiagnostics) "Verbose diagnostics on" else "Verbose diagnostics off")
             }
             AppEffect.ToggleKeepScreenOn -> applyPlaybackPreferences(preferences.toggleKeepScreenOn())
+            AppEffect.ToggleLightTheme -> applyPlaybackPreferences(preferences.toggleLightTheme())
+            is AppEffect.SetBalance -> applyPlaybackPreferences(preferences.setBalance(effect.balance))
+            AppEffect.ToggleLocalKeysWhileScreenOff ->
+                applyPlaybackPreferences(preferences.toggleLocalKeysWhileScreenOff())
             AppEffect.TogglePauseOnDisconnect -> applyPlaybackPreferences(preferences.togglePauseOnDisconnect())
             AppEffect.ToggleResumePosition -> applyPlaybackPreferences(preferences.toggleResumePosition())
             AppEffect.ToggleGapless -> applyPlaybackPreferences(preferences.toggleGapless())
@@ -703,6 +709,49 @@ class MainActivity : Activity() {
                 "System volume · transferred to Android music stream"
             }
         )
+    }
+
+    /**
+     * Picks the window background before the window exists.
+     *
+     * `windowBackground` fills the window from the moment it is shown until the
+     * first `onDraw`, and it is resolved when the window is created — so this has to
+     * run before `super.onCreate`, and it cannot be expressed in the manifest, which
+     * has no way to consult a preference. Without it a light-theme cold start shows
+     * a frame of near-black before the first paint.
+     *
+     * Reads the cached preferences snapshot, which startup has already built, so
+     * this is a memory read rather than disk I/O on the critical path. Defensive
+     * about it anyway: failing to read a cosmetic preference must not stop the
+     * launcher from coming up, since on this device there is nothing else to fall
+     * back to.
+     *
+     * Only the *next* cold start reflects a toggle. That is deliberate — the view
+     * paints its own opaque background over the whole surface, so an in-flight theme
+     * change needs no window involvement, and recreating the activity to update one
+     * invisible attribute would be a visible restart of the home screen.
+     */
+    /**
+     * Whether a press on the device's own keys may act right now.
+     *
+     * Read from the preferences snapshot per press rather than mirrored into a
+     * field: presses are rare next to the cost of acting on a stale answer right
+     * after the user flips the setting, and the snapshot is already in memory.
+     * Guarded on initialisation because a HOME intent can in principle arrive
+     * before onCreate has finished wiring the activity up.
+     */
+    private fun inputAllowed(keyCode: Int): Boolean = HardwareKeyGate.isInputAllowed(
+        context = this,
+        keyCode = keyCode,
+        localKeysWhileScreenOff = this::preferences.isInitialized &&
+            preferences.snapshot().localKeysWhileScreenOff
+    )
+
+    private fun applyThemeResource() {
+        val lightTheme = runCatching {
+            (application as Y2Application).container.preferences.snapshot().lightTheme
+        }.getOrDefault(false)
+        if (lightTheme) setTheme(R.style.AppTheme_Light)
     }
 
     private fun applyPlaybackPreferences(value: com.schulzcode.y2player.core.state.PlayerPreferencesState) {

@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.state.ScreenRow.Action
 import com.schulzcode.y2player.core.state.ScreenRow.Folder
 import com.schulzcode.y2player.core.state.ScreenRow.Group
 import com.schulzcode.y2player.core.state.ScreenRow.TrackRow
+import com.schulzcode.y2player.playback.AudioBalance
 
 object AppReducer {
     fun reduce(state: AppState, action: AppAction): Reduction = when (action) {
@@ -97,6 +98,8 @@ object AppReducer {
             Screen.SortOrder -> confirmSortOrder(state, row)
             Screen.Bluetooth -> confirmBluetooth(state, row)
             Screen.Display -> confirmDisplay(state, row)
+            Screen.Controls -> confirmControls(state, row)
+            Screen.Balance -> confirmBalance(state, row)
             Screen.Brightness -> confirmBrightness(state, row)
             Screen.ScreenTimeout -> confirmTimeout(state, row)
             Screen.Storage -> confirmStorage(state, row)
@@ -200,6 +203,7 @@ object AppReducer {
             "sort" -> push(state, Screen.SortOrder)
             "bluetooth" -> push(state, Screen.Bluetooth)
             "display" -> push(state, Screen.Display)
+            "controls" -> push(state, Screen.Controls)
             "storage" -> push(state, Screen.Storage)
             "system" -> push(state, Screen.System)
             else -> Reduction(state)
@@ -223,7 +227,6 @@ object AppReducer {
             "repeat" -> Reduction(state, listOf(CycleRepeat))
             "pause_disconnect" -> Reduction(state, listOf(TogglePauseOnDisconnect))
             "resume_position" -> Reduction(state, listOf(ToggleResumePosition))
-            "keep_screen_on" -> Reduction(state, listOf(ToggleKeepScreenOn))
             "gapless" -> Reduction(state, listOf(ToggleGapless))
             "crossfade" -> Reduction(state, listOf(CycleCrossfade))
             "pause_fade" -> Reduction(state, listOf(CyclePauseFade))
@@ -243,6 +246,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "audio_quality" -> Reduction(state, listOf(CycleAudioQuality))
+            "balance" -> push(state, Screen.Balance)
             "effects_toggle" -> Reduction(state, listOf(ToggleAudioEffects))
             "eq_preset" -> Reduction(state, listOf(CycleEqualizerPreset))
             "eq_bands" -> push(state, Screen.EqualizerBands)
@@ -285,8 +289,7 @@ object AppReducer {
             "brightness" -> push(state, Screen.Brightness)
             "timeout" -> push(state, Screen.ScreenTimeout)
             "keep_screen_on" -> Reduction(state, listOf(ToggleKeepScreenOn))
-            "ui_sounds" -> Reduction(state, listOf(ToggleUiSoundEffects))
-            "haptics" -> Reduction(state, listOf(CycleHapticLevel))
+            "theme" -> Reduction(state, listOf(ToggleLightTheme))
             else -> Reduction(state)
         }
     }
@@ -302,6 +305,22 @@ object AppReducer {
         (row as? Action)?.key == "artist_all_songs" -> push(state, Screen.ArtistSongs(screen.artist))
         row is Group -> push(state, Screen.AlbumSongs(row.key, screen.artist))
         else -> Reduction(state)
+    }
+
+    private fun confirmBalance(state: AppState, row: ScreenRow): Reduction {
+        val value = (row as? Action)?.key?.substringAfter("balance:", "")?.toIntOrNull()
+            ?: return Reduction(state)
+        return Reduction(pop(state), listOf(SetBalance(AudioBalance.clamp(value))))
+    }
+
+    private fun confirmControls(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return when (key) {
+            "ui_sounds" -> Reduction(state, listOf(ToggleUiSoundEffects))
+            "haptics" -> Reduction(state, listOf(CycleHapticLevel))
+            "screen_off_keys" -> Reduction(state, listOf(ToggleLocalKeysWhileScreenOff))
+            else -> Reduction(state)
+        }
     }
 
     private fun confirmBrightness(state: AppState, row: ScreenRow): Reduction {

@@ -6,6 +6,7 @@ import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
+import com.schulzcode.y2player.playback.AudioBalance
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
 
@@ -40,6 +41,8 @@ class AppPreferences(context: Context) {
         volumeLevel = VolumeCurve.clampLevel(integer(KEY_VOLUME_LEVEL, VolumeCurve.STEPS)),
         hapticLevel = HapticLevel.fromStorage(string(KEY_HAPTIC_LEVEL, null)),
         keepScreenOnWhilePlaying = boolean(KEY_KEEP_SCREEN_ON, false),
+        lightTheme = boolean(KEY_LIGHT_THEME, false),
+        localKeysWhileScreenOff = boolean(KEY_SCREEN_OFF_KEYS, false),
         pauseOnDisconnect = boolean(KEY_PAUSE_ON_DISCONNECT, true),
         resumePosition = boolean(KEY_RESUME_POSITION, true),
         sortOrder = TrackSortOrder.fromStorage(string(KEY_SORT_ORDER, TrackSortOrder.TITLE.storageId)),
@@ -56,12 +59,15 @@ class AppPreferences(context: Context) {
         equalizerPreset = integer(KEY_EQ_PRESET, 0).coerceIn(-1, MAX_EQ_PRESETS),
         equalizerBandLevelsMb = decodeLevels(string(KEY_EQ_BANDS, null)),
         bassStrength = integer(KEY_BASS_STRENGTH, 0).coerceIn(0, 1_000),
-        loudnessGainMb = integer(KEY_LOUDNESS_GAIN, 0).coerceIn(0, 300)
+        loudnessGainMb = integer(KEY_LOUDNESS_GAIN, 0).coerceIn(0, 300),
+        balance = AudioBalance.clamp(integer(KEY_BALANCE, AudioBalance.CENTRE))
     )
 
     fun toggleUiSoundEffects() = updateBoolean(KEY_UI_SOUND_EFFECTS, !snapshot().uiSoundEffectsEnabled)
     fun toggleVerboseDiagnostics() = updateBoolean(KEY_VERBOSE_DIAGNOSTICS, !snapshot().verboseDiagnostics)
     fun toggleKeepScreenOn() = updateBoolean(KEY_KEEP_SCREEN_ON, !snapshot().keepScreenOnWhilePlaying)
+    fun toggleLightTheme() = updateBoolean(KEY_LIGHT_THEME, !snapshot().lightTheme)
+    fun toggleLocalKeysWhileScreenOff() = updateBoolean(KEY_SCREEN_OFF_KEYS, !snapshot().localKeysWhileScreenOff)
     fun togglePauseOnDisconnect() = updateBoolean(KEY_PAUSE_ON_DISCONNECT, !snapshot().pauseOnDisconnect)
     fun toggleResumePosition() = updateBoolean(KEY_RESUME_POSITION, !snapshot().resumePosition)
     fun toggleGapless() = updateBoolean(KEY_GAPLESS, !snapshot().gaplessEnabled)
@@ -132,6 +138,10 @@ class AppPreferences(context: Context) {
     fun cycleBassStrength(): PlayerPreferencesState = cycleInt(KEY_BASS_STRENGTH, BASS_LEVELS, snapshot().bassStrength)
     fun cycleLoudnessGain(): PlayerPreferencesState = cycleInt(KEY_LOUDNESS_GAIN, LOUDNESS_LEVELS, snapshot().loudnessGainMb)
 
+    /** Set, not cycled: 21 steps is too many to reach by repeated pressing. */
+    fun setBalance(balance: Int): PlayerPreferencesState =
+        commit { putInt(KEY_BALANCE, AudioBalance.clamp(balance)) }
+
     fun setSortOrder(order: TrackSortOrder): PlayerPreferencesState =
         commit { putString(KEY_SORT_ORDER, order.storageId) }
 
@@ -177,6 +187,8 @@ class AppPreferences(context: Context) {
         private const val KEY_VOLUME_LEVEL = "volume_level"
         private const val KEY_HAPTIC_LEVEL = "haptic_level"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
+        private const val KEY_LIGHT_THEME = "light_theme"
+        private const val KEY_SCREEN_OFF_KEYS = "screen_off_keys"
         private const val KEY_PAUSE_ON_DISCONNECT = "pause_on_disconnect"
         private const val KEY_RESUME_POSITION = "resume_position"
         private const val KEY_SORT_ORDER = "sort_order"
@@ -193,6 +205,7 @@ class AppPreferences(context: Context) {
         private const val KEY_EQ_BANDS = "eq_bands"
         private const val KEY_BASS_STRENGTH = "bass_strength"
         private const val KEY_LOUDNESS_GAIN = "loudness_gain_mb"
+        private const val KEY_BALANCE = "balance"
         private const val EQ_STEP_MB = 300
         private const val MAX_EQ_PRESETS = 100
         private const val MAX_EQ_BANDS = 32

@@ -37,18 +37,21 @@ object HardwareKeyGate {
         context: Context,
         keyCode: Int,
         source: Source = Source.ACTIVITY,
-        fromLocalKeypad: Boolean = false
+        fromLocalKeypad: Boolean = false,
+        localKeysWhileScreenOff: Boolean = false
     ): Boolean {
         // Cheap, purely static answers first: these never depend on screen state,
         // so the common wheel and transport cases can skip the cache entirely.
         if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source, fromLocalKeypad)) return true
+        if (localKeysWhileScreenOff) return true
         val state = screenState(context)
         return isInputAllowed(
             keyCode = keyCode,
             screenOn = state.screenOn,
             keyguardLocked = state.keyguardLocked,
             source = source,
-            fromLocalKeypad = fromLocalKeypad
+            fromLocalKeypad = fromLocalKeypad,
+            localKeysWhileScreenOff = localKeysWhileScreenOff
         )
     }
 
@@ -116,16 +119,26 @@ object HardwareKeyGate {
 
     /**
      * Remote transport commands remain usable while locked. Activity keys and
-     * vendor wheel/navigation broadcasts still require an awake, unlocked UI.
+     * vendor wheel/navigation broadcasts still require an awake, unlocked UI —
+     * unless [localKeysWhileScreenOff] opts out of that.
+     *
+     * [localKeysWhileScreenOff] bypasses the keyguard test as well as the screen
+     * test, which is deliberate and not an oversight. On this device the screen
+     * going off puts the keyguard into restricted input mode, so a version that
+     * only relaxed `screenOn` would be a setting that appears to do nothing. The
+     * accepted consequence is that the wheel and its buttons can act from a
+     * pocket, which is exactly why it defaults to off and why the row says so.
      */
     internal fun isInputAllowed(
         keyCode: Int,
         screenOn: Boolean,
         keyguardLocked: Boolean,
         source: Source = Source.ACTIVITY,
-        fromLocalKeypad: Boolean = false
+        fromLocalKeypad: Boolean = false,
+        localKeysWhileScreenOff: Boolean = false
     ): Boolean = isPowerOrVolume(keyCode) ||
         isRemoteTransport(keyCode, source, fromLocalKeypad) ||
+        localKeysWhileScreenOff ||
         (screenOn && !keyguardLocked)
 
     private fun isPowerOrVolume(keyCode: Int): Boolean = when (keyCode) {

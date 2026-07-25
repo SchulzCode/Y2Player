@@ -40,6 +40,7 @@ class AndroidMediaPlayerEngine(
     private var nextGapless = false
     private var gaplessLinked = false
     private var masterVolume = 1f
+    private var balance = AudioBalance.CENTRE
     private var transitionFraction = 0f
     private var transitionGeneration = 0L
 
@@ -129,7 +130,7 @@ class AndroidMediaPlayerEngine(
         current = prepared
         next = null
         return runCatching {
-            current.player.setVolume(masterVolume, masterVolume)
+            applyChannelVolume(current.player, masterVolume)
             current.player.start()
             current.state = EngineState.PLAYING
             state = EngineState.PLAYING
@@ -192,6 +193,14 @@ class AndroidMediaPlayerEngine(
     override fun setVolume(volume: Float) {
         if (state == EngineState.RELEASED) return
         masterVolume = volume.coerceIn(0f, 1f)
+        applyVolumes()
+    }
+
+    override fun setBalance(balance: Int) {
+        if (state == EngineState.RELEASED) return
+        val clamped = AudioBalance.clamp(balance)
+        if (clamped == this.balance) return
+        this.balance = clamped
         applyVolumes()
     }
 
@@ -275,9 +284,21 @@ class AndroidMediaPlayerEngine(
     private fun applyVolumes() {
         val currentFactor = if (isTransitioning) 1f - transitionFraction else 1f
         val nextFactor = if (isTransitioning) transitionFraction else 1f
-        runCatching { current.player.setVolume(masterVolume * currentFactor, masterVolume * currentFactor) }
-        next?.let { slot ->
-            runCatching { slot.player.setVolume(masterVolume * nextFactor, masterVolume * nextFactor) }
+        applyChannelVolume(current.player, masterVolume * currentFactor)
+        next?.let { slot -> applyChannelVolume(slot.player, masterVolume * nextFactor) }
+    }
+
+    /**
+     * The single place a non-zero volume reaches a player.
+     *
+     * Every ramp — pause fade, focus duck, crossfade — passes its level through
+     * here, so balance is applied once at the end rather than being something each
+     * ramp has to remember. Deliberate silence still calls `setVolume(0f, 0f)`
+     * directly: nothing about balance changes what silence sounds like.
+     */
+    private fun applyChannelVolume(player: MediaPlayer, level: Float) {
+        runCatching {
+            player.setVolume(level * AudioBalance.leftGain(balance), level * AudioBalance.rightGain(balance))
         }
     }
 

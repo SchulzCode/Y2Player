@@ -5,7 +5,9 @@ import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
+import com.schulzcode.y2player.input.HapticLevel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -472,6 +474,51 @@ class AppReducerTest {
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
     }
 
+    /**
+     * The Theme row lives on the Display screen, so `confirmDisplay` is the handler
+     * that has to answer for it — putting it on the Settings handler instead leaves
+     * a row that renders and does nothing when pressed.
+     */
+    @Test fun theThemeRowOnTheDisplayScreenTogglesTheTheme() {
+        val state = selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Display))), "theme")
+        assertEquals(
+            listOf(AppEffect.ToggleLightTheme),
+            AppReducer.reduce(state, AppAction.Confirm).effects
+        )
+    }
+
+    @Test fun theThemeRowReportsWhichThemeIsActive() {
+        val dark = AppState(screenStack = listOf(ScreenEntry(Screen.Display)))
+        val light = dark.copy(preferences = dark.preferences.copy(lightTheme = true))
+        assertEquals("Dark", themeRowSubtitle(dark))
+        assertEquals("Light", themeRowSubtitle(light))
+    }
+
+    private fun themeRowSubtitle(state: AppState): String? =
+        ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>()
+            .first { it.key == "theme" }.subtitle
+
+    /**
+     * Haptics and UI sounds are feedback for input, so they live on their own screen
+     * rather than under Display, which is about the panel. These pin the move: the
+     * rows work in their new home and are gone from the old one.
+     */
+    @Test fun controlsScreenOwnsHapticsAndUiSounds() {
+        val settings = selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Settings))), "controls")
+        val controls = AppReducer.reduce(settings, AppAction.Confirm).state
+        assertEquals(Screen.Controls, controls.currentScreen)
+
+        val withMotor = controls.copy(device = controls.device.copy(hapticsAvailable = true))
+        assertEquals(
+            listOf(AppEffect.ToggleUiSoundEffects),
+            AppReducer.reduce(selectKey(withMotor, "ui_sounds"), AppAction.Confirm).effects
+        )
+        assertEquals(
+            listOf(AppEffect.CycleHapticLevel),
+            AppReducer.reduce(selectKey(withMotor, "haptics"), AppAction.Confirm).effects
+        )
+    }
+
     // ------------------------------------------------ Artists → albums → songs
 
     /** Two artists sharing an album name, which is what makes the scoping matter. */
@@ -563,6 +610,113 @@ class AppReducerTest {
      * when the effect framework is missing, since it is a player gain rather than an
      * AudioEffect — an accessibility setting cannot depend on firmware luck.
      */
+    @Test fun balanceIsReachableEvenWithoutAudioEffectSupport() {
+        val sound = AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings)))
+        val opened = AppReducer.reduce(selectKey(sound, "balance"), AppAction.Confirm).state
+        assertEquals(Screen.Balance, opened.currentScreen)
+        assertEquals("Centre · off", soundRowSubtitle(sound, "balance"))
+    }
+
+    @Test fun choosingABalanceLevelSetsItAndLeavesTheScreen() {
+        val balance = AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings), ScreenEntry(Screen.Balance)))
+        val result = AppReducer.reduce(selectKey(balance, "balance:-40"), AppAction.Confirm)
+
+        assertEquals(listOf(AppEffect.SetBalance(-40)), result.effects)
+        assertEquals("choosing a level returns to Sound", Screen.SoundSettings, result.state.currentScreen)
+    }
+
+    @Test fun theSoundRowAndTheBalanceScreenAgreeOnTheCurrentValue() {
+        val leaning = AppState(
+            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            preferences = PlayerPreferencesState(balance = -100)
+        )
+        assertEquals("Left only", soundRowSubtitle(leaning, "balance"))
+
+        val screen = leaning.copy(screenStack = listOf(ScreenEntry(Screen.Balance)))
+        val selected = ScreenContent.rows(screen).filterIsInstance<ScreenRow.Action>()
+            .filter { it.subtitle == "Selected" }
+        assertEquals(listOf("Left only"), selected.map { it.title })
+    }
+
+    /**
+     * Adjustable rows before read-only ones. Three DAC facts used to sit between
+     * Balance and the effects toggle, so you scrolled past information to reach a
+     * control.
+     */
+    private fun soundRowSubtitle(state: AppState, key: String): String? =
+        ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>().first { it.key == key }.subtitle
+
+    @Test fun controlsScreenOwnsTheScreenOffWheelToggle() {
+        val controls = AppState(screenStack = listOf(ScreenEntry(Screen.Controls)))
+        assertEquals(
+            listOf(AppEffect.ToggleLocalKeysWhileScreenOff),
+            AppReducer.reduce(selectKey(controls, "screen_off_keys"), AppAction.Confirm).effects
+        )
+    }
+
+    /**
+     * The row has to state the consequence, not just the state. Someone enabling it
+     * is giving up the protection that stops a pocket pressing play.
+     */
+    @Test fun theScreenOffWheelRowStatesWhatItCosts() {
+        val controls = AppState(screenStack = listOf(ScreenEntry(Screen.Controls)))
+        fun subtitle(state: AppState) = ScreenContent.rows(state)
+            .filterIsInstance<ScreenRow.Action>().first { it.key == "screen_off_keys" }.subtitle
+        assertEquals("Off · stem controls only", subtitle(controls))
+        assertEquals(
+            "Active · can act in a pocket",
+            subtitle(controls.copy(preferences = controls.preferences.copy(localKeysWhileScreenOff = true)))
+        )
+    }
+
+    /** Only worth surfacing in the Settings summary when it is on. */
+    @Test fun theControlsSummaryMentionsTheScreenOffWheelOnlyWhenEnabled() {
+        val base = AppState(screenStack = listOf(ScreenEntry(Screen.Settings)))
+        assertFalse(controlsSubtitle(base)!!.contains("screen-off"))
+        assertTrue(
+            controlsSubtitle(
+                base.copy(preferences = base.preferences.copy(localKeysWhileScreenOff = true))
+            )!!.endsWith("screen-off wheel")
+        )
+    }
+
+    @Test fun keepScreenOnLivesOnlyOnTheDisplayScreen() {
+        fun keys(screen: Screen) = ScreenContent.rows(AppState(screenStack = listOf(ScreenEntry(screen))))
+            .filterIsInstance<ScreenRow.Action>().map { it.key }
+        assertTrue("keep_screen_on" in keys(Screen.Display))
+        assertFalse("keep_screen_on" in keys(Screen.PlaybackSettings))
+    }
+
+    /** The Settings row summarises both values, the way the Display row does. */
+    @Test fun theControlsRowSummarisesBothSettings() {
+        val base = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Settings)),
+            device = DeviceState(hapticsAvailable = true)
+        )
+        assertEquals("Haptics off · Sounds off", controlsSubtitle(base))
+        assertEquals(
+            "Haptics medium · Sounds on",
+            controlsSubtitle(
+                base.copy(
+                    preferences = base.preferences.copy(
+                        hapticLevel = HapticLevel.MEDIUM,
+                        uiSoundEffectsEnabled = true
+                    )
+                )
+            )
+        )
+    }
+
+    /** No motor means no haptics row, so the summary must not promise one. */
+    @Test fun theControlsRowOmitsHapticsWithoutAMotor() {
+        val noMotor = AppState(screenStack = listOf(ScreenEntry(Screen.Settings)))
+        assertEquals("Sounds off", controlsSubtitle(noMotor))
+    }
+
+    private fun controlsSubtitle(state: AppState): String? =
+        ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>()
+            .first { it.key == "controls" }.subtitle
+
     /** Selects a track by id, so a test does not depend on the screen's sort order. */
     private fun selectTrack(state: AppState, trackId: Long): AppState {
         val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.TrackRow)?.track?.id == trackId }

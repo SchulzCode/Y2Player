@@ -1584,6 +1584,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // A volume step must be audible immediately. While a fade is running,
         // its terminal update applies the newest steady-state gain instead.
         if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
+        // Not routed through setOutputVolume: balance is a fixed per-channel scale
+        // the engine keeps, so a fade in flight is not disturbed by setting it.
+        engine.setBalance(effective.balance)
         dacController.applyDirectMode(value.audioQualityMode == AudioQualityMode.DIRECT_DAC)
         audioEffectsState = audioEffectsController.apply(effective)
         if (modeChanged || transitionChanged) armNearEndPreload()

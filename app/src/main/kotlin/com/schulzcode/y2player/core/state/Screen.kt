@@ -34,6 +34,15 @@ sealed interface Screen {
     data object SortOrder : Screen
     data object Bluetooth : Screen
     data object Display : Screen
+    /**
+     * Wheel and button feedback.
+     *
+     * Its own screen rather than a corner of Display: haptics and UI sounds are
+     * responses to *input*, and the only thing they share with brightness is that
+     * both are device rather than music settings.
+     */
+    data object Controls : Screen
+    data object Balance : Screen
     data object Brightness : Screen
     data object ScreenTimeout : Screen
     data object Storage : Screen

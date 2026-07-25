@@ -12,13 +12,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Y2UiLogicTest {
+    /**
+     * Colours moved to [Y2Palette] when the light theme arrived, and the contrast
+     * checks that used to live here are now applied to *both* palettes in
+     * `Y2PaletteTest`. What is left here is the pair of literals this test was
+     * really guarding — the identity of the dark design.
+     */
     @Test fun themeUsesOneReadableAccentOnDarkSurfaces() {
-        assertEquals(0xFF0A0D12.toInt(), Y2UiTheme.BACKGROUND)
-        assertEquals(0xFFD6AC53.toInt(), Y2UiTheme.ACCENT)
-        assertTrue(contrastRatio(Y2UiTheme.PRIMARY_TEXT, Y2UiTheme.BACKGROUND) >= 7.0)
-        assertTrue(contrastRatio(Y2UiTheme.ACCENT, Y2UiTheme.BACKGROUND) >= 4.5)
-        assertTrue(Y2UiTheme.FOCUS_SURFACE != Y2UiTheme.BACKGROUND)
-        assertTrue(contrastRatio(Y2UiTheme.SECONDARY_TEXT, Y2UiTheme.BACKGROUND) >= 4.5)
+        assertEquals(0xFF0A0D12.toInt(), Y2Palette.DARK.background)
+        assertEquals(0xFFD6AC53.toInt(), Y2Palette.DARK.accent)
+        assertTrue(contrastRatio(Y2Palette.DARK.primaryText, Y2Palette.DARK.background) >= 7.0)
+        assertTrue(Y2Palette.DARK.focusSurface != Y2Palette.DARK.background)
     }
 
     @Test fun focusAndPlayingStatesRemainDistinct() {

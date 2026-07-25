@@ -23,7 +23,15 @@ class MediaButtonReceiver : BroadcastReceiver() {
         // The vendor rebroadcasts AVRCP on its own action, so the intent tells us
         // nothing about origin; the input device behind the event does.
         val fromLocalKeypad = HardwareKeyGate.isLocalKeypad(event.deviceId)
-        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source, fromLocalKeypad)) {
+        // Read here rather than passed in: this receiver is declared in the
+        // manifest and runs whether or not the activity is alive, so the activity
+        // cannot be the thing that supplies it. The snapshot is cached in memory.
+        val localKeysWhileScreenOff = (context.applicationContext as? Y2Application)
+            ?.container?.preferences?.snapshot()?.localKeysWhileScreenOff ?: false
+        if (!HardwareKeyGate.isInputAllowed(
+                context, event.keyCode, source, fromLocalKeypad, localKeysWhileScreenOff
+            )
+        ) {
             return logRejected(context, "screen_gate", source, event)
         }
         if (!HardwareKeyGate.accept(event, source)) {
