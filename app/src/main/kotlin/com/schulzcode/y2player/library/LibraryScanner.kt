@@ -32,12 +32,41 @@ data class ScannedFile(val absolutePath: String, val changedDraft: TrackDraft?)
  */
 enum class CoverageGap { ROOT_UNREADABLE, DIRECTORY_UNREADABLE, FILE_LIMIT }
 
+/**
+ * What a scan actually cost, so the next stutter report can be answered instead of
+ * estimated.
+ *
+ * [bytesRead] is the discriminator worth having: metadata extraction is supposed to
+ * read a bounded header, so cost should track the *number* of files. If it tracks
+ * their size instead, the platform extractor is reading file bodies — which for a
+ * library of large VBR MP3s would dwarf everything else and would change what is
+ * worth optimising next.
+ */
+data class ScanCost(
+    /** Files whose metadata was actually extracted, not merely stat-ed. */
+    val filesRead: Int = 0,
+    val bytesRead: Long = 0,
+    /** Wall time inside [MetadataReader.read], the part that runs in the media server. */
+    val metadataMs: Long = 0,
+    val yieldMs: Long = 0,
+    val yields: Int = 0
+) {
+    operator fun plus(other: ScanCost) = ScanCost(
+        filesRead = filesRead + other.filesRead,
+        bytesRead = bytesRead + other.bytesRead,
+        metadataMs = metadataMs + other.metadataMs,
+        yieldMs = yieldMs + other.yieldMs,
+        yields = yields + other.yields
+    )
+}
+
 data class ScanOutcome(
     val processedFiles: Int,
     val cancelled: Boolean,
     val playlistFiles: List<File>,
     val recoverableErrors: Int = 0,
-    val coverageGap: CoverageGap? = null
+    val coverageGap: CoverageGap? = null,
+    val cost: ScanCost = ScanCost()
 ) {
     /** Derived, so it can never disagree with [coverageGap]. */
     val complete: Boolean get() = !cancelled && coverageGap == null
@@ -78,6 +107,13 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         var coverageGap: CoverageGap? = null
         var recoverableErrors = 0
         var limitReached = false
+        var cost = ScanCost()
+        // Carried across batches, not reset per batch: the back-off interval is
+        // deliberately independent of BATCH_SIZE, which exists to size database
+        // transactions and has no business deciding how often audio gets the
+        // media server back.
+        var groupFiles = 0
+        var groupNanos = 0L
         val rootCanonical = try {
             root.directory.canonicalPath.trimEnd(File.separatorChar)
         } catch (_: IOException) {
@@ -105,7 +141,6 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             audioBuffer.clear()
             val known = fingerprintLookup(files.map { it.absolutePath })
             val batch = ArrayList<ScannedFile>(files.size)
-            var readMetadata = false
             files.forEach { file ->
                 if (cancellation.isCancelled()) return@forEach
                 if (!file.isFile || !file.canRead() || file.length() <= 0L) {
@@ -118,15 +153,38 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 }
                 val cached = known[file.absolutePath]
                 val changed = cached == null || cached.fileSize != file.length() || cached.modifiedAt != file.lastModified()
-                val draft = if (changed) try {
-                    readMetadata = true
-                    metadataReader.read(root, file)
+                if (!changed) {
+                    batch += ScannedFile(file.absolutePath, null)
+                    processed += 1
+                    return@forEach
+                }
+                var draft: TrackDraft? = null
+                var failed = false
+                val startedAt = System.nanoTime()
+                try {
+                    draft = metadataReader.read(root, file)
                 } catch (_: Exception) {
                     // Same reasoning as an unreadable file: one bad decode says
                     // nothing about whether the walk covered the volume.
                     recoverableErrors += 1
-                    return@forEach
-                } else null
+                    failed = true
+                }
+                // Counted whether or not it succeeded: a file that took time and
+                // then threw still spent that time inside the media server.
+                val elapsed = System.nanoTime() - startedAt
+                groupNanos += elapsed
+                groupFiles += 1
+                cost = cost.copy(
+                    filesRead = cost.filesRead + 1,
+                    bytesRead = cost.bytesRead + file.length(),
+                    metadataMs = cost.metadataMs + elapsed / NANOS_PER_MS
+                )
+                if (groupFiles >= YIELD_FILE_INTERVAL) {
+                    cost += yieldToPlayback(cancellation, playbackActive, groupNanos)
+                    groupFiles = 0
+                    groupNanos = 0L
+                }
+                if (failed) return@forEach
                 batch += ScannedFile(file.absolutePath, draft)
                 processed += 1
             }
@@ -134,7 +192,6 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             // cooperative, and a volume that was removed mid-batch must not have
             // its rows written back as available by a lagging write.
             if (batch.isNotEmpty() && !cancellation.isCancelled()) onBatch(batch)
-            if (readMetadata) yieldToPlayback(cancellation, playbackActive)
         }
 
         while (stack.isNotEmpty() && !cancellation.isCancelled() && !limitReached) {
@@ -217,7 +274,8 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             cancelled = cancelled,
             playlistFiles = playlists,
             recoverableErrors = recoverableErrors,
-            coverageGap = coverageGap
+            coverageGap = coverageGap,
+            cost = cost
         )
     }
 
@@ -229,20 +287,39 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
      * the media server that is decoding the audio, and reads from the same card
      * MediaPlayer is streaming from. A short pause hands both back.
      *
-     * Only after a batch that actually read metadata, which is what makes this
-     * nearly free in the common case — a routine rescan of an unchanged library
-     * costs a stat per file and no extraction at all, so it never pauses. The
-     * cost lands on a first scan or a large import, at roughly
-     * [PLAYBACK_YIELD_MS] per [BATCH_SIZE] newly-read files, and only while
-     * something is playing.
+     * Two things about the shape of this matter more than the length of the pause:
+     *
+     * The pause is proportional to what the preceding files actually cost, not a
+     * constant. Per-file cost swings by an order of magnitude between a small MP3
+     * and a 24-bit FLAC, so any fixed number is either useless on a slow library or
+     * wasteful on a fast one. A quarter of measured cost gives a predictable duty
+     * cycle instead, clamped at both ends so one pathological file cannot stall the
+     * scan and a trivial group still yields something.
+     *
+     * And it fires every [YIELD_FILE_INTERVAL] files rather than once per batch.
+     * Total relief was never the problem: at 10k tracks a per-batch pause left
+     * roughly three seconds of uninterrupted extraction between gaps, which is far
+     * more than enough to starve a MediaPlayer buffer, while amounting to under 1%
+     * of the scan. It is the length of the uninterrupted block that is audible.
+     *
+     * Still free in the common case: a rescan of an unchanged library reads no
+     * metadata, so it never reaches here.
      */
-    private fun yieldToPlayback(cancellation: ScanCancellation, playbackActive: () -> Boolean) {
-        if (cancellation.isCancelled()) return
-        if (!runCatching { playbackActive() }.getOrDefault(false)) return
+    private fun yieldToPlayback(
+        cancellation: ScanCancellation,
+        playbackActive: () -> Boolean,
+        workNanos: Long
+    ): ScanCost {
+        if (cancellation.isCancelled()) return ScanCost()
+        if (!runCatching { playbackActive() }.getOrDefault(false)) return ScanCost()
+        val target = (workNanos / YIELD_WORK_DIVISOR / NANOS_PER_MS)
+            .coerceIn(MIN_YIELD_MS, MAX_YIELD_MS)
+        val startedAt = System.nanoTime()
         // Interruption is how shutdownNow stops this thread; treat it as a
         // cancellation rather than swallowing it.
-        runCatching { Thread.sleep(PLAYBACK_YIELD_MS) }
+        runCatching { Thread.sleep(target) }
             .onFailure { if (it is InterruptedException) Thread.currentThread().interrupt() }
+        return ScanCost(yieldMs = (System.nanoTime() - startedAt) / NANOS_PER_MS, yields = 1)
     }
 
     /**
@@ -287,12 +364,26 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
     companion object {
         const val BATCH_SIZE = 64
 
+        private const val NANOS_PER_MS = 1_000_000L
+
         /**
-         * Pause per metadata-reading batch while audio plays. At 64 files a batch
-         * this adds roughly 12 s to a 30k-file first scan — paid only when the
-         * user is actually listening, which is the only time it buys anything.
+         * How many newly-read files may pass before audio gets a gap.
+         *
+         * Deliberately much smaller than [BATCH_SIZE]: that constant sizes database
+         * transactions, and using it here coupled the back-off interval to something
+         * with no relationship to audio. Eight files is a few hundred milliseconds
+         * of extraction on the Y2, short enough not to drain a playback buffer.
          */
-        private const val PLAYBACK_YIELD_MS = 25L
+        internal const val YIELD_FILE_INTERVAL = 8
+
+        /** Pause for a quarter of what the preceding files cost: a ~20% duty cycle. */
+        private const val YIELD_WORK_DIVISOR = 4
+
+        /** A group this cheap still yields, so the interval cannot become a no-op. */
+        internal const val MIN_YIELD_MS = 5L
+
+        /** One slow file must not turn into a visible stall in scan progress. */
+        private const val MAX_YIELD_MS = 150L
         private const val MAX_PLAYLIST_FILES = 1_000
         const val MAX_AUDIO_FILES = 100_000
         /** Longest extension in [SUPPORTED_EXTENSIONS] / [PLAYLIST_EXTENSIONS] is 4. */

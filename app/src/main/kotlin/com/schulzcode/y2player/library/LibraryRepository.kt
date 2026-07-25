@@ -159,6 +159,7 @@ class LibraryRepository(
             var totalProcessed = 0L
             var totalErrors = 0L
             var volumesScanned = 0
+            var totalCost = ScanCost()
             val discoveredPlaylists = ArrayList<java.io.File>()
             try {
                 val roots = Y2StoragePaths.availableRoots()
@@ -195,8 +196,13 @@ class LibraryRepository(
                         )
                         totalProcessed += outcome.processedFiles.toLong()
                         totalErrors += outcome.recoverableErrors.toLong()
+                        totalCost += outcome.cost
                         volumesScanned += 1
-                        logger.info("Library", "scan ${root.id} files=${outcome.processedFiles} cancelled=${outcome.cancelled} complete=${outcome.complete} errors=${outcome.recoverableErrors}")
+                        logger.info(
+                            "Library",
+                            "scan ${root.id} files=${outcome.processedFiles} cancelled=${outcome.cancelled} " +
+                                "complete=${outcome.complete} errors=${outcome.recoverableErrors} ${costSummary(outcome.cost)}"
+                        )
                         // Per-volume totals, so a scan that stalls on one card is
                         // distinguishable from one that found nothing anywhere.
                         eventLog?.debug(
@@ -206,7 +212,14 @@ class LibraryRepository(
                             "errors" to outcome.recoverableErrors,
                             "complete" to outcome.complete,
                             "gap" to outcome.coverageGap?.name,
-                            "cancelled" to outcome.cancelled
+                            "cancelled" to outcome.cancelled,
+                            // Per-volume so a slow card is distinguishable from a
+                            // slow library. See ScanCost for why bytes are here.
+                            "read" to outcome.cost.filesRead,
+                            "readMs" to outcome.cost.metadataMs,
+                            "readKb" to outcome.cost.bytesRead / 1024,
+                            "yieldMs" to outcome.cost.yieldMs,
+                            "yields" to outcome.cost.yields
                         )
                     } catch (error: Throwable) {
                         database.recordScanEnd(scanId, "ERROR", 0, error.message)
@@ -260,6 +273,11 @@ class LibraryRepository(
                 "volumes" to volumesScanned,
                 "files" to totalProcessed,
                 "errors" to totalErrors,
+                "read" to totalCost.filesRead,
+                "readMs" to totalCost.metadataMs,
+                "readKb" to totalCost.bytesRead / 1024,
+                "yieldMs" to totalCost.yieldMs,
+                "yields" to totalCost.yields,
                 "playlists" to discoveredPlaylists.size,
                 "error" to localFailure?.javaClass?.simpleName,
                 "errorMessage" to localFailure?.message?.take(160)
@@ -519,6 +537,21 @@ class LibraryRepository(
         // Reachable only when no volume was mounted to scan at all, since every
         // other not-complete path now carries a gap or was cancelled.
         null -> "No storage was available to scan; existing tracks were kept"
+    }
+
+    /**
+     * Metadata cost, for the human-readable log.
+     *
+     * Per-file milliseconds and per-file kilobytes together answer the question a
+     * stutter report cannot: extraction is meant to read a bounded header, so if
+     * cost tracks bytes rather than file count, the platform extractor is reading
+     * file bodies and that is what to fix next.
+     */
+    private fun costSummary(cost: ScanCost): String {
+        if (cost.filesRead == 0) return "read=0"
+        return "read=${cost.filesRead} readMs=${cost.metadataMs} " +
+            "perFile=${cost.metadataMs / cost.filesRead}ms/${cost.bytesRead / cost.filesRead / 1024}kb " +
+            "yieldMs=${cost.yieldMs} yields=${cost.yields}"
     }
 
     /** Scan-history note. Recoverable errors are worth recording even on success. */

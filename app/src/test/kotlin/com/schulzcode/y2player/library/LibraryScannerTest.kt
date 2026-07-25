@@ -96,6 +96,89 @@ class LibraryScannerTest {
         } finally { root.deleteRecursively() }
     }
 
+    /**
+     * Writes [count] files that look like audio but are not, so the metadata read is
+     * attempted and fails fast. What is under test is the accounting and the pacing
+     * around that read, not the read itself.
+     */
+    private fun volumeOf(count: Int, bytes: Int = 1_024): File {
+        val root = File(System.getProperty("java.io.tmpdir"), "y2-cost-${System.nanoTime()}")
+        File(root, "Music").apply { mkdirs() }.let { dir ->
+            repeat(count) { File(dir, "track$it.mp3").writeBytes(ByteArray(bytes) { 7 }) }
+        }
+        return root
+    }
+
+    private fun scan(root: File, playing: Boolean) = LibraryScanner().scan(
+        StorageRoot("internal", root), { emptyMap() }, ScanCancellation(), {}, { _, _ -> },
+        playbackActive = { playing }
+    )
+
+    /** Nothing is playing, so there is nothing to yield to and the scan runs flat out. */
+    @Test fun noBackOffWhenNothingIsPlaying() {
+        val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * 2)
+        try {
+            val cost = scan(root, playing = false).cost
+            assertEquals(0L, cost.yieldMs)
+            assertEquals(0, cost.yields)
+            assertEquals(LibraryScanner.YIELD_FILE_INTERVAL * 2, cost.filesRead)
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * The reported symptom at ~10k tracks was choppy audio for the whole scan. The
+     * back-off existed, but fired once per 64-file database batch, which left about
+     * three seconds of uninterrupted extraction between gaps. It has to be driven by
+     * a count of its own, well below BATCH_SIZE.
+     */
+    @Test fun backsOffOncePerFileIntervalRatherThanOncePerBatch() {
+        val groups = 3
+        val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * groups)
+        try {
+            val cost = scan(root, playing = true).cost
+            assertEquals("one yield per $groups groups within a single batch", groups, cost.yields)
+            assertTrue(
+                "each yield must actually pause",
+                cost.yieldMs >= LibraryScanner.MIN_YIELD_MS * groups - 1
+            )
+            assertTrue("the interval must be well under a database batch", LibraryScanner.YIELD_FILE_INTERVAL < LibraryScanner.BATCH_SIZE)
+        } finally { root.deleteRecursively() }
+    }
+
+    /** A partial group must not yield, or the interval would mean nothing. */
+    @Test fun aPartialGroupDoesNotBackOff() {
+        val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL - 1)
+        try {
+            assertEquals(0, scan(root, playing = true).cost.yields)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun costAccountsBytesAndFilesRead() {
+        val root = volumeOf(4, bytes = 2_048)
+        try {
+            val cost = scan(root, playing = false).cost
+            assertEquals(4, cost.filesRead)
+            assertEquals(4L * 2_048, cost.bytesRead)
+        } finally { root.deleteRecursively() }
+    }
+
+    /** An unchanged library reads no metadata, so the back-off costs it nothing. */
+    @Test fun unchangedFilesAreNeitherReadNorPacedAgainst() {
+        val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * 2)
+        try {
+            val fingerprints = File(root, "Music").listFiles()!!.associate {
+                it.absolutePath to TrackFingerprint(it.length(), it.lastModified())
+            }
+            val outcome = LibraryScanner().scan(
+                StorageRoot("internal", root), { fingerprints }, ScanCancellation(), {}, { _, _ -> },
+                playbackActive = { true }
+            )
+            assertEquals(0, outcome.cost.filesRead)
+            assertEquals(0, outcome.cost.yields)
+            assertEquals(0L, outcome.cost.yieldMs)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun emptyVolumeIsACompleteScan() {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-empty-${System.nanoTime()}").apply { mkdirs() }
         try {
