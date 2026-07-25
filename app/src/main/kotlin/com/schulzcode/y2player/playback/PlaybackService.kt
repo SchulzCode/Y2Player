@@ -329,6 +329,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onDestroy() {
         shuttingDown = true
+        // Released first: a service torn down mid-playback would otherwise leave
+        // the scanner throttling itself for nothing, with no one left to clear it.
+        if (::libraryRepository.isInitialized) libraryRepository.setPlaybackActive(false)
         if (::routeMonitor.isInitialized) routeMonitor.stop()
         if (::storageMonitor.isInitialized) storageMonitor.removeListener(storageListener)
         mainHandler.removeCallbacksAndMessages(null)
@@ -1822,6 +1825,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
      */
     private fun publishSnapshot() {
         val value = snapshot
+        // Every status change passes through here, so this is the one place the
+        // scanner's back-off needs telling. Progress ticks deliberately do not
+        // publish this way, and cannot change the status.
+        libraryRepository.setPlaybackActive(value.status == PlaybackStatus.PLAYING)
         if (::remoteControl.isInitialized) remoteControl.update(value, currentTrack)
         mainHandler.post {
             listeners.forEach { it.onPlaybackChanged(value) }
@@ -1830,8 +1837,29 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     /** Keeps the internal snapshot position current without publishing anything. */
+    /**
+     * Advances only the fields that time changes, without rebuilding the snapshot.
+     *
+     * A full [buildSnapshot] re-reads the queue, the audio route and the DAC state.
+     * Doing that once a second put native audio-server calls on the playback
+     * thread for values that cannot have changed — nothing else varies during a
+     * progress tick, because every path that *does* change queue, route, effects
+     * or track already publishes through the full path itself.
+     *
+     * This matters most when the library scanner is running: those calls reach the
+     * same media server the scanner is loading, on the one thread that has to
+     * start a crossfade on schedule.
+     */
     private fun updateInternalProgress(position: Long, duration: Long) {
-        snapshot = buildSnapshot(PlaybackStatus.PLAYING, position, duration, PauseReason.NONE)
+        snapshot = snapshot.copy(
+            status = PlaybackStatus.PLAYING,
+            positionMs = position.coerceAtLeast(0),
+            durationMs = duration.coerceAtLeast(0),
+            pauseReason = PauseReason.NONE,
+            errorMessage = null,
+            sleepTimerRemainingMs = sleepTimerDeadlineElapsed
+                ?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
+        )
     }
 
     /**
@@ -1859,6 +1887,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             lastPublishedProgressSecond = position / 1_000L
             scheduleProgress()
         }
+        // Full rebuild here, unlike the progress path: a client that has just
+        // bound may have been away while the route or queue changed, and once per
+        // bind is not a cost worth optimising.
+        refreshSnapshot()
         publishSnapshot()
     }
 

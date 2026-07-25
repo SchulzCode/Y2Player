@@ -2,6 +2,7 @@ package com.schulzcode.y2player.library
 
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import com.schulzcode.y2player.core.model.LibraryIndex
 import com.schulzcode.y2player.core.model.LibraryScanProgress
@@ -43,8 +44,29 @@ class LibraryRepository(
             }
         }, "y2-library").apply { isDaemon = true }
     }
+    /**
+     * The scan thread runs in the background scheduling class.
+     *
+     * It was the only thread in the app doing sustained work at default
+     * priority, competing with playback on four weak cores. Two things make that
+     * worse than it sounds on this device: the scan reads audio headers from the
+     * same card MediaPlayer is streaming from, and `MediaMetadataRetriever`
+     * executes inside `mediaserver` — the process decoding the audio. Binder
+     * propagates the caller's nice value to the servicing thread, so lowering it
+     * here also lowers the extractor work it triggers over there.
+     *
+     * [Process.setThreadPriority] rather than `Thread.setPriority`: only the
+     * former moves the thread into the background cgroup, which is the part that
+     * actually caps its CPU share on Android. The cost is a slower scan while
+     * something else wants the CPU, which is the trade being made deliberately —
+     * an idle device still gives this thread everything.
+     *
+     * [stateExecutor] is deliberately left at default priority: it serves
+     * user-facing writes (favourites, playlists) that must stay responsive.
+     */
     private val scanExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 runnable.run()
             } catch (error: Throwable) {
@@ -148,7 +170,8 @@ class LibraryRepository(
                             fingerprintLookup = { paths -> database.loadTrackFingerprints(root.id, paths) },
                             cancellation = localCancellation,
                             onBatch = { files -> database.applyScanBatch(root.id, scanId, files) },
-                            onProgress = { path, count -> publishProgress(root.id, path, count) }
+                            onProgress = { path, count -> publishProgress(root.id, path, count) },
+                            playbackActive = { playbackActive }
                         )
                         if (outcome.complete) {
                             database.finishScan(root.id, scanId)
@@ -237,6 +260,18 @@ class LibraryRepository(
             if (queued != null && !cancelled) scan(queued)
         }
     }
+
+    /**
+     * Told by the playback service whether audio is playing, so a running scan
+     * can back off its I/O while it is.
+     *
+     * A push rather than a pull: the service already depends on this repository,
+     * and the alternative would mean the library reaching into playback state.
+     * Writing a volatile boolean is cheap enough to do on every material publish.
+     */
+    fun setPlaybackActive(active: Boolean) { playbackActive = active }
+
+    @Volatile private var playbackActive = false
 
     fun requestInitialScan() {
         if (initialScanRequested.compareAndSet(false, true)) scan()

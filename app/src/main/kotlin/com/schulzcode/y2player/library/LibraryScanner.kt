@@ -28,12 +28,18 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
     /** Frees the shared retriever's native resources; call after a scan completes. */
     fun releaseMetadata() = metadataReader.release()
 
+    /**
+     * @param playbackActive whether audio is playing right now. When it is, the
+     *   scan pauses briefly after any batch that actually read metadata — see
+     *   [yieldToPlayback].
+     */
     fun scan(
         root: StorageRoot,
         fingerprintLookup: (List<String>) -> Map<String, TrackFingerprint>,
         cancellation: ScanCancellation,
         onBatch: (List<ScannedFile>) -> Unit,
-        onProgress: (path: String, processed: Int) -> Unit
+        onProgress: (path: String, processed: Int) -> Unit,
+        playbackActive: () -> Boolean = { false }
     ): ScanOutcome {
         val stack = ArrayDeque<File>()
         val visited = HashSet<String>()
@@ -64,6 +70,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             audioBuffer.clear()
             val known = fingerprintLookup(files.map { it.absolutePath })
             val batch = ArrayList<ScannedFile>(files.size)
+            var readMetadata = false
             files.forEach { file ->
                 if (cancellation.isCancelled()) return@forEach
                 if (!file.isFile || !file.canRead() || file.length() <= 0L) {
@@ -74,6 +81,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 val cached = known[file.absolutePath]
                 val changed = cached == null || cached.fileSize != file.length() || cached.modifiedAt != file.lastModified()
                 val draft = if (changed) try {
+                    readMetadata = true
                     metadataReader.read(root, file)
                 } catch (_: Exception) {
                     incomplete = true
@@ -87,6 +95,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             // cooperative, and a volume that was removed mid-batch must not have
             // its rows written back as available by a lagging write.
             if (batch.isNotEmpty() && !cancellation.isCancelled()) onBatch(batch)
+            if (readMetadata) yieldToPlayback(cancellation, playbackActive)
         }
 
         while (stack.isNotEmpty() && !cancellation.isCancelled() && !limitReached) {
@@ -185,6 +194,13 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
 
     companion object {
         const val BATCH_SIZE = 64
+
+        /**
+         * Pause per metadata-reading batch while audio plays. At 64 files a batch
+         * this adds roughly 12 s to a 30k-file first scan — paid only when the
+         * user is actually listening, which is the only time it buys anything.
+         */
+        private const val PLAYBACK_YIELD_MS = 25L
         private const val MAX_PLAYLIST_FILES = 1_000
         private const val MAX_AUDIO_FILES = 100_000
         /** Longest extension in [SUPPORTED_EXTENSIONS] / [PLAYLIST_EXTENSIONS] is 4. */

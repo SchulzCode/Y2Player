@@ -27,26 +27,35 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         directMode = enabled
         lastAppliedDirectMode = enabled
         hiFiRequestAccepted = requestMediaTekHiFi(enabled)
+        // The reported state just changed, so the memoised snapshot is stale.
+        cached = null
         logger.info(
             "audio",
             "Direct DAC ${if (enabled) "enabled" else "disabled"}; vendor Hi-Fi request accepted=$hiFiRequestAccepted"
         )
     }
 
+    /**
+     * Describes the audio route for the UI.
+     *
+     * Memoised on the only input that varies at runtime — the source sample rate
+     * of the current track — because this is called from every playback snapshot,
+     * which includes every one-second progress tick. Before that it made a native
+     * `getProperty` call, scanned the advertised format strings four times and
+     * allocated a comparison list on each tick, all on the thread responsible for
+     * firing crossfade transitions on time.
+     */
     fun snapshot(track: Track?): DacState {
-        val capabilities = policy
-        val outputRate = frameworkOutputRate()?.takeIf { it > 0 }
-            ?: capabilities.sampleRates.firstOrNull()
         val sourceRate = track?.sampleRate
-        val resamplingLikely = sourceRate != null && outputRate != null && sourceRate != outputRate
-        val highResolutionExposed = capabilities.formats.any {
-            it.contains("24") || it.contains("32") || it.contains("FLOAT") || it.contains("DSD")
-        }
+        cached?.let { if (cachedSourceRate == sourceRate) return it }
+        val capabilities = policy
+        val outputRate = cachedOutputRate
         val limitation = when {
             !capabilities.dacDetected -> "CS43131 device node was not detected; using the Android audio route"
-            capabilities.sampleRates == listOf(44_100) && !highResolutionExposed ->
+            capabilities.stockRateOnly ->
                 "Stock firmware advertises 44.1 kHz / 16-bit PCM; higher-rate PCM or native DSD needs an Audio HAL/kernel patch"
-            resamplingLikely -> "Source and advertised output rates differ; Android may resample this track"
+            sourceRate != null && outputRate != null && sourceRate != outputRate ->
+                "Source and advertised output rates differ; Android may resample this track"
             else -> null
         }
         return DacState(
@@ -55,7 +64,21 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
             outputSampleRate = outputRate,
             outputFormat = capabilities.formats.firstOrNull(),
             limitation = limitation
-        )
+        ).also {
+            cached = it
+            cachedSourceRate = sourceRate
+        }
+    }
+
+    @Volatile private var cached: DacState? = null
+    @Volatile private var cachedSourceRate: Int? = null
+
+    /**
+     * The advertised output rate, read once. It comes from the audio policy, not
+     * from the stream, so it does not change while the process runs.
+     */
+    private val cachedOutputRate: Int? by lazy(LazyThreadSafetyMode.NONE) {
+        frameworkOutputRate()?.takeIf { it > 0 } ?: policy.sampleRates.firstOrNull()
     }
 
     private fun frameworkOutputRate(): Int? = runCatching {
@@ -77,7 +100,16 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         val dacDetected: Boolean,
         val sampleRates: List<Int>,
         val formats: List<String>
-    )
+    ) {
+        /**
+         * The firmware advertises nothing beyond stock 44.1 kHz / 16-bit. Derived
+         * once here rather than re-scanned on every snapshot.
+         */
+        val stockRateOnly: Boolean = sampleRates.size == 1 && sampleRates.firstOrNull() == 44_100 &&
+            formats.none {
+                it.contains("24") || it.contains("32") || it.contains("FLOAT") || it.contains("DSD")
+            }
+    }
 
     private fun readPolicyCapabilities(): PolicyCapabilities {
         val candidates = listOf(

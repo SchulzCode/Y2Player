@@ -28,7 +28,7 @@ class AudioRouteMonitor(
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
-            var routes = snapshot()
+            var routes = queryRoutes()
             routes = when (action) {
                 Intent.ACTION_HEADSET_PLUG -> when (intent.getIntExtra("state", -1)) {
                     0 -> routes.copy(wired = false)
@@ -54,6 +54,7 @@ class AudioRouteMonitor(
                 // CONNECTION_STATE_CHANGED (and AUDIO_BECOMING_NOISY), both handled.
                 else -> routes
             }
+            latest = routes
             listener(Event(routes, action == AudioManager.ACTION_AUDIO_BECOMING_NOISY, action))
         }
     }
@@ -68,7 +69,8 @@ class AudioRouteMonitor(
         }
         appContext.registerReceiver(receiver, filter)
         registered = true
-        listener(Event(snapshot(), false, "initial"))
+        latest = queryRoutes()
+        listener(Event(latest, false, "initial"))
     }
 
     fun stop() {
@@ -77,7 +79,21 @@ class AudioRouteMonitor(
         registered = false
     }
 
-    fun snapshot(): PrivateRouteSnapshot = PrivateRouteSnapshot(
+    /**
+     * The last known route state, with no call into the audio server.
+     *
+     * Routes only change when one of the broadcasts above arrives, and this class
+     * receives all of them — so the remembered value is exact, not a cache with a
+     * staleness window. It is read on every playback progress tick, and querying
+     * there put two native AudioPolicyService calls per second on the thread that
+     * has to fire crossfade transitions punctually. During a library scan those
+     * calls contend with the scanner's own use of the media server.
+     */
+    @Volatile private var latest = PrivateRouteSnapshot()
+
+    fun snapshot(): PrivateRouteSnapshot = latest
+
+    private fun queryRoutes(): PrivateRouteSnapshot = PrivateRouteSnapshot(
         wired = runCatching { audioManager.isWiredHeadsetOn }.getOrDefault(false),
         bluetooth = runCatching { audioManager.isBluetoothA2dpOn }.getOrDefault(false)
     )
