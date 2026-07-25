@@ -5,6 +5,7 @@ import android.os.Build
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
+import java.io.RandomAccessFile
 import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -25,13 +26,19 @@ import java.util.concurrent.TimeUnit
  * process is about to die.
  *
  * ## Verbosity
- * [info] is gated on [setVerbose], which follows the same user preference as
- * [EventLog]. Without the gate this logger wrote several lines to internal flash
- * on every track change, route change and discovered Bluetooth device even with
- * diagnostics switched off — an unbounded flash and battery cost the user had no
- * way to decline. [warn], [error] and [crash] are never gated: they describe
- * faults, and a fault that goes unrecorded because logging was quiet is the one
- * case where the log has failed at its job.
+ * [info] is gated on [setVerbose]. Without it this logger wrote several lines to
+ * internal flash on every track change, route change and discovered Bluetooth
+ * device even with diagnostics switched off — an unbounded flash and battery
+ * cost the user had no way to decline. [warn], [error] and [crash] are never
+ * gated: they describe faults, and a fault that goes unrecorded because logging
+ * was quiet is the one case where the log has failed at its job.
+ *
+ * This is **stricter than [EventLog]**, which follows the same preference but
+ * only suppresses `DEBUG` and keeps `INFO` regardless. The asymmetry is
+ * deliberate — NDJSON events are compact and bounded, these lines are chatty
+ * prose — but it is a trap for anyone reading a quiet text log beside a
+ * populated event log, so the transition is announced at [warn] level. Without
+ * that announcement "quiet" and "broken" look identical.
  */
 class DiagnosticLogger(
     context: Context,
@@ -51,6 +58,7 @@ class DiagnosticLogger(
     private val queue = ArrayBlockingQueue<Entry>(QUEUE_CAPACITY)
     @Volatile private var writerDisabled = false
     @Volatile private var verbose = true
+    private var verboseAnnounced = false
     private var consecutiveWriteFailures = 0
 
     init {
@@ -62,8 +70,28 @@ class DiagnosticLogger(
      * that startup — everything logged before preferences are readable — is
      * always recorded; [Y2Application] applies the stored value immediately
      * after the container is built.
+     *
+     * The resulting mode is written at [warn] level, which is never gated, so
+     * that it appears even in a quiet log. The first call always records, even
+     * when it agrees with the default, so every process states its mode once.
      */
-    fun setVerbose(value: Boolean) { verbose = value }
+    @Synchronized
+    fun setVerbose(value: Boolean) {
+        val announce = !verboseAnnounced || verbose != value
+        verbose = value
+        verboseAnnounced = true
+        if (!announce) return
+        enqueue(
+            "W",
+            "Diagnostics",
+            if (value) {
+                "verbose logging on: informational lines are being recorded"
+            } else {
+                "verbose logging off: informational lines are NOT recorded " +
+                    "(warnings and errors still are; structured events keep INFO)"
+            }
+        )
+    }
 
     fun info(category: String, message: String) {
         if (!verbose) return
@@ -89,12 +117,36 @@ class DiagnosticLogger(
         }
     }
 
-    fun recentLines(limit: Int = 80): List<String> {
+    /**
+     * The most recent [limit] lines, read from the tail of the active file.
+     *
+     * Only the last [TAIL_BYTES] are touched. Reading the whole file to keep its
+     * final few lines meant allocating a list of every line in up to 512 KB —
+     * several thousand strings — on a device with a small heap, and this is
+     * called on every diagnostics publish, including every USB cable event.
+     */
+    fun recentLines(limit: Int = RECENT_LINE_COUNT): List<String> {
         awaitFlush(SHORT_FLUSH_TIMEOUT_MS)
         return synchronized(fileLock) {
             if (!activeFile.exists()) return@synchronized emptyList()
-            runCatching { activeFile.readLines().takeLast(limit) }.getOrDefault(emptyList())
+            runCatching { tailLines(activeFile, limit) }.getOrDefault(emptyList())
         }
+    }
+
+    private fun tailLines(file: File, limit: Int): List<String> {
+        val length = file.length()
+        if (length <= 0L) return emptyList()
+        val from = (length - TAIL_BYTES).coerceAtLeast(0L)
+        val buffer = ByteArray((length - from).toInt())
+        RandomAccessFile(file, "r").use { input ->
+            input.seek(from)
+            input.readFully(buffer)
+        }
+        val lines = String(buffer, Charsets.UTF_8).split('\n').map { it.trimEnd('\r') }
+        // Starting mid-file almost certainly lands mid-line; that fragment would
+        // otherwise be shown as a truncated entry.
+        val whole = if (from > 0L && lines.size > 1) lines.drop(1) else lines
+        return whole.filter { it.isNotBlank() }.takeLast(limit)
     }
 
     fun exportTo(destinationDirectory: File): File {
@@ -219,6 +271,15 @@ class DiagnosticLogger(
     }
 
     companion object {
+        /**
+         * How many recent lines the Diagnostics screen receives and shows. One
+         * constant so the fetch and the display cannot drift: the screen used to
+         * discard 68 of the 80 lines it was handed.
+         */
+        const val RECENT_LINE_COUNT = 30
+
+        /** Enough tail to contain [RECENT_LINE_COUNT] lines several times over. */
+        private const val TAIL_BYTES = 64L * 1024L
         private const val MAX_BYTES = 512L * 1024L
         private const val BACKUP_COUNT = 3
         private const val MAX_STACK_CHARS = 12_000

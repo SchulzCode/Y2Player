@@ -530,7 +530,10 @@ object ScreenContent {
         state.diagnostics.formatProbeResults.forEach { result ->
             add(ScreenRow.Group("${if (result.success) "✓" else "✗"} ${result.extension}", result.message, "probe:${result.extension}"))
         }
-        state.diagnostics.recentLines.takeLast(12).reversed().forEachIndexed { index, line ->
+        // No second limit here: the repository already fetched exactly
+        // DiagnosticLogger.RECENT_LINE_COUNT lines. Trimming again is what made
+        // the screen stop at "Log 12" while most of what was read went unused.
+        state.diagnostics.recentLines.reversed().forEachIndexed { index, line ->
             add(ScreenRow.Group("Log ${index + 1}", line.take(120), "log:$index"))
         }
     }
