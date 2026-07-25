@@ -62,6 +62,8 @@ class BluetoothController(
     private var pendingAddress: String? = null
     private var pendingOperation: Operation? = null
     private var lastError: String? = null
+    /** Survives the proxy closing so the summary can still name the headset. */
+    private var lastConnectedName: String? = null
     private var proxyGeneration = 0L
     private var proxyRequestPending = false
     private var proxyRetryCount = 0
@@ -356,6 +358,7 @@ class BluetoothController(
         if (adapter?.state == BluetoothAdapter.STATE_OFF) {
             discovered.clear()
             playingAddresses.clear()
+            lastConnectedName = null
             clearPending()
             closeProxy()
         }
@@ -382,6 +385,7 @@ class BluetoothController(
             BluetoothProfile.STATE_DISCONNECTED -> {
                 if (pendingAddress == device.address && pendingOperation == Operation.DISCONNECTION) clearPending()
                 playingAddresses.remove(device.address)
+                if (lastConnectedName == device.displayName()) lastConnectedName = null
             }
         }
     }
@@ -529,7 +533,18 @@ class BluetoothController(
                 audioStreaming = device.address in playingAddresses
             )
         }.sortedWith(compareByDescending<BluetoothDeviceEntry> { it.linkState == BluetoothLinkState.CONNECTED }.thenBy { it.name.lowercase() })
+        // Asked of the adapter, not the proxy, so it survives this controller
+        // being stopped when the user leaves the Bluetooth screen.
+        val profileConnected = runCatching {
+            local.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothAdapter.STATE_CONNECTED
+        }.getOrDefault(false)
+        val proxyConnectedName = rows.firstOrNull { it.linkState == BluetoothLinkState.CONNECTED }?.name
+        if (proxyConnectedName != null) lastConnectedName = proxyConnectedName
         return BluetoothUiState(
+            profileAudioConnected = profileConnected,
+            // Falls back to the last name seen while the proxy was open: the
+            // adapter can say a sink is connected without saying which one.
+            connectedDeviceName = proxyConnectedName ?: lastConnectedName.takeIf { profileConnected },
             adapterMode = when (local.state) {
                 BluetoothAdapter.STATE_OFF -> BluetoothAdapterMode.OFF
                 BluetoothAdapter.STATE_TURNING_ON -> BluetoothAdapterMode.TURNING_ON

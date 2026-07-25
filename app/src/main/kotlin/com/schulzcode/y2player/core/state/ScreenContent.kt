@@ -646,7 +646,10 @@ object ScreenContent {
         state.bluetooth.adapterMode == BluetoothAdapterMode.UNSUPPORTED -> "Unavailable"
         state.bluetooth.adapterMode == BluetoothAdapterMode.OFF -> "Off"
         state.bluetooth.audioStreaming -> "Streaming"
-        state.bluetooth.audioConnected -> state.bluetooth.devices.firstOrNull { it.linkState == BluetoothLinkState.CONNECTED }?.name ?: "Audio connected"
+        // connectedDeviceName rather than a per-device lookup: linkState is only
+        // populated while the Bluetooth screen holds the profile proxy open, so
+        // reading it here reported "not connected" over a working headset.
+        state.bluetooth.audioConnected -> state.bluetooth.connectedDeviceName ?: "Audio connected"
         state.bluetooth.adapterMode == BluetoothAdapterMode.ON -> "On · not connected"
         else -> "Changing state…"
     }

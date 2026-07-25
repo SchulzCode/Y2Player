@@ -26,9 +26,23 @@ data class BluetoothUiState(
     val isDiscovering: Boolean = false,
     val devices: List<BluetoothDeviceEntry> = emptyList(),
     val pendingOperation: String? = null,
-    val lastError: String? = null
+    val lastError: String? = null,
+    /**
+     * Adapter-level "an A2DP sink is connected", independent of the profile
+     * proxy.
+     *
+     * Per-device [BluetoothDeviceEntry.linkState] can only be resolved while the
+     * profile proxy is open, and the proxy is scoped to the Bluetooth screen. Any
+     * other screen therefore saw every device report DISCONNECTED and announced
+     * "not connected" over a working headset. This field is read from the adapter
+     * itself, so it stays true wherever the user happens to be.
+     */
+    val profileAudioConnected: Boolean = false,
+    /** Best known name of the connected sink; null when only the fact is known. */
+    val connectedDeviceName: String? = null
 ) {
-    val audioConnected: Boolean get() = devices.any { it.linkState == BluetoothLinkState.CONNECTED }
+    val audioConnected: Boolean
+        get() = profileAudioConnected || devices.any { it.linkState == BluetoothLinkState.CONNECTED }
     val audioStreaming: Boolean get() = devices.any { it.audioStreaming }
 }
 
