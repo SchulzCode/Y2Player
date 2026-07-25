@@ -160,18 +160,31 @@ object ScreenContent {
         var index = -1
         rows.forEach { row ->
             if (row !is ScreenRow.TrackRow || !row.track.available) return@forEach
-            if (row.track.id == selected.track.id && index < 0) index = ids.size
+            val chosen = row.track.id == selected.track.id
+            // Known-undecodable tracks are left out of the queue built around the
+            // selection, so playback does not stall on them — but never the one
+            // the user actually picked. Refusing that would leave a press with no
+            // effect and no explanation.
+            if (row.track.decodeFailed && !chosen) return@forEach
+            if (chosen && index < 0) index = ids.size
             ids.add(row.track.id)
         }
         return if (index >= 0) ids to index else null
     }
 
-    /** Every playable track id on the current screen, in display order. */
+    /**
+     * Every playable track id on the current screen, in display order.
+     *
+     * Used for "play all" and Shuffle All, so tracks this device has already
+     * failed to decode are excluded: including them guarantees a skip.
+     */
     fun playableTrackIds(state: AppState): List<Long> {
         val rows = rows(state)
         val ids = ArrayList<Long>(rows.size)
         rows.forEach { row ->
-            if (row is ScreenRow.TrackRow && row.track.available) ids.add(row.track.id)
+            if (row is ScreenRow.TrackRow && row.track.available && !row.track.decodeFailed) {
+                ids.add(row.track.id)
+            }
         }
         return ids
     }

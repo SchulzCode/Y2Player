@@ -564,7 +564,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         nextInternal(userInitiated = false)
     }
 
-    override fun onError(requestId: Long, message: String) = post {
+    override fun onError(requestId: Long, message: String, failure: PlaybackFailure) = post {
         if (!PlaybackRequestGate.accepts(requestId, activeRequestId)) return@post
         cancelCurrentWatchdog(requestId)
         val track = currentTrack
@@ -585,7 +585,21 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // A failed player is the one case where the effect backend may have been
         // torn down with it, so allow one re-application on the next prepare.
         audioEffectsSessionApplied = false
-        if (currentRetryCount < MAX_TRACK_RETRIES && track?.let(::resolvePlayableTrack) != null) {
+
+        // Remembered only when the framework blamed the media. Retrying a file
+        // the decoder has rejected is pointless, so that case skips the retry as
+        // well as recording the verdict.
+        if (failure == PlaybackFailure.UNSUPPORTED && track != null) {
+            libraryRepository.recordPlaybackFailure(track.id, message)
+            logger.warn("Playback", "track=${track.id} marked undecodable: $message")
+            eventLog.warn(
+                Sub.PLAYBACK, Ev.PLAYBACK_ERROR,
+                "track" to track.id,
+                "format" to track.extension,
+                "codec" to track.codec,
+                "verdict" to "undecodable"
+            )
+        } else if (currentRetryCount < MAX_TRACK_RETRIES && track?.let(::resolvePlayableTrack) != null) {
             currentRetryCount += 1
             logger.warn("Playback", "retrying track=${track.id} attempt=$currentRetryCount")
             prepareCurrent(shouldAutoPlay, snapshot.positionMs, preserveRetry = true)
@@ -954,8 +968,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 return false
             }
             val track = libraryRepository.findTrack(next)
-            if (track?.let(::resolvePlayableTrack) != null) return true
-            logger.warn("Playback", "skipping unavailable track=$next")
+            if (track != null && !track.decodeFailed && resolvePlayableTrack(track) != null) return true
+            // Automatic advance skips what this device has already failed to
+            // decode. An explicit selection is never blocked this way — see
+            // togglePlaybackInternal, which still attempts whatever was chosen.
+            logger.warn(
+                "Playback",
+                "skipping track=$next reason=${if (track?.decodeFailed == true) "undecodable" else "unavailable"}"
+            )
         }
         startIndex?.let(queue::moveToQueueIndex)
         return false
@@ -1101,7 +1121,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             clearPreload()
             return
         }
-        val nextTrack = libraryRepository.findTrack(expectedNextId)?.let(::resolvePlayableTrack)
+        // A track known to be undecodable is not worth a second MediaPlayer.
+        val nextTrack = libraryRepository.findTrack(expectedNextId)
+            ?.takeIf { !it.decodeFailed }
+            ?.let(::resolvePlayableTrack)
         if (nextTrack == null || shouldStopBefore(nextTrack)) {
             clearPreload()
             return
@@ -1132,7 +1155,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (autoPreloadAttemptedForRequest == activeRequestId) return
         val nextId = expectedNextTrackId() ?: return
         val nextTrack = resolvedNext?.takeIf { it.id == nextId }
-            ?: libraryRepository.findTrack(nextId)?.let(::resolvePlayableTrack)
+            ?: libraryRepository.findTrack(nextId)?.takeIf { !it.decodeFailed }?.let(::resolvePlayableTrack)
             ?: return
         val inputs = NearEndPreloadPolicy.Inputs(
             isPlaying = true,
@@ -1193,6 +1216,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         val track = currentTrack ?: return
         currentPreparationRecorded = true
         libraryRepository.recordRecentlyPlayed(track.id)
+        // Proof beats prediction: a track that plays cannot be undecodable, so a
+        // stale verdict is withdrawn here. Guarded, so the ordinary case writes
+        // nothing.
+        if (track.decodeFailed) libraryRepository.clearPlaybackFailure(track.id)
         logger.info("Playback", "playback started track=${track.id} ${track.title}")
     }
 

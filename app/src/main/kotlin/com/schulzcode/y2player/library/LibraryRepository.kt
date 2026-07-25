@@ -304,6 +304,47 @@ class LibraryRepository(
         }
     }
 
+    /**
+     * Remembers that this device could not decode a track.
+     *
+     * Called from the playback thread when the framework attributed a failure to
+     * the media itself, so a file the firmware cannot handle is discovered the
+     * hard way exactly once instead of on every selection.
+     */
+    fun recordPlaybackFailure(trackId: Long, reason: String) = updatePlaybackError(trackId, reason)
+
+    /**
+     * Forgets a recorded failure, called when the track does eventually play.
+     *
+     * This is what lets a vendor codec correct the record: if the firmware turns
+     * out to decode something the platform is not documented to support, the
+     * label disappears the first time it succeeds.
+     */
+    fun clearPlaybackFailure(trackId: Long) = updatePlaybackError(trackId, null)
+
+    private fun updatePlaybackError(trackId: Long, reason: String?) = stateExecutor.execute {
+        val track = current.byId[trackId] ?: database.findTrack(trackId) ?: return@execute
+        // Nothing to write in the common case, which is what keeps this off the
+        // per-track-change write path.
+        if (track.playbackError == reason) return@execute
+        database.setPlaybackError(trackId, reason)
+        logger.info("Library", "track=$trackId playbackError=${reason ?: "cleared"}")
+        revision += 1
+        val updatedTracks = replaceTrack(current.tracks, track.copy(playbackError = reason))
+        if (updatedTracks === current.tracks) {
+            publish(current.copy(revision = revision))
+        } else {
+            // Bumping tracksRevision is what makes the row label appear: screens
+            // key their row caches on it.
+            tracksRevision += 1
+            publish(current.copy(
+                revision = revision,
+                tracksRevision = tracksRevision,
+                index = LibraryIndex.of(updatedTracks)
+            ))
+        }
+    }
+
     fun toggleFavorite(trackId: Long) = stateExecutor.execute {
         val track = current.byId[trackId] ?: database.findTrack(trackId) ?: return@execute
         val favorite = !track.favorite

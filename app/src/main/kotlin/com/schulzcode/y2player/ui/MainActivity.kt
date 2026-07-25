@@ -441,7 +441,9 @@ class MainActivity : Activity() {
                 else -> { libraryRepository.scan(); showMessage("Library scan started") }
             }
             AppEffect.ShuffleAll -> {
-                val tracks = store.state.library.availableTracks
+                // Tracks this device has already failed to decode are left out:
+                // shuffling into one produces a silent skip for no reason.
+                val tracks = store.state.library.availableTracks.filterNot { it.decodeFailed }
                 if (tracks.isEmpty()) showMessage("No music found") else requirePlayback { binder ->
                     binder.playCollectionShuffled(tracks.map { track -> track.id })
                 }

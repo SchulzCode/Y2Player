@@ -21,11 +21,28 @@ data class Track(
     val bitDepth: Int? = null,
     val channels: Int? = null,
     val addedAt: Long = modifiedAt,
-    val favorite: Boolean = false
+    val favorite: Boolean = false,
+    /**
+     * Why this device failed to decode the file, or null if it never has.
+     *
+     * Set only from failures the framework blamed on the media itself, never
+     * from a transient fault. Cleared when the file changes on disk, and when it
+     * does eventually play — so a firmware that turns out to support the codec
+     * corrects the record itself.
+     */
+    val playbackError: String? = null
 ) {
     val displayArtist: String get() = artist?.takeIf { it.isNotBlank() } ?: "Unknown artist"
     val displayAlbum: String get() = album?.takeIf { it.isNotBlank() } ?: "Unknown album"
     val extension: String get() = absolutePath.substringAfterLast('.', "").lowercase()
+
+    /**
+     * True when this device has already proven it cannot decode the file.
+     *
+     * Stronger evidence than [AudioCodecSupport], which only reasons about what
+     * the platform is documented to support: this is what actually happened here.
+     */
+    val decodeFailed: Boolean get() = playbackError != null
 }
 
 data class TrackDraft(

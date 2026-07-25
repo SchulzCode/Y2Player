@@ -92,6 +92,12 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 execSQL("CREATE UNIQUE INDEX IF NOT EXISTS playlists_source_path_idx ON playlists(source_path)")
                 version = 7
             }
+            if (version < 8) {
+                // Records a decode failure the device actually reported, so a file
+                // the firmware cannot play is only discovered the hard way once.
+                execSQL("ALTER TABLE tracks ADD COLUMN playback_error TEXT")
+                version = 8
+            }
             if (version != newVersion) error("No migration exists from $oldVersion to $newVersion")
         }
     }
@@ -193,6 +199,23 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
             ContentValues().apply { put("available", 0) },
             "volume_id = ?",
             arrayOf(volumeId)
+        )
+    }
+
+    /**
+     * Records that this device could not decode the track, with the reason.
+     *
+     * Only called for failures the framework attributed to the media itself —
+     * see PlaybackFailure. A transient fault such as mediaserver dying must never
+     * land here, or a perfectly good file would be condemned by an unrelated
+     * crash.
+     */
+    fun setPlaybackError(trackId: Long, reason: String?) {
+        writableDatabase.update(
+            "tracks",
+            ContentValues().apply { putNullable("playback_error", reason) },
+            "id = ?",
+            arrayOf(trackId.toString())
         )
     }
 
@@ -565,6 +588,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         val channels = cursor.getColumnIndexOrThrow("channels")
         val addedAt = cursor.getColumnIndexOrThrow("added_at")
         val favorite = cursor.getColumnIndexOrThrow("favorite")
+        val playbackError = cursor.getColumnIndexOrThrow("playback_error")
     }
 
     private fun Cursor.toTrack(columns: TrackColumns, stringPool: MutableMap<String, String>?): Track? {
@@ -594,7 +618,8 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         bitDepth = nullableInt(columns.bitDepth),
         channels = nullableInt(columns.channels),
         addedAt = getLong(columns.addedAt).coerceAtLeast(0),
-        favorite = getInt(columns.favorite) != 0
+        favorite = getInt(columns.favorite) != 0,
+        playbackError = nullableString(columns.playbackError)
     )
     }
 
@@ -682,6 +707,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 file_size INTEGER NOT NULL,
                 modified_at INTEGER NOT NULL,
                 last_seen_scan INTEGER NOT NULL,
+                playback_error TEXT,
                 available INTEGER NOT NULL DEFAULT 1,
                 scan_error TEXT,
                 codec TEXT,
@@ -729,7 +755,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DATABASE_NAME = "y2player.db"
-        private const val DATABASE_VERSION = 7
+        private const val DATABASE_VERSION = 8
         private const val MAX_POOLED_STRINGS = 1_024
         private const val MAX_PLAY_ORDER_ITEMS = 50_000
         private const val MAX_PLAY_ORDER_CHARS = 300_000
@@ -738,7 +764,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         private val TRACK_COLUMNS = arrayOf(
             "id", "volume_id", "absolute_path", "relative_path", "title", "artist", "album", "album_artist",
             "track_number", "disc_number", "duration_ms", "file_size", "modified_at", "available", "scan_error",
-            "codec", "sample_rate", "bit_depth", "channels", "added_at", "favorite"
+            "codec", "sample_rate", "bit_depth", "channels", "added_at", "favorite", "playback_error"
         )
 
         private fun backupDatabase(context: Context, path: String?, reason: String): java.io.File? = runCatching {

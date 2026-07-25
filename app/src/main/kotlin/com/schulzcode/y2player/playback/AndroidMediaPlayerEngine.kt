@@ -362,11 +362,12 @@ class AndroidMediaPlayerEngine(
 
     private fun handleError(source: MediaPlayer, what: Int, extra: Int): Boolean {
         val message = "MediaPlayer error what=$what extra=$extra"
+        val failure = PlaybackErrorClassifier.classify(what, extra)
         if (source === current.player) {
             current.state = EngineState.ERROR
             state = EngineState.ERROR
-            logger.error("PlaybackEngine", "$message request=${current.requestId}")
-            listener?.onError(current.requestId, message)
+            logger.error("PlaybackEngine", "$message request=${current.requestId} failure=$failure")
+            listener?.onError(current.requestId, message, failure)
             return true
         }
         val failed = next

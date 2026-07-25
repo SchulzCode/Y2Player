@@ -10,7 +10,13 @@ interface PlaybackEngine {
         fun onNextPrepared(requestId: Long, durationMs: Long)
         fun onTransitioned(requestId: Long, durationMs: Long)
         fun onCompleted(requestId: Long)
-        fun onError(requestId: Long, message: String)
+        /**
+         * [failure] tells the service whether the file itself is at fault. It
+         * defaults to UNKNOWN so that internal callers raising their own errors
+         * (a prepare timeout, an unusable duration) cannot accidentally condemn
+         * a track they know nothing about.
+         */
+        fun onError(requestId: Long, message: String, failure: PlaybackFailure = PlaybackFailure.UNKNOWN)
         fun onNextError(requestId: Long, message: String)
     }
 
