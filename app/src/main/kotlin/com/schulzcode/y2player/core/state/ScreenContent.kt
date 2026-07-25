@@ -366,11 +366,27 @@ object ScreenContent {
      * the duplicate is gone. Diagnostics, Android settings and About (visited only
      * occasionally) stay grouped under System.
      */
+    /**
+     * Ordered by how often a listener actually opens each entry, then by how much it
+     * changes what they hear.
+     *
+     * Bluetooth leads because it is the only entry that is a recurring *task* rather
+     * than a setting — connecting a headset is something you do, repeatedly, where
+     * everything below it is set once and forgotten. Sound Effects is a peer of
+     * Playback rather than a child of it, so the equalizer and Balance are three
+     * presses away instead of four; Balance is an accessibility setting and does not
+     * belong at the bottom of a nested screen. Sort Order sits with Storage because
+     * both are about the library rather than about playback. System stays last: it
+     * holds the route out to the platform Settings app, and a listener should not
+     * stumble into it.
+     */
     private fun settingsRows(state: AppState): List<ScreenRow> = listOf(
-        ScreenRow.Action("Playback", playbackSummary(state), "playback"),
-        ScreenRow.Action("Sort Order", sortLabel(state.preferences.sortOrder), "sort"),
         ScreenRow.Action("Bluetooth", bluetoothSummary(state), "bluetooth"),
+        ScreenRow.Action("Playback", playbackSummary(state), "playback"),
+        ScreenRow.Action("Sound Effects", soundSummary(state), "sound"),
+        ScreenRow.Action("Controls", controlsSummary(state), "controls"),
         ScreenRow.Action("Display", "${state.display.brightnessPercent}% · ${timeoutLabel(state.display.screenTimeoutMs)}", "display"),
+        ScreenRow.Action("Sort Order", sortLabel(state.preferences.sortOrder), "sort"),
         ScreenRow.Action("Storage", scanSubtitle(state), "storage"),
         ScreenRow.Action("System", "Diagnostics · Android settings · About", "system")
     )
@@ -388,9 +404,16 @@ object ScreenContent {
         ScreenRow.Action("About", "Y2 Player ${BuildConfig.VERSION_NAME}", "about")
     )
 
+    /**
+     * Grouped by what each setting does, in the order a listener would look for them:
+     * what plays next, how tracks join, how seeking behaves, volume, then the two
+     * rules for being interrupted. The previous order interleaved all five.
+     */
     private fun playbackRows(state: AppState): List<ScreenRow> = listOf(
+        // What plays next
         ScreenRow.Action("Shuffle", onOff(state.playback.shuffleEnabled), "shuffle"),
         ScreenRow.Action("Repeat", state.playback.repeatMode.name.lowercase(Locale.US).replaceFirstChar { it.titlecase(Locale.US) }, "repeat"),
+        // How one track joins the next
         ScreenRow.Action(
             "Gapless Playback",
             if (state.preferences.crossfadeMs > 0) "Crossfade takes priority" else onOff(state.preferences.gaplessEnabled),
@@ -398,20 +421,21 @@ object ScreenContent {
         ),
         ScreenRow.Action("Crossfade", millisecondsLabel(state.preferences.crossfadeMs), "crossfade"),
         ScreenRow.Action("Pause / Resume Fade", millisecondsLabel(state.preferences.pauseResumeFadeMs), "pause_fade"),
+        // Seeking and skipping
         ScreenRow.Action("Seek Step", secondsLabel(state.preferences.seekStepMs), "seek_step"),
         ScreenRow.Action("Hold Seek Step", secondsLabel(state.preferences.longSeekStepMs), "long_seek_step"),
         ScreenRow.Action("Previous Restarts Track", thresholdLabel(state.preferences.previousRestartThresholdMs), "previous_threshold"),
-        ScreenRow.Action("Focus Ducking", if (state.preferences.duckOnFocusLoss) "Lower volume" else "Pause", "duck_focus"),
+        // Volume, and where playback picks up
         ScreenRow.Action("Volume Control", volumeModeLabel(state), "volume_mode"),
+        ScreenRow.Action("Resume Position", onOff(state.preferences.resumePosition), "resume_position"),
         ScreenRow.Action("Sleep Timer", sleepTimerSubtitle(state), "sleep_timer"),
-        ScreenRow.Action("Sound Effects", soundSummary(state), "sound"),
+        // What happens when something else interrupts
+        ScreenRow.Action("Focus Ducking", if (state.preferences.duckOnFocusLoss) "Lower volume" else "Pause", "duck_focus"),
         ScreenRow.Action(
             "Wired Speaker Fallback",
             if (state.preferences.pauseOnDisconnect) "Off · wired unplug pauses" else "On · Bluetooth still always pauses",
             "pause_disconnect"
-        ),
-        ScreenRow.Action("Resume Position", onOff(state.preferences.resumePosition), "resume_position"),
-        ScreenRow.Action("Keep Screen On", onOff(state.preferences.keepScreenOnWhilePlaying), "keep_screen_on")
+        )
     )
 
     private fun soundRows(state: AppState): List<ScreenRow> {
@@ -424,8 +448,28 @@ object ScreenContent {
             else -> effects.presetNames.getOrNull(state.preferences.equalizerPreset) ?: "Preset ${state.preferences.equalizerPreset + 1}"
         }
         return buildList {
+            // Everything adjustable first. The DAC block below is read-only, and
+            // having three facts sit between Balance and the effects toggle meant
+            // scrolling past information to reach a control.
             add(ScreenRow.Action("Audio Quality", state.preferences.audioQualityMode.label, "audio_quality"))
             add(ScreenRow.Action("Balance", AudioBalance.label(state.preferences.balance), "balance"))
+            if (effects.available) {
+                add(ScreenRow.Action("Sound Effects", if (direct) "Bypassed by Direct DAC" else onOff(state.preferences.audioEffectsEnabled), "effects_toggle"))
+                if (effects.equalizerSupported) {
+                    add(ScreenRow.Action("Equalizer Preset", preset, "eq_preset"))
+                    add(ScreenRow.Action("Custom Equalizer", "${effects.bandFrequenciesHz.size} bands · use left/right", "eq_bands"))
+                } else add(ScreenRow.Group("Equalizer", "Unsupported by this firmware", "eq_unsupported"))
+                if (effects.bassBoostSupported) add(ScreenRow.Action("Bass Boost", percent(state.preferences.bassStrength, 1000), "bass"))
+                else add(ScreenRow.Group("Bass Boost", "Unsupported by this firmware", "bass_unsupported"))
+                if (effects.loudnessSupported) add(ScreenRow.Action("Loudness", gainLabel(state.preferences.loudnessGainMb), "loudness"))
+                else add(ScreenRow.Group("Loudness", "Unsupported by this firmware", "loudness_unsupported"))
+            } else {
+                add(ScreenRow.Group("Sound Effects", effects.errorMessage ?: "No compatible Android audio effects found", "effects_unavailable"))
+            }
+
+            // Read-only, and now reached in both cases: the previous version returned
+            // early when the effect framework was missing, which hid the DAC and route
+            // information from exactly the firmware whose behaviour it explains.
             add(ScreenRow.Group(
                 "CS43131 DAC",
                 when {
@@ -445,20 +489,9 @@ object ScreenContent {
             if (direct) {
                 add(ScreenRow.Group("Direct-mode DSP", "Effects, crossfade and fades are bypassed during playback", "dac_bypass"))
             }
-            if (!effects.available) {
-                add(ScreenRow.Group("Sound Effects", effects.errorMessage ?: "No compatible Android audio effects found", "effects_unavailable"))
-                return@buildList
+            if (effects.available) {
+                effects.errorMessage?.let { add(ScreenRow.Group("Last effect error", it, "effects_error")) }
             }
-            add(ScreenRow.Action("Sound Effects", if (direct) "Bypassed by Direct DAC" else onOff(state.preferences.audioEffectsEnabled), "effects_toggle"))
-            if (effects.equalizerSupported) {
-                add(ScreenRow.Action("Equalizer Preset", preset, "eq_preset"))
-                add(ScreenRow.Action("Custom Equalizer", "${effects.bandFrequenciesHz.size} bands · use left/right", "eq_bands"))
-            } else add(ScreenRow.Group("Equalizer", "Unsupported by this firmware", "eq_unsupported"))
-            if (effects.bassBoostSupported) add(ScreenRow.Action("Bass Boost", percent(state.preferences.bassStrength, 1000), "bass"))
-            else add(ScreenRow.Group("Bass Boost", "Unsupported by this firmware", "bass_unsupported"))
-            if (effects.loudnessSupported) add(ScreenRow.Action("Loudness", gainLabel(state.preferences.loudnessGainMb), "loudness"))
-            else add(ScreenRow.Group("Loudness", "Unsupported by this firmware", "loudness_unsupported"))
-            effects.errorMessage?.let { add(ScreenRow.Group("Last effect error", it, "effects_error")) }
         }
     }
 

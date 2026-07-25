@@ -215,9 +215,15 @@ class AppReducerTest {
     }
 
     @Test fun rightOnSettingsEntersTheSelectedChildInsteadOfOpeningNowPlaying() {
-        val state = AppState(
-            screenStack = listOf(ScreenEntry(Screen.Settings)),
-            playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
+        // Selected by key rather than left at index 0: this used to depend on
+        // Playback happening to be the first row, so reordering the menu broke it
+        // without saying anything about the behaviour under test.
+        val state = selectKey(
+            AppState(
+                screenStack = listOf(ScreenEntry(Screen.Settings)),
+                playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
+            ),
+            "playback"
         )
         val result = AppReducer.reduce(state, AppAction.Right)
         assertEquals(Screen.PlaybackSettings, result.state.currentScreen)
@@ -240,11 +246,11 @@ class AppReducerTest {
         )
         assertEquals(Screen.Favorites, AppReducer.reduce(playlists, AppAction.Right).state.currentScreen)
 
-        val playbackSettings = selectKey(
-            AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings)), playback = loaded),
+        val settings = selectKey(
+            AppState(screenStack = listOf(ScreenEntry(Screen.Settings)), playback = loaded),
             "sound"
         )
-        assertEquals(Screen.SoundSettings, AppReducer.reduce(playbackSettings, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.SoundSettings, AppReducer.reduce(settings, AppAction.Right).state.currentScreen)
 
         val display = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded),
@@ -435,10 +441,10 @@ class AppReducerTest {
     }
 
     @Test fun soundSettingsNavigateToDeviceEqualizerBands() {
-        val playback = AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings)))
+        val playback = AppState(screenStack = listOf(ScreenEntry(Screen.Settings)))
         val soundIndex = ScreenContent.rows(playback).indexOfFirst { (it as? ScreenRow.Action)?.key == "sound" }
         val sound = AppReducer.reduce(
-            playback.copy(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings, soundIndex))),
+            playback.copy(screenStack = listOf(ScreenEntry(Screen.Settings, soundIndex))),
             AppAction.Confirm
         ).state.copy(
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(
@@ -643,6 +649,53 @@ class AppReducerTest {
      * Balance and the effects toggle, so you scrolled past information to reach a
      * control.
      */
+    @Test fun theSoundScreenPutsControlsBeforeInformation() {
+        // Effects available, or there are no equalizer/bass/loudness rows to order
+        // against — the missing-framework case is covered separately below.
+        val withEffects = AppState(
+            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            playback = PlaybackSnapshot(
+                audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(
+                    available = true,
+                    equalizerSupported = true,
+                    bassBoostSupported = true,
+                    loudnessSupported = true
+                )
+            )
+        )
+        val keys = soundKeys(withEffects)
+        val lastControl = keys.indexOf("loudness")
+        val firstFact = keys.indexOf("dac_status")
+        assertTrue("expected controls then facts, got $keys", lastControl in 0 until firstFact)
+        assertEquals(listOf("audio_quality", "balance"), keys.take(2))
+    }
+
+    /**
+     * The restructure fixed a second thing: the old version returned early when the
+     * effect framework was missing, which hid the DAC and route rows from exactly the
+     * firmware whose behaviour they explain.
+     */
+    @Test fun theDacInformationSurvivesMissingAudioEffectSupport() {
+        val noEffects = AppState(
+            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            playback = PlaybackSnapshot(
+                audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(available = false)
+            )
+        )
+        val keys = soundKeys(noEffects)
+        assertTrue("the unavailable notice must still appear", "effects_unavailable" in keys)
+        assertTrue("the DAC status must not be hidden with it", "dac_status" in keys)
+        assertTrue("balance must stay reachable", "balance" in keys)
+    }
+
+    private fun soundKeys(state: AppState): List<String> = ScreenContent.rows(state).map {
+        when (it) {
+            is ScreenRow.Action -> it.key
+            is ScreenRow.Group -> it.key
+            else -> ""
+        }
+    }
+
     private fun soundRowSubtitle(state: AppState, key: String): String? =
         ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>().first { it.key == key }.subtitle
 
@@ -680,6 +733,16 @@ class AppReducerTest {
         )
     }
 
+    @Test fun displayNoLongerCarriesInputFeedbackRows() {
+        val display = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Display)),
+            device = DeviceState(hapticsAvailable = true)
+        )
+        val keys = ScreenContent.rows(display).filterIsInstance<ScreenRow.Action>().map { it.key }
+        assertEquals(listOf("brightness", "theme", "timeout", "keep_screen_on"), keys)
+    }
+
+    /** One preference, one home: it was on Playback and Display under two names. */
     @Test fun keepScreenOnLivesOnlyOnTheDisplayScreen() {
         fun keys(screen: Screen) = ScreenContent.rows(AppState(screenStack = listOf(ScreenEntry(screen))))
             .filterIsInstance<ScreenRow.Action>().map { it.key }

@@ -200,6 +200,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "playback" -> push(state, Screen.PlaybackSettings)
+            "sound" -> push(state, Screen.SoundSettings)
             "sort" -> push(state, Screen.SortOrder)
             "bluetooth" -> push(state, Screen.Bluetooth)
             "display" -> push(state, Screen.Display)
@@ -236,7 +237,6 @@ object AppReducer {
             "duck_focus" -> Reduction(state, listOf(ToggleDuckOnFocusLoss))
             "volume_mode" -> Reduction(state, listOf(CycleVolumeMode))
             "sleep_timer" -> Reduction(state, listOf(CycleSleepTimer))
-            "sound" -> push(state, Screen.SoundSettings)
             else -> Reduction(state)
         }
     }

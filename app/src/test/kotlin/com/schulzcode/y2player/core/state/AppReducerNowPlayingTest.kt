@@ -164,7 +164,13 @@ class AppReducerNowPlayingTest {
     @Test fun settingsGroupsMaintenanceUnderSystem() {
         val settings = AppState(screenStack = listOf(ScreenEntry(Screen.Settings)))
         val rows = ScreenContent.rows(settings)
-        assertEquals(6, rows.size)
+        // The keys rather than the count: a bare size assertion said nothing about
+        // what the menu contains, so adding Controls failed it without explaining
+        // anything, and a reordering would have passed it silently.
+        assertEquals(
+            listOf("bluetooth", "playback", "sound", "controls", "display", "sort", "storage", "system"),
+            rows.map { (it as ScreenRow.Action).key }
+        )
         val systemIndex = rows.indexOfFirst { (it as? ScreenRow.Action)?.key == "system" }
         val selected = settings.copy(screenStack = listOf(ScreenEntry(Screen.Settings, systemIndex)))
         val system = AppReducer.reduce(selected, AppAction.Confirm).state
