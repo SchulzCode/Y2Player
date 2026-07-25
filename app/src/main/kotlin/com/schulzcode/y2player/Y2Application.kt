@@ -1,6 +1,12 @@
 package com.schulzcode.y2player
 
 import android.app.Application
+import android.bluetooth.BluetoothA2dp
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -70,6 +76,54 @@ class Y2Application : Application() {
         container.diagnosticsRepository.setUsbState(usb)
     }
 
+    /**
+     * Re-takes media-button ownership when a Bluetooth audio device connects.
+     *
+     * On API 19 the last caller of `registerMediaButtonEventReceiver` wins, and
+     * this process registers once at startup — long before a headset is paired.
+     * Anything that claimed the buttons in between silently owns them, so the
+     * first stem press after connecting went elsewhere and the headset appeared
+     * dead. Starting playback from the device's own keys fixed it only because
+     * [com.schulzcode.y2player.playback.PlaybackService] re-asserts ownership on
+     * every engine start; connecting a headset had no equivalent.
+     *
+     * This lives process-wide rather than in the playback service because the
+     * service stops itself when idle: with the screen off and nothing playing,
+     * there is no service alive to notice the connection. The receiver does one
+     * AudioManager call on a connect transition and nothing otherwise.
+     */
+    private val bluetoothOwnershipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
+            mainHandler.removeCallbacks(mediaButtonReassert)
+            if (state != BluetoothProfile.STATE_CONNECTED) return
+            reassertMediaButtons("a2dp_connected")
+            // A2DP connecting is not AVRCP being ready: the remote-control link
+            // is established afterwards, and API 19 exposes no broadcast for it
+            // (BluetoothAvrcpController is API 23+, and is the controller role).
+            // Device logs showed the claim above landing in the same millisecond
+            // as A2DP CONNECTED and the first stem presses still going nowhere,
+            // so the claim is repeated as the link settles. Re-registering is one
+            // idempotent AudioManager call, so a redundant repeat costs nothing
+            // and a needed one restores the headset.
+            mainHandler.postDelayed(mediaButtonReassert, AVRCP_SETTLE_MS)
+            mainHandler.postDelayed(mediaButtonReassert, AVRCP_SETTLE_MS * 3)
+        }
+    }
+
+    private val mediaButtonReassert = Runnable { reassertMediaButtons("avrcp_settle") }
+
+    private fun reassertMediaButtons(trigger: String) {
+        MediaButtonReceiver.register(this, container.logger)
+        container.logger.info("MediaButton", "ownership re-asserted trigger=$trigger")
+        container.eventLog.info(
+            Sub.BLUETOOTH, Ev.BT_OPERATION,
+            "operation" to "media_button_reassert",
+            "trigger" to trigger
+        )
+    }
+
     private fun scheduleBootReconcile(volumeId: String) {
         mainHandler.postDelayed({
             if (container.safeModeManager.isSafeMode()) return@postDelayed
@@ -120,6 +174,14 @@ class Y2Application : Application() {
         // The playback service may stop while paused without surrendering remote
         // ownership; the manifest receiver can then cold-start it on the next key.
         MediaButtonReceiver.register(this, container.logger)
+        // ...and re-asserted whenever a headset connects, because the initial
+        // claim above can be superseded before the user ever pairs one.
+        runCatching {
+            registerReceiver(
+                bluetoothOwnershipReceiver,
+                IntentFilter(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            )
+        }.onFailure { container.logger.warn("MediaButton", "A2DP ownership watch unavailable: ${it.message}") }
 
         // Resolve measured hardware facts off the main thread and record them once.
         // Every later diagnostic can then be read against a known device identity
@@ -198,6 +260,8 @@ class Y2Application : Application() {
         container.storageMonitor.stop()
         container.usbStateMonitor.removeListener(usbCoordinator)
         container.usbStateMonitor.stop()
+        runCatching { unregisterReceiver(bluetoothOwnershipReceiver) }
+        mainHandler.removeCallbacks(mediaButtonReassert)
         container.bluetoothControllerOrNull()?.stop()
         super.onTerminate()
     }
@@ -224,5 +288,7 @@ class Y2Application : Application() {
 
     companion object {
         private const val BOOT_STORAGE_GRACE_MS = 10_000L
+        /** Repeat offsets are this and 3x this, so ~2 s and ~6 s after connect. */
+        private const val AVRCP_SETTLE_MS = 2_000L
     }
 }
