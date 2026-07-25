@@ -184,6 +184,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     @Volatile private var currentTrack: Track? = null
     @Volatile private var shuttingDown = false
     @Volatile private var boundClients = 0
+    /** Last start id Android delivered; see [stopSelfIfIdle]. */
+    @Volatile private var lastStartId = 0
     private var requestedPreferences = PlayerPreferencesState()
     private var currentPreferences = PlayerPreferencesState()
     private var audioEffectsState = AudioEffectsState()
@@ -309,6 +311,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Recorded so stopSelfIfIdle can pass it back. See there for why.
+        lastStartId = startId
         if (intent?.action == ACTION_MEDIA_BUTTON) {
             val keyCode = intent.getIntExtra(EXTRA_MEDIA_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN)
             // The non-exported service trusts the receiver's source-scoped key
@@ -1886,11 +1890,31 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
+    /**
+     * Stops the service once nothing needs it, without discarding a command that
+     * arrived in the meantime.
+     *
+     * [stopSelfResult] with the last delivered start id rather than a bare
+     * `stopSelf()`: a headset press reaches this service as a `startService`, and
+     * a bare stop cannot tell that one arrived between deciding to stop and
+     * stopping. Device logs showed exactly that — the press was dispatched,
+     * `onDestroy` then cleared the playback thread's queue with the resulting
+     * `togglePlaybackInternal` still on it, and the command was silently lost.
+     * That is why the first stem press after the screen went off did nothing and
+     * the second one, which cold-started a fresh service, worked.
+     *
+     * Passing the id makes Android refuse the stop in that case, so the press
+     * survives. A refused stop leaves an idle service running until the next
+     * idle check, which is a far better outcome than a dropped command: paused
+     * playback holds no wake lock.
+     */
     private fun stopSelfIfIdle() {
-        if (boundClients == 0 && snapshot.status !in ACTIVE_STATUSES && !safetyPolicy.hasPendingFocusResume()) {
-            logger.info("Playback", "idle with no bound clients: stopping service")
-            stopSelf()
-        }
+        if (boundClients != 0 || snapshot.status in ACTIVE_STATUSES || safetyPolicy.hasPendingFocusResume()) return
+        val startId = lastStartId
+        // Never started, only bound: there is no id to match, and unbinding
+        // already destroys the service.
+        val stopped = if (startId == 0) { stopSelf(); true } else stopSelfResult(startId)
+        logger.info("Playback", "idle with no bound clients: startId=$startId stopped=$stopped")
     }
 
     private fun createNotification(): Notification {
