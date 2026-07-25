@@ -7,9 +7,18 @@ import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class AppReducerTest {
+    /**
+     * The row cache is process-wide, and the artist and album screens are cached
+     * screens, so one test's rows could otherwise satisfy another's lookup.
+     */
+    @Before fun clearRowCache() {
+        ScreenContent.clearCachedRows()
+    }
+
     private val track = Track(
         id = 1,
         volumeId = "internal",
@@ -463,6 +472,97 @@ class AppReducerTest {
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
     }
 
+    // ------------------------------------------------ Artists → albums → songs
+
+    /** Two artists sharing an album name, which is what makes the scoping matter. */
+    private val artistLibrary = LibraryState(
+        tracks = listOf(
+            track.copy(id = 1, title = "Aria", artist = "Bowie", album = "Hunky Dory"),
+            track.copy(id = 2, title = "Bell", artist = "Bowie", album = "Hunky Dory"),
+            track.copy(id = 3, title = "Cell", artist = "Bowie", album = "Greatest Hits"),
+            track.copy(id = 4, title = "Dust", artist = "Queen", album = "Greatest Hits")
+        )
+    )
+
+    private fun atArtists() = AppState(
+        screenStack = listOf(ScreenEntry(Screen.Artists)),
+        library = artistLibrary
+    )
+
+    private fun selectGroup(state: AppState, key: String): AppState {
+        val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.Group)?.key == key }
+        require(index >= 0) { "Missing group $key on ${state.currentScreen}" }
+        return state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index))
+    }
+
+    /** Pressing an artist used to jump straight to every track; now it lists albums. */
+    @Test fun pressingAnArtistOpensThatArtistsAlbums() {
+        val result = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm)
+        assertEquals(Screen.ArtistAlbums("Bowie"), result.state.currentScreen)
+        assertTrue("navigating must not start playback", result.effects.isEmpty())
+    }
+
+    @Test fun theArtistAlbumsScreenListsAlbumsWithAnAllSongsRow() {
+        val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
+        val rows = ScreenContent.rows(albums)
+        assertEquals("All Songs", rows.first().title)
+        assertEquals("3 tracks", rows.first().subtitle)
+        assertEquals(
+            listOf("Greatest Hits", "Hunky Dory"),
+            rows.drop(1).map { it.title }
+        )
+        assertEquals(listOf("1 track", "2 tracks"), rows.drop(1).map { it.subtitle })
+        assertEquals("the header names the artist", "Bowie", ScreenContent.title(albums))
+    }
+
+    /**
+     * The point of the whole change: an album reached through an artist promises
+     * only that artist's tracks. Album names are not unique — two artists with a
+     * "Greatest Hits" is ordinary — and before this the two merged.
+     */
+    @Test fun anAlbumReachedThroughAnArtistShowsOnlyThatArtistsTracks() {
+        val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
+        val songs = AppReducer.reduce(selectGroup(albums, "Greatest Hits"), AppAction.Confirm).state
+
+        assertEquals(Screen.AlbumSongs("Greatest Hits", "Bowie"), songs.currentScreen)
+        assertEquals(listOf("Cell"), ScreenContent.rows(songs).map { it.title })
+    }
+
+    /**
+     * The global Albums list still merges them, deliberately: keying it by artist
+     * too would split compilations, which is the case that list exists to show.
+     */
+    @Test fun theGlobalAlbumsListStillMergesSharedAlbumNames() {
+        val albums = AppState(screenStack = listOf(ScreenEntry(Screen.Albums)), library = artistLibrary)
+        val songs = AppReducer.reduce(selectGroup(albums, "Greatest Hits"), AppAction.Confirm).state
+
+        assertEquals(Screen.AlbumSongs("Greatest Hits", null), songs.currentScreen)
+        assertEquals(listOf("Cell", "Dust"), ScreenContent.rows(songs).map { it.title }.sorted())
+    }
+
+    /** The old flat view stays one press away for anyone who preferred it. */
+    @Test fun allSongsStillReachesTheFlatArtistList() {
+        val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
+        val songs = AppReducer.reduce(selectKey(albums, "artist_all_songs"), AppAction.Confirm).state
+
+        assertEquals(Screen.ArtistSongs("Bowie"), songs.currentScreen)
+        assertEquals(3, ScreenContent.rows(songs).size)
+    }
+
+    /** Back must retrace the new middle step rather than skipping it. */
+    @Test fun backFromAnAlbumReturnsToTheArtistsAlbums() {
+        val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
+        val songs = AppReducer.reduce(selectGroup(albums, "Hunky Dory"), AppAction.Confirm).state
+        val back = AppReducer.reduce(songs, AppAction.Back).state
+        assertEquals(Screen.ArtistAlbums("Bowie"), back.currentScreen)
+        assertEquals(Screen.Artists, AppReducer.reduce(back, AppAction.Back).state.currentScreen)
+    }
+
+    /**
+     * Balance sits above the effects rows on the Sound screen and must stay reachable
+     * when the effect framework is missing, since it is a player gain rather than an
+     * AudioEffect — an accessibility setting cannot depend on firmware luck.
+     */
     /** Selects a track by id, so a test does not depend on the screen's sort order. */
     private fun selectTrack(state: AppState, trackId: Long): AppState {
         val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.TrackRow)?.track?.id == trackId }

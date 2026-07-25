@@ -53,6 +53,7 @@ object ScreenContent {
         Screen.Albums -> "Albums"
         is Screen.AlbumSongs -> "Album"
         Screen.Artists -> "Artists"
+        is Screen.ArtistAlbums -> screen.artist
         is Screen.ArtistSongs -> "Artist"
         is Screen.Folders -> if (screen.volumeId == null) "Folders" else screen.relativePath.takeIf { it.isNotBlank() } ?: volumeName(screen.volumeId)
         Screen.Playlists -> "Playlists"
@@ -128,8 +129,9 @@ object ScreenContent {
         Screen.Favorites -> sorted(state.library.favoriteTracks, state.preferences.sortOrder).map(ScreenRow::TrackRow)
         Screen.RecentlyPlayed -> state.library.recentlyPlayed.map(ScreenRow::TrackRow)
         Screen.Albums -> albumRows(state.library.availableTracks)
-        is Screen.AlbumSongs -> albumDetailRows(state.library.availableTracks, screen.album)
+        is Screen.AlbumSongs -> albumDetailRows(state.library.availableTracks, screen.album, screen.artist)
         Screen.Artists -> artistRows(state.library.availableTracks)
+        is Screen.ArtistAlbums -> artistAlbumRows(state.library.availableTracks, screen.artist)
         is Screen.ArtistSongs -> artistDetailRows(state.library.availableTracks, screen.artist)
         is Screen.Folders -> folderRows(state.library.availableTracks, screen)
         Screen.Playlists -> playlistRows(state)
@@ -592,11 +594,34 @@ object ScreenContent {
 
     private fun albumDetailRows(
         tracks: List<Track>,
-        album: String
+        album: String,
+        artist: String? = null
     ): List<ScreenRow> {
         return albumSorted(
-            tracks.filter { it.displayAlbum == album }
+            tracks.filter { it.displayAlbum == album && (artist == null || it.displayArtist == artist) }
         ).map(ScreenRow::TrackRow)
+    }
+
+    /**
+     * One artist's albums, with the flat song list kept one press away.
+     *
+     * "All Songs" is first because it is what this screen used to do: pressing an
+     * artist went straight to every track. Anyone who preferred that has it without
+     * learning a new path, and it stays the only sensible route for an artist whose
+     * tracks carry no album tag at all.
+     *
+     * Album rows are subtitled with their track count rather than the artist, which
+     * the screen title already states — repeating it on every row would be noise.
+     */
+    private fun artistAlbumRows(tracks: List<Track>, artist: String): List<ScreenRow> {
+        val byArtist = tracks.filter { it.displayArtist == artist }
+        val counts = LinkedHashMap<String, Int>()
+        byArtist.forEach { track -> counts[track.displayAlbum] = (counts[track.displayAlbum] ?: 0) + 1 }
+        return buildList {
+            add(ScreenRow.Action("All Songs", trackCountLabel(byArtist.size), "artist_all_songs"))
+            counts.entries.sortedWith { first, second -> compareText(first.key, second.key) }
+                .forEach { (album, count) -> add(ScreenRow.Group(album, trackCountLabel(count), album)) }
+        }
     }
 
     private fun artistRows(tracks: List<Track>): List<ScreenRow> {
@@ -835,7 +860,8 @@ object ScreenContent {
     private fun isLargeScreen(screen: Screen): Boolean = when (screen) {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
         Screen.Playlists, Screen.Queue -> true
-        is Screen.AlbumSongs, is Screen.ArtistSongs, is Screen.Folders, is Screen.PlaylistTracks -> true
+        is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
+        is Screen.Folders, is Screen.PlaylistTracks -> true
         else -> false
     }
 

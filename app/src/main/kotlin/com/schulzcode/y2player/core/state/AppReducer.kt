@@ -69,8 +69,9 @@ object AppReducer {
             Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed -> playSelected(state)
             is Screen.AlbumSongs, is Screen.ArtistSongs ->
                 if ((row as? Action)?.key == "collection_play") playWholeCollection(state) else playSelected(state)
+            is Screen.ArtistAlbums -> confirmArtistAlbums(state, screen, row)
             Screen.Albums -> (row as? Group)?.key?.let { push(state, Screen.AlbumSongs(it)) } ?: Reduction(state)
-            Screen.Artists -> (row as? Group)?.key?.let { push(state, Screen.ArtistSongs(it)) } ?: Reduction(state)
+            Screen.Artists -> (row as? Group)?.key?.let { push(state, Screen.ArtistAlbums(it)) } ?: Reduction(state)
             is Screen.Folders -> when (row) {
                 is Folder -> push(state, Screen.Folders(row.volumeId, row.relativePath))
                 is TrackRow -> playSelected(state)
@@ -288,6 +289,19 @@ object AppReducer {
             "haptics" -> Reduction(state, listOf(CycleHapticLevel))
             else -> Reduction(state)
         }
+    }
+
+    /**
+     * Albums carry the artist forward so the album screen filters on both.
+     *
+     * Album names are not unique across a library — two artists with a "Greatest
+     * Hits" are ordinary — and reaching an album *through* an artist is a promise
+     * that only that artist's tracks are behind it.
+     */
+    private fun confirmArtistAlbums(state: AppState, screen: Screen.ArtistAlbums, row: ScreenRow): Reduction = when {
+        (row as? Action)?.key == "artist_all_songs" -> push(state, Screen.ArtistSongs(screen.artist))
+        row is Group -> push(state, Screen.AlbumSongs(row.key, screen.artist))
+        else -> Reduction(state)
     }
 
     private fun confirmBrightness(state: AppState, row: ScreenRow): Reduction {

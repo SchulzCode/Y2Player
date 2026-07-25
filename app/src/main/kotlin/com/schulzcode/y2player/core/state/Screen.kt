@@ -6,8 +6,17 @@ sealed interface Screen {
     data object Favorites : Screen
     data object RecentlyPlayed : Screen
     data object Albums : Screen
-    data class AlbumSongs(val album: String) : Screen
+    /**
+     * @param artist scopes the album to one artist when it was reached through
+     *   [ArtistAlbums]. Null means the global Albums list, which deliberately
+     *   merges every artist that shares the album name so a compilation stays one
+     *   album. Without this, two artists each with a "Greatest Hits" opened the
+     *   same merged track list.
+     */
+    data class AlbumSongs(val album: String, val artist: String? = null) : Screen
     data object Artists : Screen
+    /** Albums by one artist. The middle step of Artists → albums → songs. */
+    data class ArtistAlbums(val artist: String) : Screen
     data class ArtistSongs(val artist: String) : Screen
     data class Folders(val volumeId: String? = null, val relativePath: String = "") : Screen
     data object Playlists : Screen
