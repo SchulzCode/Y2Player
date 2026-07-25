@@ -4,6 +4,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.os.PowerManager
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.KeyEvent
 import kotlin.math.abs
 
@@ -36,18 +37,18 @@ object HardwareKeyGate {
         context: Context,
         keyCode: Int,
         source: Source = Source.ACTIVITY,
-        fromLocalHardware: Boolean = false
+        fromLocalKeypad: Boolean = false
     ): Boolean {
         // Cheap, purely static answers first: these never depend on screen state,
         // so the common wheel and transport cases can skip the cache entirely.
-        if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source, fromLocalHardware)) return true
+        if (isPowerOrVolume(keyCode) || isRemoteTransport(keyCode, source, fromLocalKeypad)) return true
         val state = screenState(context)
         return isInputAllowed(
             keyCode = keyCode,
             screenOn = state.screenOn,
             keyguardLocked = state.keyguardLocked,
             source = source,
-            fromLocalHardware = fromLocalHardware
+            fromLocalKeypad = fromLocalKeypad
         )
     }
 
@@ -79,6 +80,33 @@ object HardwareKeyGate {
         return state
     }
 
+    /**
+     * Whether a key event came from the player's own keypad rather than a
+     * Bluetooth remote.
+     *
+     * Both arrive on the same broadcast with the same keycode and both carry
+     * scan codes, so the only thing that separates them is the input device
+     * behind [deviceId]. Raw ids are not stable across reboots or re-pairings,
+     * but the reason they differ is: the Y2's keypad has a BACK key and a wheel,
+     * and an AVRCP remote has neither — it can only ever report transport keys.
+     * `InputDevice.hasKeys` is public API from 19 and answers exactly that.
+     *
+     * Unknown devices are treated as *not* local. Failing that way keeps a
+     * headset working if the lookup ever fails; failing the other way would
+     * silently kill remote control, which is the worse outcome and the one this
+     * whole gate exists to preserve.
+     *
+     * Not cached deliberately. Media buttons arrive a few times a minute, not a
+     * few times a second, and `InputDevice.getDevice` reads InputManager's
+     * client-side device list rather than making a call per lookup — so a cache
+     * would buy nothing and would misclassify a device id that the platform
+     * later reuses for a different device.
+     */
+    fun isLocalKeypad(deviceId: Int): Boolean = runCatching {
+        val device = InputDevice.getDevice(deviceId) ?: return@runCatching false
+        device.hasKeys(KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_UP).any { it }
+    }.getOrDefault(false)
+
     /** Drops the cached screen/lock answer; used by tests and on explicit resets. */
     @Synchronized
     fun invalidateScreenState() {
@@ -95,9 +123,9 @@ object HardwareKeyGate {
         screenOn: Boolean,
         keyguardLocked: Boolean,
         source: Source = Source.ACTIVITY,
-        fromLocalHardware: Boolean = false
+        fromLocalKeypad: Boolean = false
     ): Boolean = isPowerOrVolume(keyCode) ||
-        isRemoteTransport(keyCode, source, fromLocalHardware) ||
+        isRemoteTransport(keyCode, source, fromLocalKeypad) ||
         (screenOn && !keyguardLocked)
 
     private fun isPowerOrVolume(keyCode: Int): Boolean = when (keyCode) {
@@ -125,15 +153,22 @@ object HardwareKeyGate {
      *   button work while the screen was off — the other vendor keys were
      *   unaffected because DPAD_LEFT/RIGHT already fall through to the
      *   screen-on test below.
-     * - [Source.MEDIA_BROADCAST] is normally a real remote, but the platform
-     *   also re-dispatches local media keys through it on some builds.
-     *   [fromLocalHardware] carries the evdev scan code's presence for that
-     *   case: a synthesized AVRCP event has no scan code, a physical key does.
+     * The intent action cannot be used for this. Device logs show the vendor
+     * rebroadcasting AVRCP commands on `com.innioasis.y2.key` as well as on
+     * ACTION_MEDIA_BUTTON, so a headset press and a keypad press arrive on the
+     * same channel. Nor can the evdev scan code: the Bluetooth stack injects
+     * AVRCP through the input subsystem, so headset events carry scan codes too
+     * (KEY_NEXTSONG=163, inputSource=SOURCE_KEYBOARD).
+     *
+     * What does separate them is the originating input device, which
+     * [fromLocalKeypad] resolves. Both revisions of this check that ignored it —
+     * one keyed on the intent action, one on the scan code — blocked the headset
+     * along with the keypad. Do not add a third without a `MediaButtonInput`
+     * log line showing the property actually differs on hardware.
      */
-    private fun isRemoteTransport(keyCode: Int, source: Source, fromLocalHardware: Boolean): Boolean {
+    private fun isRemoteTransport(keyCode: Int, source: Source, fromLocalKeypad: Boolean): Boolean {
         if (source == Source.ACTIVITY) return false
-        if (source == Source.Y2_BROADCAST) return false
-        if (fromLocalHardware) return false
+        if (fromLocalKeypad) return false
         if (source == Source.MEDIA_BROADCAST &&
             (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
         ) return true

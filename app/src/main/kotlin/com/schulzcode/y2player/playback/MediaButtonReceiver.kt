@@ -18,14 +18,17 @@ class MediaButtonReceiver : BroadcastReceiver() {
         logIncomingEvent(context, intent.action, event)
         event ?: return
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
-        val serviceRequest = MediaButtonPolicy.serviceRequest(event.keyCode, source) ?: return
-        // A nonzero scan code is the kernel evdev code of a real key on this
-        // device. An AVRCP command synthesized by the framework carries none, so
-        // this separates the Y2's own play button from a headset stem press even
-        // when the platform routes both through ACTION_MEDIA_BUTTON.
-        val fromLocalHardware = event.scanCode != 0
-        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source, fromLocalHardware)) return
-        if (!HardwareKeyGate.accept(event, source)) return
+        val serviceRequest = MediaButtonPolicy.serviceRequest(event.keyCode, source)
+            ?: return logRejected(context, "unmapped_key", source, event)
+        // The vendor rebroadcasts AVRCP on its own action, so the intent tells us
+        // nothing about origin; the input device behind the event does.
+        val fromLocalKeypad = HardwareKeyGate.isLocalKeypad(event.deviceId)
+        if (!HardwareKeyGate.isInputAllowed(context, event.keyCode, source, fromLocalKeypad)) {
+            return logRejected(context, "screen_gate", source, event)
+        }
+        if (!HardwareKeyGate.accept(event, source)) {
+            return logRejected(context, "cross_source_duplicate", source, event)
+        }
         if (!MediaButtonPressGate.shouldDispatch(
                 keyCode = event.keyCode,
                 action = event.action,
@@ -35,12 +38,42 @@ class MediaButtonReceiver : BroadcastReceiver() {
                 repeatCount = event.repeatCount,
                 source = source
             )
-        ) return
+        ) {
+            return logRejected(context, "press_gate", source, event)
+        }
         val serviceIntent = Intent(context, PlaybackService::class.java).apply {
             action = serviceRequest.action
             putExtra(PlaybackService.EXTRA_MEDIA_KEY_CODE, serviceRequest.keyCode)
         }
         context.startService(serviceIntent)
+    }
+
+    /**
+     * Records which gate dropped a media command, and what the command looked
+     * like when it arrived.
+     *
+     * Four independent gates can reject an event, and until this existed a
+     * report of "the headset stopped working" could not be told apart from "the
+     * headset command never arrived" — every attempt to separate a local key
+     * press from a remote one had to be guessed and then tested on hardware.
+     * Shares the per-process budget with [logIncomingEvent], so it cannot become
+     * a source of log volume itself.
+     */
+    private fun logRejected(
+        context: Context,
+        reason: String,
+        source: HardwareKeyGate.Source,
+        event: KeyEvent
+    ) {
+        if (!MediaButtonDiagnosticBudget.take()) return
+        val logger = (context.applicationContext as? Y2Application)?.container?.logger ?: return
+        logger.info(
+            "MediaButtonInput",
+            "rejected=$reason source=$source keyCode=${event.keyCode} " +
+                "eventAction=${event.action} scanCode=${event.scanCode} " +
+                "inputSource=${event.source} deviceId=${event.deviceId} " +
+                "localKeypad=${HardwareKeyGate.isLocalKeypad(event.deviceId)}"
+        )
     }
 
     private fun logIncomingEvent(context: Context, intentAction: String?, event: KeyEvent?) {
@@ -55,6 +88,7 @@ class MediaButtonReceiver : BroadcastReceiver() {
                 "eventAction=${event?.action ?: -1} repeat=${event?.repeatCount ?: -1} " +
                 "deviceId=${event?.deviceId ?: -1} scanCode=${event?.scanCode ?: -1} " +
                 "inputSource=${event?.source ?: -1} flags=${event?.flags ?: -1} " +
+                "localKeypad=${event?.let { HardwareKeyGate.isLocalKeypad(it.deviceId) }} " +
                 "downTime=${event?.downTime ?: -1L} eventTime=${event?.eventTime ?: -1L}"
         )
     }
@@ -213,7 +247,11 @@ internal object MediaButtonPressGate {
 
 /** Caps raw input diagnostics per process; progress and ordinary playback are never logged here. */
 private object MediaButtonDiagnosticBudget {
-    private var remaining = 64
+    // Raised from 64: a single input-debugging session exhausted the old budget
+    // before the interesting presses happened. Informational logging is now
+    // gated on the verbose-diagnostics preference, so this cannot run away on a
+    // device that is not being debugged.
+    private var remaining = 512
 
     @Synchronized
     fun take(): Boolean {
