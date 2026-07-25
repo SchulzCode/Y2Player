@@ -62,7 +62,12 @@ data class TrackDraft(
     val codec: String? = null,
     val sampleRate: Int? = null,
     val bitDepth: Int? = null,
-    val channels: Int? = null
+    val channels: Int? = null,
+    /**
+     * Set when the scan could prove the file is not the format its name claims,
+     * so the row is labelled unplayable without waiting for a failed press.
+     */
+    val playbackError: String? = null
 )
 
 data class PlaylistSummary(

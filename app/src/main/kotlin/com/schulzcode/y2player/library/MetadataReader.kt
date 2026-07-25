@@ -59,8 +59,32 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
             bitDepth = technical?.bitDepth,
             channels = technical?.channels,
             // A header-only result is enough to index formats unsupported by MediaMetadataRetriever.
-            scanError = if (technical == null) retrieverError else null
+            scanError = if (technical == null) retrieverError else null,
+            playbackError = unreadableContainer(file, technical, retrieverError)
         )
+    }
+
+    /**
+     * "This file cannot be played", decided at scan time instead of on first press.
+     *
+     * Requires both readers to have failed *and* the extension to be one we parse
+     * ourselves. Then the verdict is about the container, not the codec: a `.flac`
+     * with no `fLaC` magic is not a FLAC file, so no firmware can play it.
+     *
+     * Deliberately silent for `ape`, `wma`, `mka` and friends. We have no reader for
+     * those, so a failure here would only mean MediaMetadataRetriever could not read
+     * it — and on MediaTek builds the vendor codecs the retriever ignores are often
+     * exactly the ones MediaPlayer can decode. Guessing there would mislabel working
+     * files, which is worse than saying nothing.
+     */
+    private fun unreadableContainer(
+        file: File,
+        technical: AudioHeaderParser.Result?,
+        retrieverError: String?
+    ): String? {
+        if (technical != null || retrieverError == null) return null
+        if (!headerParser.vouchesFor(file.extension)) return null
+        return "not a valid ${file.extension.lowercase()} file"
     }
 
     /** Frees the native retriever; safe to call repeatedly, called between scans. */

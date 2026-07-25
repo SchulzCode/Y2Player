@@ -1,7 +1,9 @@
 package com.schulzcode.y2player.library
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.io.FileOutputStream
@@ -25,6 +27,30 @@ class AudioHeaderParserTest {
         try {
             file.writeBytes(byteArrayOf(1, 2, 3, 4))
             assertNull(AudioHeaderParser().read(file))
+        } finally { file.delete() }
+    }
+
+    /**
+     * The parser may only be treated as proof for the containers it actually reads.
+     * A null for `.flac` means the file is not a FLAC; a null for `.wma` just means
+     * we have no reader, and MediaTek firmware may still decode it — calling that
+     * unplayable would mislabel working files.
+     */
+    @Test fun vouchesOnlyForContainersItParses() {
+        val parser = AudioHeaderParser()
+        listOf("flac", "FLAC", "mp3", "m4a", "wav", "ogg", "aac", "amr", "opus")
+            .forEach { assertTrue(it, parser.vouchesFor(it)) }
+        listOf("wma", "ape", "mka", "ac3", "bin", "")
+            .forEach { assertFalse(it, parser.vouchesFor(it)) }
+    }
+
+    @Test fun garbageWithAnAudioExtensionIsRejectedByItsReader() {
+        val file = File.createTempFile("y2-appledouble", ".flac")
+        try {
+            // What an AppleDouble sidecar looks like: real bytes, no fLaC magic.
+            file.writeBytes(byteArrayOf(0, 5, 22, 7, 0, 2, 0, 0) + ByteArray(512))
+            assertNull(AudioHeaderParser().read(file))
+            assertTrue(AudioHeaderParser().vouchesFor("flac"))
         } finally { file.delete() }
     }
 

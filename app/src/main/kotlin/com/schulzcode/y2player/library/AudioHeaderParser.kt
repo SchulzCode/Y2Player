@@ -14,6 +14,16 @@ class AudioHeaderParser {
         val durationMs: Long? = null
     )
 
+    /**
+     * Whether a null [read] result for this extension is evidence of a bad file.
+     *
+     * Must list exactly the extensions the [read] dispatch below handles. For those,
+     * null means the container magic was absent — the file is not what its name
+     * claims, whatever codecs the firmware happens to have. For anything else null
+     * only means "no reader here", which says nothing about the file.
+     */
+    fun vouchesFor(extension: String): Boolean = extension.lowercase() in PARSED_EXTENSIONS
+
     fun read(file: File): Result? = try {
         when (file.extension.lowercase()) {
             "wav", "wave" -> readWave(file)
@@ -587,6 +597,12 @@ class AudioHeaderParser {
     }
 
     companion object {
+        /** Keep in step with the [read] dispatch — see [vouchesFor]. */
+        private val PARSED_EXTENSIONS = setOf(
+            "wav", "wave", "flac", "aif", "aiff", "aifc", "wv", "dsf", "dff",
+            "mp3", "mp2", "m4a", "m4r", "mp4", "aac", "ogg", "oga", "opus", "amr"
+        )
+
         private const val HEADER_SCAN_LIMIT = 4L * 1024L * 1024L
         private const val MAX_SAMPLE_RATE = 50_000_000
         private const val MAX_CHANNELS = 64

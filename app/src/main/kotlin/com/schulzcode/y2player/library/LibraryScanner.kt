@@ -184,6 +184,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                     continue
                 }
                 if (!child.isFile) continue
+                if (isHiddenFile(child.name)) continue
                 // Resolved without allocating for the many files that have no
                 // extension at all, or whose extension is neither audio nor a
                 // playlist — the common case on a card with artwork and stray
@@ -243,6 +244,23 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         runCatching { Thread.sleep(PLAYBACK_YIELD_MS) }
             .onFailure { if (it is InterruptedException) Thread.currentThread().interrupt() }
     }
+
+    /**
+     * Hidden files are never media, whatever their extension says.
+     *
+     * The case that forced this: copying an album to the player from macOS leaves
+     * an AppleDouble sidecar next to every track — `._01. Foreword.flac` beside
+     * `01. Foreword.flac`. It is a few KB of extended attributes, but it ends in
+     * `.flac`, so the scanner indexed all thirteen of them. They carried no
+     * metadata (nothing can parse them) and failed at `setDataSource`, so the user
+     * saw a second, broken copy of the album that skipped silently when played —
+     * and could not delete it, because the desktop and the device both hide
+     * dot-files. Reindexing could not help either: the files are really there.
+     *
+     * Directories already skip on a leading dot; files did not. Android's own
+     * MediaScanner applies the same rule, and no real music file is named this way.
+     */
+    private fun isHiddenFile(name: String): Boolean = name.startsWith('.')
 
     private fun shouldSkipDirectory(file: File): Boolean {
         val name = file.name

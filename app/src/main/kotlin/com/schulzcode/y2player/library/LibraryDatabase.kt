@@ -548,6 +548,10 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         put("last_seen_scan", scanToken)
         put("available", 1)
         putNullable("scan_error", scanError)
+        // A rewritten file gets a clean slate: a re-encode of something that
+        // previously failed to decode deserves another attempt. The exception is a
+        // container the scan could prove is invalid — there is nothing to retry.
+        putNullable("playback_error", playbackError)
         putNullable("codec", codec)
         putNullable("sample_rate", sampleRate)
         putNullable("bit_depth", bitDepth)
