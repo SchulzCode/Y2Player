@@ -853,16 +853,34 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
+    /**
+     * Skip back, or restart the current track if it is already past the
+     * configured threshold.
+     *
+     * Every caller is a user pressing something — the left key, or a headset's
+     * triple press — so this starts playback the same way [nextInternal] does
+     * for a user-initiated skip. It previously took its autoplay decision from
+     * `status == PLAYING`, which meant skip-forward from a paused player started
+     * the track while skip-back silently loaded it and stayed silent. On a
+     * headset, where there is nothing to look at, that is indistinguishable from
+     * the button not working.
+     */
     private fun previousInternal() {
+        beginExplicitPlaybackRequest()
+        consecutiveErrors = 0
+        currentRetryCount = 0
+        val autoPlay = safetyPolicy.canAutomaticallyStart()
         val threshold = currentPreferences.previousRestartThresholdMs.toLong()
         if (threshold > 0 && engine.currentPositionMs() > threshold) {
-            seekAbsoluteInternal(0)
+            // Already playing: seeking is cheaper than tearing down the player
+            // and re-preparing the same file. Paused (including after the queue
+            // ran out) has no live position to seek, so it re-prepares.
+            if (snapshot.status == PlaybackStatus.PLAYING) seekAbsoluteInternal(0)
+            else prepareCurrent(autoPlay, 0)
             return
         }
         if (queue.previousIgnoringRepeatOne() != null) {
-            currentRetryCount = 0
-            consecutiveErrors = 0
-            prepareCurrent(snapshot.status == PlaybackStatus.PLAYING, 0)
+            prepareCurrent(autoPlay, 0)
         }
     }
 
