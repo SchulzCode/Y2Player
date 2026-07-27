@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — unified FFmpeg engine
+## 2.0 — unified FFmpeg engine
 
 - Replaced playback and format diagnostics with one FFmpeg 8.1.2 engine for MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
 - Added a reproducible NDK r25c/API-19/armeabi-v7a build that statically consolidates the allowlisted FFmpeg runtime into one `liby2audio.so`.

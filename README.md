@@ -1,6 +1,6 @@
 # Y2Player
 
-**Y2Player is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
+**Y2Player 2.0 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
@@ -19,24 +19,29 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 ## Highlights
 
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
+- Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and pause/resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
-- Navigate entirely with the Y2 click wheel and hardware buttons
+- Navigate entirely with the Y2 click wheel and hardware buttons.
+- Choose between the original dark interface and a light theme, and adjust left/right audio balance independently of firmware effects.
 - View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
 
-## Outlook: V2.0
+## Version 2.0
 
-V2.0 is planned only after V1.0 has been thoroughly tested and its known bugs and reliability issues have been addressed. The current priorities are stability, predictable playback, hardware-control reliability, and a solid everyday experience on the Y2.
+Version 2.0 replaces Android's firmware-dependent playback path with a pinned FFmpeg 8.1.2 engine built specifically for API 19 and the Y2's 32-bit ARM processor. Every supported format now uses the same decoder, seek, gapless, crossfade, error-handling, and AudioTrack output path.
 
-The current V2.0 outlook includes:
+The release includes:
 
-- **customizable themes** for changing the appearance without compromising readability or click-wheel navigation;
-- **FM radio support**, provided it can be integrated reliably with the Y2 hardware and firmware.
+- **built-in ALAC playback**, so lossless `.m4a` files no longer depend on a decoder that stock Android 4.4 does not provide;
+- **one reproducible native runtime** with pinned FFmpeg and Android NDK sources, verified hashes, and an explicit codec allowlist;
+- **persistent PCM output** with native seek and cancellation, playback-head position tracking, gapless promotion, and crossfade mixing;
+- **fixed format capabilities**, reported directly from the build instead of inferred from filenames or discovered with muted test playback;
+- **honest Direct DAC reporting**, which explains the audited stock-HAL limitation and uses standard AudioTrack without guessed hardware access.
 
-These are planned directions rather than guaranteed release promises. The goal of Y2Player is not feature bloat. New features should be added deliberately, implemented well, tested on real hardware, and refined before the next major feature is introduced.
+The goal of Y2Player is not feature bloat. New features should be added deliberately, implemented well, tested on real hardware, and refined before the next major feature is introduced.
 
 The long-term goal is to build a strong, dependable foundation for a modern iPod-like device: focused, responsive, offline-first, and enjoyable to use every day.
 
@@ -69,7 +74,7 @@ Playback includes a persistent queue, shuffle, repeat one/all, previous/next beh
 
 ### Screen-off and lock behavior
 
-When the display is off or Android's keyguard is locked, Y2Player blocks click-wheel, navigation, media, and headset-button input. **Only the system Power and Volume controls remain active.** Playback itself continues with the display off; the input block prevents accidental pocket presses.
+When the display is off or Android's keyguard is locked, Y2Player blocks the device's click wheel, navigation buttons, and local Play button by default. **Power, Volume, and genuine Bluetooth headset controls remain active.** The optional **Wheel When Screen Off** setting also keeps the local controls active, at the cost of allowing accidental pocket presses. Playback itself continues with the display off.
 
 ## Interface and artwork
 
@@ -113,7 +118,7 @@ Direct DAC is currently unavailable on the audited stock firmware. It is not pro
 
 - Scans common Y2 internal-storage and removable-SD mount points and retains metadata when a volume is temporarily unavailable.
 - Reacts safely to Android mount, unmount, and media-scanner events. USB/storage status is diagnostic and read-only; Y2Player does not switch USB modes.
-- Provides manual library rescanning, bounded structured logs, local diagnostic export, and muted prepare/play/seek format probes.
+- Provides manual library rescanning, bounded structured logs, local diagnostic export, and a build-derived report of the native decoder and output capabilities.
 - Includes PowerShell helpers for collecting and watching device diagnostics over ADB.
 - Enters Safe Mode after repeated incomplete launcher starts, or on request. Safe Mode suppresses automatic scanning, Bluetooth management, and session restoration so the UI can recover.
 
@@ -132,7 +137,7 @@ Y2Player has no `INTERNET` permission. Music, metadata, preferences, playlists, 
 | Storage | Internal music storage and removable SD card |
 | Network | Not required; the app has no internet permission |
 
-Every playable format uses the same pinned FFmpeg engine. The maintained allowlist is MP3, AAC, M4A/AAC, M4A/ALAC, FLAC, WAV/PCM, and Ogg Vorbis. The scanner and built-in format probe use that same support contract; formats outside the allowlist are not advertised as playable.
+Every playable format uses the same pinned FFmpeg engine. The maintained allowlist is MP3, AAC, M4A/AAC, M4A/ALAC, FLAC, WAV/PCM, and Ogg Vorbis. The scanner and playback-capabilities screen use that same support contract; formats outside the allowlist are not advertised as playable.
 
 ## Build the app
 
@@ -279,13 +284,13 @@ OriginalFirmware/MT6582_Android_scatter.txt
 Validate the host environment without producing an image:
 
 ```powershell
-.\build-firmware.ps1 -ValidateOnly
+.\tools\build-firmware.ps1 -ValidateOnly
 ```
 
 Build and verify the release APK and replacement system image:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build-firmware.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\build-firmware.ps1
 ```
 
 This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report.
@@ -300,7 +305,7 @@ The build script only creates files. It never flashes, pushes, reboots, or modif
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
 - **Direct DAC hardware access is unavailable on the audited stock HAL.** The setting falls back explicitly to AudioTrack. Native DSD, bit-perfect output, and high-rate PCM are not promised.
-- Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and exact decoder behavior are hardware/firmware dependent.
+- Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and final audio-output behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
 - Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.
 - Prebuilt system images are firmware-specific and must only be flashed on the supported Innioasis Y2 firmware base identified by the release.
