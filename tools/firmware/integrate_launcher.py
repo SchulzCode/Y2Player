@@ -12,6 +12,7 @@ Requires: e2fsprogs (debugfs, e2fsck, dumpe2fs). Run on Linux or WSL.
     python3 integrate_launcher.py \
         --system   OriginalFirmware/system.img \
         --apk      app/build/outputs/apk/release/app-release.apk \
+        --native-lib app/src/main/jniLibs/armeabi-v7a/liby2audio.so \
         --out      dist/firmware/system.img \
         [--report  dist/firmware/integration-report.txt]
 
@@ -27,15 +28,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 import sparse
 
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
 TARGET_APK = "/priv-app/Y2Player.apk"
-# Matches the context carried by every other file in /system/priv-app.
+TARGET_NATIVE_LIBRARY = "/lib/liby2audio.so"
+APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
+# Matches stock files in both /system/priv-app and /system/lib.
 SELINUX_CONTEXT = b"u:object_r:system_file:s0\x00"
 APK_MODE = "0100644"  # regular file, rw-r--r--
+NATIVE_LIBRARY_MODE = "0100644"
 
 def run(cmd, **kwargs):
     result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
@@ -75,6 +80,51 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def sha256_stream(handle):
+    digest = hashlib.sha256()
+    for block in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def apk_native_library(apk):
+    with zipfile.ZipFile(apk) as archive:
+        candidates = [
+            info for info in archive.infolist()
+            if info.filename.endswith("/liby2audio.so")
+        ]
+        if [info.filename for info in candidates] != [APK_NATIVE_ENTRY]:
+            found = ", ".join(info.filename for info in candidates) or "none"
+            raise SystemExit(
+                f"APK must contain exactly {APK_NATIVE_ENTRY}; found: {found}"
+            )
+        info = candidates[0]
+        with archive.open(info) as handle:
+            return info.file_size, sha256_stream(handle)
+
+
+def elf_description(path):
+    with open(path, "rb") as handle:
+        header = handle.read(52)
+    if len(header) < 52 or header[:4] != b"\x7fELF":
+        raise SystemExit(f"native library is not an ELF file: {path}")
+    if header[4] != 1 or header[5] != 1:
+        raise SystemExit("native library must be 32-bit little-endian ELF")
+    machine = int.from_bytes(header[18:20], "little")
+    flags = int.from_bytes(header[36:40], "little")
+    eabi = (flags >> 24) & 0xFF
+    if machine != 40 or eabi != 5:
+        raise SystemExit(
+            f"native library must be ARM EABI5 (machine={machine}, EABI={eabi})"
+        )
+    return f"ELF32 little-endian ARM EABI{eabi} (e_flags=0x{flags:08x})"
+
+
+def dump(image, source, destination):
+    result = debugfs(image, [f"dump {source} {destination}"])
+    return result.returncode == 0 and os.path.isfile(destination)
+
+
 def free_bytes(image):
     out = run(["dumpe2fs", "-h", image]).stdout
     free = block = 0
@@ -90,13 +140,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--system", required=True, help="stock sparse system.img (never modified)")
     parser.add_argument("--apk", required=True, help="signed release Y2Player APK")
+    parser.add_argument(
+        "--native-lib", required=True,
+        help="compiled armeabi-v7a liby2audio.so embedded in the APK",
+    )
     parser.add_argument("--out", required=True, help="output sparse system.img")
     parser.add_argument("--report", help="write an integration report here")
     parser.add_argument("--keep-raw", action="store_true", help="keep the intermediate raw image")
     args = parser.parse_args()
 
     require_tools()
-    required = [args.system, args.apk]
+    required = [args.system, args.apk, args.native_lib]
     for path in required:
         if not os.path.isfile(path):
             raise SystemExit(f"not found: {path}")
@@ -112,6 +166,20 @@ def main():
     log(f"  sha256         : {sha256(args.system)}")
     log(f"payload APK      : {args.apk} ({os.path.getsize(args.apk)} bytes)")
     log(f"  sha256         : {sha256(args.apk)}")
+    native_size = os.path.getsize(args.native_lib)
+    native_sha = sha256(args.native_lib)
+    native_elf = elf_description(args.native_lib)
+    apk_native_size, apk_native_sha = apk_native_library(args.apk)
+    if (apk_native_size, apk_native_sha) != (native_size, native_sha):
+        raise SystemExit(
+            "APK native library differs from compiled liby2audio.so: "
+            f"compiled={native_size} bytes/{native_sha}, "
+            f"APK={apk_native_size} bytes/{apk_native_sha}"
+        )
+    log(f"native library   : {args.native_lib} ({native_size} bytes)")
+    log(f"  sha256         : {native_sha}")
+    log(f"  ELF/ABI        : {native_elf}")
+    log(f"  APK entry      : {APK_NATIVE_ENTRY} (byte-identical)")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     raw = os.path.abspath(args.out) + ".raw"
@@ -124,10 +192,14 @@ def main():
     stock_stat = query(raw, f"stat {STOCK_LAUNCHER}")
     if "Inode" not in stock_stat:
         raise SystemExit(f"{STOCK_LAUNCHER} not found — is this the stock Y2 system image?")
+    if "Inode" not in query(raw, "stat /lib"):
+        raise SystemExit("/system/lib is missing from the stock system image")
+    if "Inode" in query(raw, f"stat {TARGET_NATIVE_LIBRARY}"):
+        raise SystemExit(f"stock image unexpectedly already contains {TARGET_NATIVE_LIBRARY}")
     log(f"      found {STOCK_LAUNCHER}")
     log(f"      free space before: {free_bytes(raw)} bytes")
 
-    log("\n[3/6] removing stock launcher and installing Y2Player")
+    log("\n[3/6] removing stock launcher and installing Y2Player runtime")
     context_file = raw + ".selinux"
     with open(context_file, "wb") as handle:
         handle.write(SELINUX_CONTEXT)
@@ -139,6 +211,12 @@ def main():
         "sif Y2Player.apk uid 0",
         "sif Y2Player.apk gid 0",
         f"ea_set -f {context_file} Y2Player.apk security.selinux",
+        "cd /lib",
+        f"write {os.path.abspath(args.native_lib)} liby2audio.so",
+        f"sif liby2audio.so mode {NATIVE_LIBRARY_MODE}",
+        "sif liby2audio.so uid 0",
+        "sif liby2audio.so gid 0",
+        f"ea_set -f {context_file} liby2audio.so security.selinux",
     ]
     if "Inode" in query(raw, f"stat {STOCK_LAUNCHER_ODEX}"):
         commands.insert(1, f"rm {STOCK_LAUNCHER_ODEX}")
@@ -180,6 +258,33 @@ def main():
         problems.append("SELinux context missing or wrong")
     else:
         log(f"      selinux: {context.strip().splitlines()[-1]}")
+    native_stat = query(raw, f"stat {TARGET_NATIVE_LIBRARY}")
+    if "Inode" not in native_stat:
+        problems.append("liby2audio.so was not created under /system/lib")
+    else:
+        mode_line = next((line for line in native_stat.splitlines() if "Mode:" in line), "")
+        if "0644" not in mode_line:
+            problems.append(f"unexpected native-library mode: {mode_line.strip()}")
+        if "User:     0" not in native_stat or "Group:     0" not in native_stat:
+            problems.append("unexpected native-library ownership (expected root:root)")
+        installed = raw + ".liby2audio.so"
+        if not dump(raw, TARGET_NATIVE_LIBRARY, installed):
+            problems.append("installed native library could not be read back")
+        else:
+            installed_sha = sha256(installed)
+            installed_size = os.path.getsize(installed)
+            if (installed_size, installed_sha) != (native_size, native_sha):
+                problems.append("installed native library differs from compiled artifact")
+            log(
+                f"      {TARGET_NATIVE_LIBRARY}: {mode_line.strip()} "
+                f"Size: {installed_size} SHA-256: {installed_sha}"
+            )
+            os.unlink(installed)
+    native_context = query(raw, f"ea_get {TARGET_NATIVE_LIBRARY} security.selinux")
+    if "system_file" not in native_context:
+        problems.append("native-library SELinux context missing or wrong")
+    else:
+        log(f"      native selinux: {native_context.strip().splitlines()[-1]}")
     # Nothing else in priv-app may have changed.
     listing = query(raw, "ls /priv-app")
     if "MyLauncher" in listing:
@@ -189,6 +294,11 @@ def main():
     # A second copy under /system/app would install the package twice.
     if "Y2Player" in query(raw, "ls /app"):
         problems.append("a duplicate Y2Player is present in /system/app")
+    if query(raw, "ls -p /lib").count("liby2audio.so") != 1:
+        problems.append("liby2audio.so must exist exactly once under /system/lib")
+    for directory in ("/vendor/lib", "/lib64", "/vendor/lib64"):
+        if "liby2audio.so" in query(raw, f"ls -p {directory}"):
+            problems.append(f"conflicting runtime library found under /system{directory}")
 
     log(f"      free space after: {free_bytes(raw)} bytes")
     if problems:

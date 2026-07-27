@@ -8,6 +8,7 @@ cd "$ROOT"
 
 APK=""
 APK_META=""
+NATIVE_LIB=""
 OUTDIR="$ROOT/out/firmware"
 WORK="$ROOT/build/work"
 VALIDATE_ONLY=0
@@ -19,6 +20,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --apk) APK="$2"; shift 2 ;;
     --apk-metadata) APK_META="$2"; shift 2 ;;
+    --native-lib) NATIVE_LIB="$2"; shift 2 ;;
     --out) OUTDIR="$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
     --validate-only) VALIDATE_ONLY=1; shift ;;
@@ -58,12 +60,18 @@ sys.exit(0 if magic == 0xED26FF3A else 1)
 PY
 log "base system.img: $(stat -c%s "$STOCK_SYSTEM") bytes"
 log "APK install path: /system/priv-app/Y2Player.apk"
+log "native install path: /system/lib/liby2audio.so"
 log "boot.img: not used and not emitted"
 
 if [ -n "$APK" ]; then
   [ -f "$APK" ] || fail "APK not found: $APK"
 elif [ "$VALIDATE_ONLY" -ne 1 ]; then
   fail "--apk is required for a full build"
+fi
+if [ -n "$NATIVE_LIB" ]; then
+  [ -f "$NATIVE_LIB" ] || fail "native library not found: $NATIVE_LIB"
+elif [ "$VALIDATE_ONLY" -ne 1 ]; then
+  fail "--native-lib is required for a full build"
 fi
 
 if [ "$VALIDATE_ONLY" -eq 1 ]; then
@@ -84,13 +92,13 @@ rm -f "$OUTDIR/Y2Player.apk" "$OUTDIR/system.img" \
 
 stage "Integrating Y2Player into system.img"
 python3 tools/firmware/integrate_launcher.py \
-  --system "$STOCK_SYSTEM" --apk "$APK" \
+  --system "$STOCK_SYSTEM" --apk "$APK" --native-lib "$NATIVE_LIB" \
   --out "$WORK/system/system.img" \
   --report "$WORK/system/system-report.txt"
 
 stage "Reopening and verifying system.img"
 python3 tools/firmware/verify_images.py \
-  --system "$WORK/system/system.img" --apk "$APK" \
+  --system "$WORK/system/system.img" --apk "$APK" --native-lib "$NATIVE_LIB" \
   --scatter "$STOCK_SCATTER" --report "$WORK/verification-report.txt"
 
 stage "Assembling current artifacts"
@@ -122,6 +130,9 @@ fi
   echo "APK source path      : $APK"
   echo "APK output path      : $OUTDIR/Y2Player.apk"
   echo "APK SHA-256          : $(sha "$OUTDIR/Y2Player.apk")"
+  echo "Native source path   : $NATIVE_LIB"
+  echo "Native size          : $(stat -c%s "$NATIVE_LIB") bytes"
+  echo "Native SHA-256       : $(sha "$NATIVE_LIB")"
   if [ -n "$APK_META" ] && [ -f "$APK_META" ]; then cat "$APK_META"; fi
   echo
   echo "System image"
@@ -132,6 +143,7 @@ fi
   echo "Output SHA-256       : $(sha "$OUTDIR/system.img")"
   echo "Format               : Android sparse (ext4 payload)"
   echo "APK install path     : /system/priv-app/Y2Player.apk"
+  echo "Native install path  : /system/lib/liby2audio.so"
   echo "Verification         : passed"
   echo
   echo "Tool versions"

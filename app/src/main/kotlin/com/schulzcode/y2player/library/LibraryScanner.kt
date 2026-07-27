@@ -285,7 +285,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
      * Background thread priority caps the scan's *CPU* share, but the contention
      * that produces audible stutter is elsewhere: metadata extraction runs inside
      * the media server that is decoding the audio, and reads from the same card
-     * MediaPlayer is streaming from. A short pause hands both back.
+     * the native playback decoder is streaming from. A short pause hands both back.
      *
      * Two things about the shape of this matter more than the length of the pause:
      *
@@ -299,7 +299,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
      * And it fires every [YIELD_FILE_INTERVAL] files rather than once per batch.
      * Total relief was never the problem: at 10k tracks a per-batch pause left
      * roughly three seconds of uninterrupted extraction between gaps, which is far
-     * more than enough to starve a MediaPlayer buffer, while amounting to under 1%
+     * more than enough to starve the playback PCM buffer, while amounting to under 1%
      * of the scan. It is the length of the uninterrupted block that is audible.
      *
      * Still free in the common case: a rescan of an unchanged library reads no
@@ -389,9 +389,27 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         /** Longest extension in [SUPPORTED_EXTENSIONS] / [PLAYLIST_EXTENSIONS] is 4. */
         private const val MAX_EXTENSION_LENGTH = 5
         val PLAYLIST_EXTENSIONS = setOf("m3u", "m3u8")
+        /**
+         * What the scanner will index.
+         *
+         * This is the real gate — an extension absent here is never seen by the
+         * library at all, whatever the codec tables say. It is deliberately
+         * narrower than "every file": a card full of artwork, playlists exported
+         * as text and stray documents must not turn into broken track rows.
+         *
+         * Kept in agreement with [AudioCodecSupport] by
+         * `FfmpegBuildCapabilitiesTest`, which fails if this list and the
+         * playable-extension list disagree in either direction. `aif/aiff/aifc`
+         * were missing while the FFmpeg build already carried the aiff demuxer
+         * and the big-endian PCM decoders, so AIFF was labelled playable and
+         * then never indexed.
+         *
+         * `mp4` is intentionally absent: it is overwhelmingly a video container,
+         * and `m4a`/`m4r` are the audio conventions for the same demuxer.
+         */
         val SUPPORTED_EXTENSIONS = setOf(
-            "mp3", "mp2", "flac", "wav", "wave", "ogg", "oga", "opus", "m4a", "m4r", "aac",
-            "ape", "wma", "amr", "wv", "aif", "aiff", "aifc", "ac3", "mka", "dsf", "dff"
+            "mp3", "flac", "wav", "wave", "ogg", "oga", "opus",
+            "m4a", "m4r", "aac", "alac", "aif", "aiff", "aifc"
         )
     }
 }

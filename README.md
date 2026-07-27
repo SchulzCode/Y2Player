@@ -103,11 +103,11 @@ Transport buttons and AVRCP metadata are supported through the API 19 media-butt
 Two audio-quality modes are available:
 
 - **Balanced** uses the normal Android audio path and can enable supported app-session effects.
-- **Direct DAC (experimental)** makes a best-effort request for the Y2 firmware's MediaTek Hi-Fi route and bypasses app-side equalizer, bass boost, loudness, crossfade, and pause/resume fades while active. The request may be ignored, rejected, or have no effect depending on the installed firmware and audio HAL. Stored settings are preserved for returning to Balanced mode.
+- **Direct DAC (experimental)** is retained as an explicit output mode, but the audited stock HAL exposes no verified direct PCM interface. Selecting it preserves the preference, disables the Direct-profile DSP features, and clearly falls back to standard AudioTrack output. No raw device writes or guessed ioctls are used.
 
 Equalizer presets, custom equalizer bands, bass boost, and loudness appear only when Android reports compatible effects for the playback session. Availability and behavior therefore depend on the installed firmware.
 
-Direct DAC is an experimental feature and may not work reliably or completely on every Y2 or firmware version. It is not proof that audio bypasses Android's mixer and is not a bit-perfect, hi-res, or native-DSD guarantee. Final sample format, resampling, clocks, and CS43131 programming remain controlled by AudioFlinger, the MediaTek audio HAL, and the kernel driver. Y2Player reports limitations instead of claiming capabilities the app cannot verify.
+Direct DAC is currently unavailable on the audited stock firmware. It is not proof that audio bypasses Android's mixer and is not a bit-perfect, hi-res, or native-DSD guarantee. Standard playback remains FFmpeg PCM through AudioTrack, AudioFlinger, the MediaTek audio HAL, and the kernel driver.
 
 ## Storage, diagnostics, and recovery
 
@@ -132,7 +132,7 @@ Y2Player has no `INTERNET` permission. Music, metadata, preferences, playlists, 
 | Storage | Internal music storage and removable SD card |
 | Network | Not required; the app has no internet permission |
 
-The scanner recognizes common extensions including MP3, FLAC, WAV, Ogg/Opus, M4A/AAC, APE, WMA, AMR, WavPack, AIFF, AC-3, MKA, DSF, and DFF. Actual decoding support comes from the stock Android `MediaPlayer` stack and can be narrower than the scanner's file list. The built-in format probe is the authoritative test for a particular firmware/device combination.
+Every playable format uses the same pinned FFmpeg engine. The maintained allowlist is MP3, AAC, M4A/AAC, M4A/ALAC, FLAC, WAV/PCM, and Ogg Vorbis. The scanner and built-in format probe use that same support contract; formats outside the allowlist are not advertised as playable.
 
 ## Build the app
 
@@ -141,11 +141,13 @@ The scanner recognizes common extensions including MP3, FLAC, WAV, Ogg/Opus, M4A
 - JDK 17 or newer;
 - Android SDK Platform 36 and Android Build Tools;
 - an SDK path in `local.properties` (see `local.properties.example`);
-- PowerShell on Windows for the verified release and firmware helper scripts.
+- PowerShell and WSL2 with `bash`, `make`, `unzip`, and `sha256sum`;
+- Internet access for the first verified native bootstrap; later builds use the cache.
 
-Build, test, lint, and package a debug APK:
+Build the pinned API-19 ARMv7 runtime, then test, lint, and package a debug APK:
 
 ```powershell
+.\tools\build-native-audio.ps1
 .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
 ```
 
@@ -155,11 +157,7 @@ The APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-On macOS or Linux, the equivalent app-only command is:
-
-```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug
-```
+The maintained native bootstrap currently targets the Windows + WSL firmware-build environment.
 
 ### Build a signed release APK
 
@@ -269,7 +267,7 @@ Do not restore additional partitions unless a verified device-specific recovery 
 
 ### Build the system image yourself
 
-The repository can also build a system-partition-only image from your own matching stock firmware. It installs the signed APK at `/system/priv-app/Y2Player.apk` and removes the stock launcher from the copied system image.
+The repository can also build a system-partition-only image from your own matching stock firmware. It installs the signed APK at `/system/priv-app/Y2Player.apk`, installs the byte-identical Android 4.4 runtime at `/system/lib/liby2audio.so`, and removes the stock launcher from the copied system image.
 
 Provide:
 
@@ -298,10 +296,10 @@ The build script only creates files. It never flashes, pushes, reboots, or modif
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
 - This is my first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
-- Decoder and container support varies with the stock Android 4.4 media framework; recognition of a file extension does not guarantee playback.
+- Decoder and container support is the pinned FFmpeg allowlist above; malformed or unsupported content can still fail despite a recognized extension.
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
-- **Direct DAC is experimental.** The vendor Hi-Fi request may be unavailable, rejected, or have no effect depending on the firmware and audio HAL. Native DSD, bit-perfect output, and high-rate PCM are not promised.
+- **Direct DAC hardware access is unavailable on the audited stock HAL.** The setting falls back explicitly to AudioTrack. Native DSD, bit-perfect output, and high-rate PCM are not promised.
 - Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and exact decoder behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
 - Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.

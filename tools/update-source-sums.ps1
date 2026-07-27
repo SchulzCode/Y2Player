@@ -6,17 +6,17 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$trackedFiles = @(& git -C $root ls-files)
-if ($LASTEXITCODE -ne 0) { throw "Could not read the Git tracked-file list." }
+$sourceFiles = @(& git -C $root ls-files --cached --others --exclude-standard)
+if ($LASTEXITCODE -ne 0) { throw "Could not read the maintained source-file list." }
 
-$lines = $trackedFiles |
-    Where-Object { $_ -ne "SOURCE_SHA256SUMS.txt" } | Sort-Object -Unique |
+$lines = $sourceFiles |
+    Where-Object {
+        $_ -ne "SOURCE_SHA256SUMS.txt" -and
+        (Test-Path -LiteralPath (Join-Path $root $_) -PathType Leaf)
+    } | Sort-Object -Unique |
     ForEach-Object {
         $relative = $_.Replace('\', '/')
         $path = Join-Path $root $_
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Tracked file is missing: $relative"
-        }
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLower()
         "$hash  $relative"
     }

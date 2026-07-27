@@ -100,7 +100,6 @@ sealed interface AppEffect {
     data class SetSortOrder(val order: TrackSortOrder) : AppEffect
 
     data object ExportDiagnostics : AppEffect
-    data object RunFormatProbe : AppEffect
     data object ResetLibrary : AppEffect
     data object EnterSafeMode : AppEffect
     data object ExitSafeMode : AppEffect

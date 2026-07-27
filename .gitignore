@@ -31,6 +31,12 @@ lint-results*
 test-results/
 reports/
 
+# Reproducible FFmpeg/NDK native outputs
+# Keep the C/JNI sources, build scripts, patches, and pinned provenance files;
+# regenerate the packaged runtime and its source stamp locally.
+/app/src/main/jniLibs/
+/ffbuild/
+
 # IDEs and editors
 .idea/
 .fleet/
@@ -194,8 +200,25 @@ $RECYCLE.BIN/
 !/CHANGELOG.md
 !/LICENSE
 !/README.md
+!/SOURCE_SHA256SUMS.txt
 !/app/
 !/tools/
+!/third_party/
+/third_party/*
+!/third_party/android-ndk-r25c.properties
+!/third_party/ffmpeg/
+/third_party/ffmpeg/*
+!/third_party/ffmpeg/README.md
+!/third_party/ffmpeg/source.properties
+!/docs/
+/docs/*
+!/docs/ARCHITECTURE.md
+!/docs/PLAYBACK_ENGINE.md
+!/docs/FORMAT_SUPPORT_MATRIX.md
+!/docs/CS43131_AND_AUDIO_PATH.md
+!/docs/BUILD_PIPELINE.md
+!/docs/FIRMWARE_INTEGRATION.md
+!/docs/device-diagnostics.md
 !/gradle/
 !/gradlew
 !/gradlew.bat

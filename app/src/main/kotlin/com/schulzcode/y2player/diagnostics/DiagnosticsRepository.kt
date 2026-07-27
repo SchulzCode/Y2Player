@@ -46,11 +46,7 @@ class DiagnosticsRepository(
      */
     fun snapshot(): DiagnosticsState = state
 
-    fun setProbeRunning(running: Boolean) = publish { it.copy(formatProbeRunning = running, lastError = null) }
-    fun setProbeResults(results: List<FormatProbeResult>) = publish {
-        it.copy(formatProbeRunning = false, formatProbeResults = results, lastError = null)
-    }
-    fun setError(message: String) = publish { it.copy(formatProbeRunning = false, lastError = message) }
+    fun setError(message: String) = publish { it.copy(lastError = message) }
 
     fun refresh() = publish { it }
 

@@ -86,7 +86,7 @@ internal object InputPressClassifier {
      * Key-repeat events between successive scrub seeks while a seek key stays held.
      * Android repeats roughly every 50 ms after the initial delay, so 8 repeats is
      * ~400 ms between seek steps — fast enough to feel continuous, slow enough not
-     * to flood MediaPlayer with overlapping seekTo calls on the MT6582.
+     * to flood the playback decoder with superseded seeks on the MT6582.
      */
     const val SCRUB_REPEAT_PERIOD = 8
 

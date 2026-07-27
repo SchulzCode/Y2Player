@@ -164,6 +164,10 @@ try {
         $apkPath = Join-Path $root "dist\firmware\Y2Player.apk"
     }
     if (-not $apkPath -or -not (Test-Path $apkPath)) { throw "APK build succeeded but no APK was found." }
+    $nativeLibraryPath = Join-Path $root "app\src\main\jniLibs\armeabi-v7a\liby2audio.so"
+    if (-not (Test-Path -LiteralPath $nativeLibraryPath)) {
+        throw "Compiled native library is missing: $nativeLibraryPath"
+    }
 
     $metadataPath = Join-Path $workDirectory "apk-metadata.txt"
     Write-ApkMetadata -ApkPath $apkPath -Root $root -Destination $metadataPath
@@ -172,6 +176,7 @@ try {
     $args = @(
         "bash", "tools/firmware/build_firmware.sh",
         "--apk", (ConvertTo-WslPath -WindowsPath $apkPath),
+        "--native-lib", (ConvertTo-WslPath -WindowsPath $nativeLibraryPath),
         "--apk-metadata", (ConvertTo-WslPath -WindowsPath $metadataPath),
         "--out", (ConvertTo-WslPath -WindowsPath $outputPath),
         "--work", (ConvertTo-WslPath -WindowsPath $workDirectory),

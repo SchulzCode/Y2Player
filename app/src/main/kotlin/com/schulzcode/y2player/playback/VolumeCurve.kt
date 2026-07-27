@@ -93,7 +93,7 @@ object VolumeModeTransfer {
  * multiplication in the service is a no-op). It is the safe fallback.
  *
  * [PERCEPTUAL] holds the Android music stream at maximum and attenuates inside
- * the player via MediaPlayer.setVolume, using [VolumeCurve]. When modes change,
+ * decoded PCM inside the engine, using [VolumeCurve]. When modes change,
  * [VolumeModeTransfer] moves the current fader position to the newly active
  * control so the displayed level and available range stay in sync.
  *

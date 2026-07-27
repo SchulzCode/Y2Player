@@ -1,7 +1,8 @@
 # System-image tools
 
 - `build_firmware.sh` validates, integrates, verifies, and packages system.img.
-- `integrate_launcher.py` replaces the stock launcher in a clean sparse image.
+- `integrate_launcher.py` replaces the stock launcher and installs its native
+  runtime in a clean sparse image.
 - `verify_images.py` independently reopens and verifies the finished image.
 - `sparse.py` converts Android sparse/ext4 representations.
 - `restore_stock_launcher.py` is a separate recovery utility, not a normal

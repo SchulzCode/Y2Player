@@ -100,41 +100,10 @@ class PlaybackSafetyPolicy {
 /**
  * Whether a playback failure was the media's fault or the moment's.
  *
- * Only [UNSUPPORTED] is remembered against a file. Everything else must not be,
- * because the alternative is condemning a good track for an unrelated fault:
- * device logs from this player have already shown `MEDIA_ERROR_SERVER_DIED`
- * arriving because mediaserver died during a USB eject, with nothing wrong with
- * the file at all.
+ * Only [UNSUPPORTED] is remembered against a file. Source removal, output loss,
+ * cancellation and internal failures do not say that the encoded media is bad.
  */
 enum class PlaybackFailure { UNSUPPORTED, TRANSIENT, UNKNOWN }
-
-/**
- * Classifies `MediaPlayer` error codes.
- *
- * Deliberately conservative: a code is only called [PlaybackFailure.UNSUPPORTED]
- * when the framework explicitly said the media could not be handled. Anything
- * ambiguous stays [PlaybackFailure.UNKNOWN] and is not recorded, because a false
- * "not playable" label is worse than no label — the user cannot tell that the
- * app is wrong, and a working file looks broken forever.
- */
-object PlaybackErrorClassifier {
-
-    // Values of MediaPlayer.MEDIA_ERROR_*, named here because the constants for
-    // the `extra` codes are not all public on API 19.
-    private const val SERVER_DIED = 100
-    private const val EXTRA_UNSUPPORTED = -1010
-    private const val EXTRA_MALFORMED = -1007
-    private const val EXTRA_IO = -1004
-    private const val EXTRA_TIMED_OUT = -110
-
-    fun classify(what: Int, extra: Int): PlaybackFailure = when {
-        // mediaserver restarting says nothing about this particular file.
-        what == SERVER_DIED -> PlaybackFailure.TRANSIENT
-        extra == EXTRA_IO || extra == EXTRA_TIMED_OUT -> PlaybackFailure.TRANSIENT
-        extra == EXTRA_UNSUPPORTED || extra == EXTRA_MALFORMED -> PlaybackFailure.UNSUPPORTED
-        else -> PlaybackFailure.UNKNOWN
-    }
-}
 
 internal object PlaybackRequestGate {
     fun accepts(callbackRequestId: Long, activeRequestId: Long): Boolean =

@@ -1,3 +1,5 @@
+import java.io.File
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Properties
@@ -61,6 +63,12 @@ android {
         versionName = "1.2"
 
         buildConfigField("String", "BUILD_ID", "\"$resolvedBuildId\"")
+
+        ndk {
+            // The Y2 is a 32-bit ARMv7/API-19 device. Packaging another ABI is
+            // a release error and would only inflate the system APK.
+            abiFilters += "armeabi-v7a"
+        }
     }
 
     buildFeatures {
@@ -116,7 +124,113 @@ android {
         checkReleaseBuilds = true
         disable += "ExpiredTargetSdkVersion"
     }
+
+    packaging {
+        jniLibs {
+            // liby2audio.so is already stripped and audited by the pinned NDK
+            // build; AGP's locally installed (newer) strip tool must not rewrite it.
+            keepDebugSymbols += "**/liby2audio.so"
+        }
+    }
 }
+
+/**
+ * Refuses a build whose checked-in liby2audio.so predates its own sources.
+ *
+ * The APK consumes a prebuilt native library rather than compiling it through
+ * externalNativeBuild, which is the right call for a SHA-pinned, audited,
+ * reproducible artifact — but it means `./gradlew assemble` does not notice when
+ * y2audio.c has changed and the binary has not. The result would be a silently
+ * stale library.
+ *
+ * This deliberately fails rather than rebuilding: the native build runs through
+ * WSL from a PowerShell wrapper, and invoking that from every ordinary Gradle
+ * build would make the Windows path fragile. A clear error naming the command is
+ * the better trade.
+ *
+ * The stamp covers everything that can change the output: the JNI source, its
+ * version script, build-ffmpeg.sh — which carries the FFmpeg and NDK hashes,
+ * every configure flag and every compiler flag as literals — and every file in
+ * tools/native/patches. So a NEON toggle, a codec allowlist change or an edited
+ * FFmpeg patch all invalidate the packaged binary.
+ */
+val verifyNativeAudioStamp by tasks.registering {
+    val nativeSource = rootProject.file("app/src/main/c/y2audio.c")
+    val versionScript = rootProject.file("app/src/main/c/y2audio.map")
+    val nativeBuildScript = rootProject.file("tools/native/build-ffmpeg.sh")
+    // Local deviations from the verified FFmpeg tarball. Sorted by name, byte
+    // order, to match the LC_ALL=C ordering the native build uses.
+    val patchDirectory = rootProject.file("tools/native/patches")
+    val patches = patchDirectory.listFiles()
+        ?.filter { it.isFile && it.name.endsWith(".patch") }
+        ?.sortedBy { it.name }
+        ?: emptyList()
+    val stampFile = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.stamp")
+    val library = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.so")
+
+    // Kotlin-only iteration before the native library has been rebuilt is a real
+    // workflow, so there is an explicit way past this. It has to be typed, which
+    // is the point: it cannot happen by accident, and a release build that used
+    // it is visible in the command line. Read at configuration time so the task
+    // action holds no reference to Project.
+    val allowStale = project.findProperty("allowStaleNative")?.toString() == "true"
+
+    inputs.files(nativeSource, versionScript, nativeBuildScript)
+    inputs.files(patches)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        if (allowStale) {
+            logger.warn(
+                "liby2audio.so stamp check skipped (-PallowStaleNative=true). " +
+                    "Native sources may not match the packaged binary."
+            )
+            return@doLast
+        }
+
+        val rebuild = "powershell -File tools/build-native-audio.ps1"
+        if (!library.isFile) {
+            throw GradleException("liby2audio.so is missing. Run: $rebuild")
+        }
+
+        val sources: List<File> = listOf(nativeSource, versionScript, nativeBuildScript) + patches
+        sources.forEach { source ->
+            if (!source.isFile) {
+                throw GradleException("native build input is missing: $source")
+            }
+        }
+
+        // Same construction as the tail of build-ffmpeg.sh: hash each input, join
+        // the hex digests with newlines, then hash that.
+        val perFileDigests = sources.joinToString("") { source ->
+            MessageDigest.getInstance("SHA-256")
+                .digest(source.readBytes())
+                .joinToString("") { byte -> String.format("%02x", byte) } + "\n"
+        }
+        val expected = MessageDigest.getInstance("SHA-256")
+            .digest(perFileDigests.toByteArray())
+            .joinToString("") { byte -> String.format("%02x", byte) }
+
+        if (!stampFile.isFile) {
+            throw GradleException(
+                "liby2audio.so carries no source stamp, so it cannot be shown to " +
+                    "match app/src/main/c. Run: $rebuild"
+            )
+        }
+        val recorded = stampFile.readText().trim()
+        if (recorded != expected) {
+            throw GradleException(
+                "liby2audio.so is stale: it was built from different native " +
+                    "sources or a different FFmpeg configuration.\n" +
+                    "  recorded: $recorded\n" +
+                    "  current:  $expected\n" +
+                    "Run: $rebuild"
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(verifyNativeAudioStamp) }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")

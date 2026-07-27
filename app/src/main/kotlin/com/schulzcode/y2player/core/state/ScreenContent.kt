@@ -8,6 +8,7 @@ import com.schulzcode.y2player.core.model.CodecSupport
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.diagnostics.PlaybackCapabilities
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
 import com.schulzcode.y2player.playback.VolumeCurve
@@ -267,7 +268,7 @@ object ScreenContent {
             }
             add(ScreenRow.Group("Artist", track.displayArtist, "info_artist"))
             add(ScreenRow.Group("Album", track.displayAlbum, "info_album"))
-            add(ScreenRow.Group("Format", formatTrack(state, track), "info_format"))
+            add(ScreenRow.Group("Format", formatTrack(track), "info_format"))
             add(ScreenRow.Group("Location", track.relativePath, "info_path"))
         }
     }
@@ -399,7 +400,7 @@ object ScreenContent {
      * lives here, deep in System, where a listener will not stumble into it.
      */
     private fun systemRows(state: AppState): List<ScreenRow> = listOf(
-        ScreenRow.Action("Diagnostics", if (state.diagnostics.formatProbeRunning) "Format test running" else "Logs and hardware tests", "diagnostics"),
+        ScreenRow.Action("Diagnostics", "Logs, engine capabilities and storage", "diagnostics"),
         ScreenRow.Action("Android Settings", "System configuration and recovery", "android_settings"),
         ScreenRow.Action("About", "Y2 Player ${BuildConfig.VERSION_NAME}", "about")
     )
@@ -454,7 +455,7 @@ object ScreenContent {
             add(ScreenRow.Action("Audio Quality", state.preferences.audioQualityMode.label, "audio_quality"))
             add(ScreenRow.Action("Balance", AudioBalance.label(state.preferences.balance), "balance"))
             if (effects.available) {
-                add(ScreenRow.Action("Sound Effects", if (direct) "Bypassed by Direct DAC" else onOff(state.preferences.audioEffectsEnabled), "effects_toggle"))
+                add(ScreenRow.Action("Sound Effects", if (direct) "Disabled by Direct profile" else onOff(state.preferences.audioEffectsEnabled), "effects_toggle"))
                 if (effects.equalizerSupported) {
                     add(ScreenRow.Action("Equalizer Preset", preset, "eq_preset"))
                     add(ScreenRow.Action("Custom Equalizer", "${effects.bandFrequenciesHz.size} bands · use left/right", "eq_bands"))
@@ -475,7 +476,7 @@ object ScreenContent {
                 when {
                     !dac.detected -> "Not detected through firmware"
                     dac.hiFiRequestAccepted -> "Detected · Hi-Fi route requested"
-                    direct -> "Detected · vendor route unavailable"
+                    direct -> "Detected · standard AudioTrack fallback"
                     else -> "Detected"
                 },
                 "dac_status"
@@ -487,7 +488,7 @@ object ScreenContent {
             add(ScreenRow.Group("Android Output", route, "dac_output"))
             dac.limitation?.let { add(ScreenRow.Group("Firmware Limit", it, "dac_limit")) }
             if (direct) {
-                add(ScreenRow.Group("Direct-mode DSP", "Effects, crossfade and fades are bypassed during playback", "dac_bypass"))
+                add(ScreenRow.Group("Direct profile", "Direct hardware access is unavailable; effects, crossfade and fades remain disabled by the requested profile", "dac_bypass"))
             }
             if (effects.available) {
                 effects.errorMessage?.let { add(ScreenRow.Group("Last effect error", it, "effects_error")) }
@@ -625,7 +626,6 @@ object ScreenContent {
 
     private fun diagnosticsRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Export Diagnostics", state.diagnostics.exportedPath ?: "Save logs to internal storage", "diag_export"))
-        add(ScreenRow.Action("Run Format Test", if (state.diagnostics.formatProbeRunning) "Testing…" else "Muted prepare/play/seek test", "diag_formats"))
         add(ScreenRow.Action(
             "Verbose Diagnostics",
             if (state.preferences.verboseDiagnostics) "On · detailed event log" else "Off · errors only",
@@ -636,8 +636,10 @@ object ScreenContent {
         add(ScreenRow.Action("Clear Queue", "Playback queue and session", "diag_reset_queue"))
         add(ScreenRow.Action("Reset Library", "Index, playlists and history", "diag_reset_library"))
         add(ScreenRow.Action(if (state.safeMode) "Exit Safe Mode" else "Enter Safe Mode", if (state.safeMode) "Normal startup on next launch" else "Disable auto scan and restore", "diag_safe_mode"))
-        state.diagnostics.formatProbeResults.forEach { result ->
-            add(ScreenRow.Group("${if (result.success) "✓" else "✗"} ${result.extension}", result.message, "probe:${result.extension}"))
+        // What this build can decode is fixed at compile time, so it is stated
+        // rather than discovered. Replaces the old muted prepare/play/seek probe.
+        PlaybackCapabilities.lines().forEach { line ->
+            add(ScreenRow.Group(line.label, line.value, "capability:${line.label}"))
         }
         // No second limit here: the repository already fetched exactly
         // DiagnosticLogger.RECENT_LINE_COUNT lines. Trimming again is what made
@@ -815,8 +817,7 @@ object ScreenContent {
         "${state.library.scanProgress.processedFiles} files · ${state.library.scanProgress.currentPath?.substringAfterLast('/') ?: "scanning"}"
     } else "${state.library.availableTracks.size} available tracks"
 
-    private fun formatTrack(state: AppState, track: Track): String = buildList {
-        val extension = track.extension.uppercase(Locale.US)
+    private fun formatTrack(track: Track): String = buildList {
         add(AudioCodecLabels.label(track.codec, track.extension))
         // Stated either way. Whether a file carries a track number is the one thing
         // needed to explain an album that lists in an unexpected order, and it was
@@ -825,21 +826,15 @@ object ScreenContent {
         track.sampleRate?.let { add("${it / 1000.0} kHz") }
         track.bitDepth?.let { add("$it-bit") }
         if (track.durationMs > 0) add(duration(track.durationMs))
-        val probe = state.diagnostics.formatProbeResults.firstOrNull { it.extension.equals(extension, true) }
-        // Order of authority: what this device actually did, then a passing
-        // device test, then the static expectation. Measurement outranks
-        // prediction in both directions.
-        val support = AudioCodecSupport.of(track.codec, track.extension)
-        when {
-            track.decodeFailed -> add("playback failed on this device")
-            support == CodecSupport.UNSUPPORTED && probe?.success != true ->
-                add("format not supported on this device")
+        // Order of authority: what this device actually did, then what the build
+        // carries a decoder for. A real decode failure still outranks the table.
+        when (AudioCodecSupport.of(track.codec, track.extension)) {
+            CodecSupport.UNSUPPORTED -> add(
+                if (track.decodeFailed) "playback failed on this device"
+                else "no decoder in this build"
+            )
+            else -> if (track.decodeFailed) add("playback failed on this device")
         }
-        add(when {
-            probe == null -> "discovered · not device-tested"
-            probe.success -> "device-tested ✓"
-            else -> "device test failed ✗"
-        })
     }.joinToString(" · ")
 
     private fun duration(ms: Long): String {

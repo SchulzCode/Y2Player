@@ -11,9 +11,33 @@ import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackDraft
-import com.schulzcode.y2player.diagnostics.FormatProbeResult
 import com.schulzcode.y2player.queue.PersistedPlaybackSession
 import com.schulzcode.y2player.queue.QueueController
+
+/**
+ * The one-shot reset that the FFmpeg migration needed.
+ *
+ * Retained deliberately. A device upgrading from schema 4..8 still has to clear
+ * its framework-era verdicts, and `format_probe` still exists at that point —
+ * version 10 drops the table afterwards. Removing this to save lines would break
+ * exactly those upgrades.
+ *
+ * Safe to delete once every device that can realistically receive an update has
+ * passed schema 9, i.e. once no supported upgrade path starts below it.
+ */
+internal object DecoderBackendMigration {
+    const val VERSION = 9
+    val RESET_STATEMENTS = listOf(
+        "UPDATE tracks SET playback_error = NULL WHERE playback_error IS NOT NULL",
+        "DELETE FROM format_probe"
+    )
+}
+
+/** Current schema. See [DecoderBackendMigration] for why 9 is still referenced. */
+internal object LibrarySchema {
+    /** 10 drops `format_probe`: what this build can decode is now a build property. */
+    const val VERSION = 10
+}
 
 class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     appContext,
@@ -97,6 +121,19 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 // the firmware cannot play is only discovered the hard way once.
                 execSQL("ALTER TABLE tracks ADD COLUMN playback_error TEXT")
                 version = 8
+            }
+            if (version < 9) {
+                // Framework-decoder verdicts and format-probe results describe the old
+                // backend. FFmpeg must get one clean attempt at every readable
+                // file instead of inheriting a stale framework rejection.
+                DecoderBackendMigration.RESET_STATEMENTS.forEach(::execSQL)
+                version = DecoderBackendMigration.VERSION
+            }
+            if (version < 10) {
+                // The format probe is gone: codec support is fixed by the FFmpeg
+                // configure line, so there is nothing left to record per device.
+                execSQL("DROP TABLE IF EXISTS format_probe")
+                version = LibrarySchema.VERSION
             }
             if (version != newVersion) error("No migration exists from $oldVersion to $newVersion")
         }
@@ -428,32 +465,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         "recently_played", arrayOf("track_id"), null, null, null, null, "last_played DESC", limit.toString()
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) } }
 
-    fun saveFormatProbe(results: List<FormatProbeResult>) {
-        writableDatabase.transaction {
-            results.forEach { result ->
-                insertWithOnConflict(
-                    "format_probe", null, ContentValues().apply {
-                        put("extension", result.extension)
-                        put("success", if (result.success) 1 else 0)
-                        put("message", result.message)
-                        put("tested_at", result.testedAt)
-                    }, SQLiteDatabase.CONFLICT_REPLACE
-                )
-            }
-        }
-    }
-
-    fun loadFormatProbe(): List<FormatProbeResult> = readableDatabase.query(
-        "format_probe", arrayOf("extension", "success", "message", "tested_at"),
-        null, null, null, null, "extension"
-    ).use { cursor ->
-        buildList {
-            while (cursor.moveToNext()) {
-                add(FormatProbeResult(cursor.getString(0), cursor.getInt(1) != 0, cursor.getString(2), cursor.getLong(3)))
-            }
-        }
-    }
-
     fun recordScanStart(volumeId: String): Long = writableDatabase.insertOrThrow(
         "scan_runs", null, ContentValues().apply {
             put("volume_id", volumeId)
@@ -481,7 +492,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
             delete("playback_session", null, null)
             delete("tracks", null, null)
             delete("scan_runs", null, null)
-            delete("format_probe", null, null)
         }
     }
 
@@ -746,7 +756,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     private fun createDiagnostics(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS scan_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, volume_id TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, status TEXT NOT NULL, files INTEGER NOT NULL, error TEXT)")
         db.execSQL("CREATE TABLE IF NOT EXISTS diagnostic_events (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, level TEXT NOT NULL, category TEXT NOT NULL, message TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS format_probe (extension TEXT PRIMARY KEY, success INTEGER NOT NULL, message TEXT NOT NULL, tested_at INTEGER NOT NULL)")
     }
 
     private fun createUserLibrary(db: SQLiteDatabase) {
@@ -759,7 +768,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DATABASE_NAME = "y2player.db"
-        private const val DATABASE_VERSION = 8
+        private const val DATABASE_VERSION = LibrarySchema.VERSION
         private const val MAX_POOLED_STRINGS = 1_024
         private const val MAX_PLAY_ORDER_ITEMS = 50_000
         private const val MAX_PLAY_ORDER_CHARS = 300_000

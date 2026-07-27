@@ -33,7 +33,11 @@ class AudioHeaderParser {
             "dsf" -> readDsf(file)
             "dff" -> readDff(file)
             "mp3", "mp2" -> readMpegAudio(file)
-            "m4a", "m4r", "mp4" -> readMp4(file)
+            // `.alac` is not a container. Encoders that emit it are writing an
+            // MP4 with a non-standard extension, so it is read as one — and if a
+            // file turns out not to be an MP4, the null result correctly marks
+            // it unplayable, because no raw-ALAC demuxer exists to fall back on.
+            "m4a", "m4r", "mp4", "alac" -> readMp4(file)
             "aac" -> readAdts(file)
             "ogg", "oga", "opus" -> readOgg(file)
             "amr" -> readAmr(file)
@@ -600,7 +604,7 @@ class AudioHeaderParser {
         /** Keep in step with the [read] dispatch — see [vouchesFor]. */
         private val PARSED_EXTENSIONS = setOf(
             "wav", "wave", "flac", "aif", "aiff", "aifc", "wv", "dsf", "dff",
-            "mp3", "mp2", "m4a", "m4r", "mp4", "aac", "ogg", "oga", "opus", "amr"
+            "mp3", "mp2", "m4a", "m4r", "mp4", "alac", "aac", "ogg", "oga", "opus", "amr"
         )
 
         private const val HEADER_SCAN_LIMIT = 4L * 1024L * 1024L

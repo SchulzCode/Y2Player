@@ -74,7 +74,7 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
      * Deliberately silent for `ape`, `wma`, `mka` and friends. We have no reader for
      * those, so a failure here would only mean MediaMetadataRetriever could not read
      * it — and on MediaTek builds the vendor codecs the retriever ignores are often
-     * exactly the ones MediaPlayer can decode. Guessing there would mislabel working
+     * exactly the ones FFmpeg can decode. Guessing there would mislabel working
      * files, which is worse than saying nothing.
      */
     private fun unreadableContainer(

@@ -10,3 +10,6 @@
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
+
+# JNI_OnLoad registers the minimal native boundary by this exact class name.
+-keep class com.schulzcode.y2player.playback.NativeAudio { *; }

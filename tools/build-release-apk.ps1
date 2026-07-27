@@ -295,7 +295,20 @@ $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
 $zipalign = Join-Path $buildTools.FullName "zipalign.exe"
 
 Write-Host ""
-Write-Host "=== [1/4] Clean build, tests and lint ===" -ForegroundColor Cyan
+Write-Host "=== [1/5] Build and verify native audio runtime ===" -ForegroundColor Cyan
+
+& powershell `
+    -ExecutionPolicy Bypass `
+    -File .\tools\build-native-audio.ps1
+
+if ($LASTEXITCODE -ne 0) {
+    Fail "Native audio build failed."
+}
+
+Pass "API-19 ARMv7 native runtime built"
+
+Write-Host ""
+Write-Host "=== [2/5] Clean build, tests and lint ===" -ForegroundColor Cyan
 
 # Y2_BUILD_ID is exported by tools/build-firmware.ps1 so the APK and
 # build-manifest.txt carry one identity. A standalone run of this script
@@ -312,7 +325,7 @@ if ($LASTEXITCODE -ne 0) {
 Pass "tests and lint completed"
 
 Write-Host ""
-Write-Host "=== [2/4] Assembling release ===" -ForegroundColor Cyan
+Write-Host "=== [3/5] Assembling release ===" -ForegroundColor Cyan
 
 & .\gradlew.bat --no-daemon assembleRelease @buildIdArguments
 
@@ -344,7 +357,7 @@ release signingConfig.
 Pass "signed release APK assembled"
 
 Write-Host ""
-Write-Host "=== [3/4] Verifying the APK ===" -ForegroundColor Cyan
+Write-Host "=== [4/5] Verifying the APK ===" -ForegroundColor Cyan
 
 $badgingOutput = & $aapt dump badging $apk 2>&1
 
@@ -452,20 +465,22 @@ if ($badging -match "package: name='$debugPackagePattern'") {
 
 Pass "no debug applicationId"
 
-$nativeEntries = & $aapt list $apk |
-    Select-String -Pattern "^lib/"
+$nativeEntries = @(
+    & $aapt list $apk |
+        Where-Object { $_ -match "^lib/" } |
+        ForEach-Object { $_.Trim() }
+)
+$expectedNativeEntry = "lib/armeabi-v7a/liby2audio.so"
 
-if ($nativeEntries) {
-    Write-Host ""
-    Write-Host "  note Native libraries are present:" -ForegroundColor Yellow
+if ($nativeEntries.Count -ne 1) {
+    Fail "Expected exactly one packaged native library; found: $($nativeEntries -join ', ')"
+}
 
-    foreach ($entry in $nativeEntries) {
-        Write-Host "       $entry" -ForegroundColor Yellow
-    }
+if ($nativeEntries[0] -ne $expectedNativeEntry) {
+    Fail "Unexpected native library or ABI: $($nativeEntries[0])"
 }
-else {
-    Pass "no native libraries"
-}
+
+Pass "single native runtime: $expectedNativeEntry"
 
 & $zipalign -c -v 4 $apk *> $null
 
@@ -554,7 +569,7 @@ if ($certificateExitCode -ne 0) {
 }
 
 Write-Host ""
-Write-Host "=== [4/4] Build report ===" -ForegroundColor Cyan
+Write-Host "=== [5/5] Build report ===" -ForegroundColor Cyan
 
 $apkFile = Get-Item $apk
 $size = $apkFile.Length
@@ -565,6 +580,39 @@ $sha256 = (
 
 $outDir = Join-Path $root "dist\firmware"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+$complianceDir = Join-Path $root "dist\source-compliance\ffmpeg-8.1.2"
+New-Item -ItemType Directory -Force -Path $complianceDir | Out-Null
+
+$complianceFiles = @{
+    "ffmpeg-8.1.2.tar.xz" = "build\downloads\ffmpeg-8.1.2.tar.xz"
+    "ffmpeg-source.properties" = "third_party\ffmpeg\source.properties"
+    "ffmpeg-README.md" = "third_party\ffmpeg\README.md"
+    "android-ndk-r25c.properties" = "third_party\android-ndk-r25c.properties"
+    "build-native-audio.ps1" = "tools\build-native-audio.ps1"
+    "build-ffmpeg.sh" = "tools\native\build-ffmpeg.sh"
+    "y2audio.c" = "app\src\main\c\y2audio.c"
+    "y2audio.map" = "app\src\main\c\y2audio.map"
+    "native-build-report.txt" = "build\native\native-build-report.txt"
+    "Y2Player-LICENSE" = "LICENSE"
+}
+
+foreach ($entry in $complianceFiles.GetEnumerator()) {
+    $source = Join-Path $root $entry.Value
+    if (-not (Test-Path -LiteralPath $source)) {
+        Fail "Source-compliance input is missing: $source"
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $complianceDir $entry.Key) -Force
+}
+
+$complianceChecksums = Get-ChildItem -LiteralPath $complianceDir -File |
+    Sort-Object Name |
+    ForEach-Object {
+        "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+    }
+$complianceChecksums | Out-File `
+    -FilePath (Join-Path $complianceDir "SHA256SUMS.txt") `
+    -Encoding ascii
 
 $releaseApk = Join-Path $outDir "Y2Player.apk"
 $reportFile = Join-Path $outDir "apk-build-report.txt"
@@ -585,13 +633,15 @@ Target SDK       : $expectedTargetSdk
 Build Tools      : $($buildTools.Name)
 Android SDK      : $sdk
 Launch activity  : $launchableActivity
-ABI              : none expected
+ABI              : armeabi-v7a only
+Native runtime   : lib/armeabi-v7a/liby2audio.so
 Size             : $size bytes
 SHA-256          : $sha256
 Alignment        : 4-byte verified
 Signature        : v1 JAR signature verified for minSdk 19
 Launcher intent  : MAIN + HOME + DEFAULT present
 Debug package    : absent
+Source material  : dist\source-compliance\ffmpeg-8.1.2
 
 Signing certificate
 -------------------

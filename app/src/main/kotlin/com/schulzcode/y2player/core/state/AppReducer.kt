@@ -350,7 +350,6 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "diag_export" -> Reduction(state, listOf(ExportDiagnostics))
-            "diag_formats" -> Reduction(state, listOf(RunFormatProbe))
             "diag_reset_queue" -> Reduction(state, listOf(ClearQueue))
             "diag_reset_library" -> Reduction(state, listOf(ResetLibrary))
             "diag_verbose" -> Reduction(state, listOf(ToggleVerboseDiagnostics))

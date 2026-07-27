@@ -122,57 +122,119 @@ object AudioCodecLabels {
 }
 
 /**
- * Whether this device's media framework can decode a track.
+ * Whether the pinned FFmpeg build can decode a track.
  *
  * The verdict is taken from the **codec**, not the file extension, because the
  * two disagree in the case that matters: an ALAC and an AAC file are both
- * `.m4a`, and only one of them plays on API 19. `AudioHeaderParser` reads the
- * real codec out of the container, so this can answer honestly where an
- * extension list could not.
+ * `.m4a`. `AudioHeaderParser` reads the real codec out of the container, so this
+ * can answer honestly where an extension list could not.
  *
- * Deliberately three-valued. [UNKNOWN] exists because MediaTek builds add codecs
- * that stock Android never had — WMA and APE most commonly — so claiming a file
- * is unplayable when the firmware would happily play it is a real risk. Only
- * codecs that AOSP definitively lacks at API 19 are reported as [UNSUPPORTED],
- * and the label is advisory: nothing here prevents an attempt.
+ * ### What changed with the FFmpeg migration
+ *
+ * This used to describe what AOSP shipped at API 19 - "ALAC arrived in API 31,
+ * Opus in API 21". That stopped being the constraint the moment playback left
+ * MediaPlayer: nothing in the playback path consults the platform any more. The
+ * real constraint is the `--enable-decoder` / `--enable-demuxer` allowlist in
+ * `tools/native/build-ffmpeg.sh`, and the two had already drifted: `aiff` was
+ * reported unsupported while its big-endian PCM decoders were being built, only
+ * the demuxer was missing.
+ *
+ * So [UNSUPPORTED] no longer means "this device cannot". It means "this build
+ * carries no decoder for it" - a decision, reversible by one token on the
+ * configure line.
+ *
+ * [DECODERS] and [DEMUXERS] mirror that configure line and are checked against
+ * it by `FfmpegBuildCapabilitiesTest`, so they cannot drift again in silence.
+ *
+ * Still three-valued: [UNKNOWN] covers a codec this build has no opinion about,
+ * where either answer would be a guess. The label stays advisory - nothing here
+ * prevents an attempt.
  */
 enum class CodecSupport { SUPPORTED, UNSUPPORTED, UNKNOWN }
 
 object AudioCodecSupport {
 
-    /** Codecs the platform decodes at API 19. */
-    private val SUPPORTED = setOf(
-        "mpeg", "mp3",
-        "mp4a-latm", "aac", "mp4", "m4a",
-        "flac",
-        "wav", "wave", "pcm",
-        "vorbis", "ogg",
-        "amr", "amr-wb"
+    /** Mirrors `--enable-decoder` in tools/native/build-ffmpeg.sh. */
+    val DECODERS: Set<String> = setOf(
+        "aac", "alac", "flac", "mp3", "opus", "vorbis",
+        "pcm_f32le", "pcm_f64le", "pcm_s8", "pcm_s16be", "pcm_s16le",
+        "pcm_s24be", "pcm_s24le", "pcm_s32be", "pcm_s32le", "pcm_u8"
     )
 
     /**
-     * Codecs AOSP cannot decode at API 19, with the reason each one is certain:
-     * ALAC arrived in API 31, Opus in API 21, and the rest were never in AOSP at
-     * all. DSD is doubly impossible here — the output path is 44.1 kHz/16-bit
-     * PCM, so there is nothing for a decoder to hand it to.
+     * Mirrors `--enable-demuxer`.
+     *
+     * A decoder is only reachable through a demuxer, so this is half of the
+     * capability answer and was previously not modelled at all.
      */
-    private val UNSUPPORTED = setOf(
+    val DEMUXERS: Set<String> = setOf("aac", "aiff", "flac", "mov", "mp3", "ogg", "wav")
+
+    /** Stored codec identifiers that map onto an enabled decoder. */
+    private val SUPPORTED_CODECS = setOf(
+        "mpeg", "mp3",
+        "mp4a-latm", "aac",
         "alac",
-        "opus",
+        "flac",
+        "vorbis", "opus",
+        "pcm", "wav", "wave",
+        "aiff", "aiff-c"
+    )
+
+    /** Stored codec identifiers this build deliberately carries no decoder for. */
+    private val UNSUPPORTED_CODECS = setOf(
+        "amr", "amr-wb",
+        "mp2",
+        "wma", "ms-wma",
+        "ape",
         "wavpack",
         "dsf", "dff", "dsd",
-        "aiff", "aiff-c",
         "ac3", "eac3"
     )
 
+    /**
+     * Container extensions, consulted only when the stored codec is unknown.
+     *
+     * Kept apart from the codec sets on purpose: `m4a` and `mp4` are containers,
+     * not codecs, and listing them among codecs is what let a container name
+     * stand in for a decoding verdict.
+     */
+    /**
+     * Container extensions this build can play, used only when the stored codec
+     * is unknown.
+     *
+     * `internal` so `FfmpegBuildCapabilitiesTest` can assert the invariant that
+     * matters: anything labelled playable here must also be indexed by
+     * `LibraryScanner`, or the label describes a file the user can never see.
+     *
+     * `mp4` is absent on purpose — it is a video container, and the scanner does
+     * not index it. Audio in an MP4 wrapper arrives as `m4a`/`m4r`.
+     */
+    internal val SUPPORTED_EXTENSIONS = setOf(
+        "mp3", "m4a", "m4r", "alac", "aac", "flac",
+        "wav", "wave", "ogg", "oga", "opus", "aif", "aiff", "aifc"
+    )
+
+    private val UNSUPPORTED_EXTENSIONS = setOf(
+        "amr", "mp2", "wma", "ape", "wv",
+        "dsf", "dff", "ac3", "mka", "mkv"
+    )
+
     fun of(codec: String?, extension: String): CodecSupport {
-        val cleaned = codec?.trim()?.lowercase()?.substringAfter('/')?.removePrefix("x-")
-        // The container extension is only consulted when the codec is unknown,
-        // which happens for formats without a header reader yet.
-        val key = cleaned?.takeIf { it.isNotEmpty() } ?: extension.trim().lowercase()
-        return when {
-            key in UNSUPPORTED -> CodecSupport.UNSUPPORTED
-            key in SUPPORTED -> CodecSupport.SUPPORTED
+        val cleanedCodec = codec?.trim()
+            ?.lowercase()
+            ?.substringAfter('/')
+            ?.removePrefix("x-")
+            ?.takeIf { it.isNotEmpty() }
+        if (cleanedCodec != null) {
+            return when (cleanedCodec) {
+                in UNSUPPORTED_CODECS -> CodecSupport.UNSUPPORTED
+                in SUPPORTED_CODECS -> CodecSupport.SUPPORTED
+                else -> CodecSupport.UNKNOWN
+            }
+        }
+        return when (extension.trim().lowercase()) {
+            in UNSUPPORTED_EXTENSIONS -> CodecSupport.UNSUPPORTED
+            in SUPPORTED_EXTENSIONS -> CodecSupport.SUPPORTED
             else -> CodecSupport.UNKNOWN
         }
     }

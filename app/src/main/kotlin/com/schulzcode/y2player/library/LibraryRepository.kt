@@ -50,7 +50,7 @@ class LibraryRepository(
      * It was the only thread in the app doing sustained work at default
      * priority, competing with playback on four weak cores. Two things make that
      * worse than it sounds on this device: the scan reads audio headers from the
-     * same card MediaPlayer is streaming from, and `MediaMetadataRetriever`
+     * same card the native decoder is streaming from, and `MediaMetadataRetriever`
      * executes inside `mediaserver` — the process decoding the audio. Binder
      * propagates the caller's nice value to the servicing thread, so lowering it
      * here also lowers the extractor work it triggers over there.

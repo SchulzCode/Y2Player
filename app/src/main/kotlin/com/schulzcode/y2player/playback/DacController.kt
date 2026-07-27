@@ -1,6 +1,5 @@
 package com.schulzcode.y2player.playback
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioManager
 import com.schulzcode.y2player.core.model.DacState
@@ -9,10 +8,9 @@ import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import java.io.File
 
 /**
- * Best-effort adapter for the Y2's MediaTek/CS43131 audio path.
- *
- * The APK can request the vendor Hi-Fi route and avoid app-side DSP. It cannot
- * add sample rates or formats that the firmware Audio HAL does not expose.
+ * Reports the verified limits of the Y2's MediaTek/CS43131 audio path.
+ * Raw CS43131 PCM access and the old vendor parameter are unavailable on the
+ * audited stock HAL, so this class never performs speculative hardware I/O.
  */
 class DacController(context: Context, private val logger: DiagnosticLogger) {
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -26,12 +24,16 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         if (lastAppliedDirectMode == enabled) return
         directMode = enabled
         lastAppliedDirectMode = enabled
-        hiFiRequestAccepted = requestMediaTekHiFi(enabled)
+        hiFiRequestAccepted = false
         // The reported state just changed, so the memoised snapshot is stale.
         cached = null
         logger.info(
             "audio",
-            "Direct DAC ${if (enabled) "enabled" else "disabled"}; vendor Hi-Fi request accepted=$hiFiRequestAccepted"
+            if (enabled) {
+                "Direct DAC requested but unavailable; standard AudioTrack fallback remains active"
+            } else {
+                "Balanced AudioTrack output selected"
+            }
         )
     }
 
@@ -51,6 +53,8 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         val capabilities = policy
         val outputRate = cachedOutputRate
         val limitation = when {
+            directMode ->
+                "Direct CS43131 PCM access is unverified; using standard AudioTrack output"
             !capabilities.dacDetected -> "CS43131 device node was not detected; using the Android audio route"
             capabilities.stockRateOnly ->
                 "Stock firmware advertises 44.1 kHz / 16-bit PCM; higher-rate PCM or native DSD needs an Audio HAL/kernel patch"
@@ -84,17 +88,6 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
     private fun frameworkOutputRate(): Int? = runCatching {
             audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
     }.getOrNull()
-
-    @SuppressLint("PrivateApi")
-    private fun requestMediaTekHiFi(enabled: Boolean): Boolean = runCatching {
-        val clazz = Class.forName("android.media.AudioSystem")
-        val method = clazz.getDeclaredMethod("setParameters", String::class.java).apply { isAccessible = true }
-        val value = if (enabled) 1 else 0
-        val result = method.invoke(null, "SetHiFiDACStatus=$value")
-        result !is Int || result == 0
-    }.onFailure {
-        logger.warn("audio", "Vendor Hi-Fi route is unavailable: ${it.javaClass.simpleName}")
-    }.getOrDefault(false)
 
     private data class PolicyCapabilities(
         val dacDetected: Boolean,

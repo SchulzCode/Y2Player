@@ -28,7 +28,6 @@ import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.DiagnosticsRepository
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
-import com.schulzcode.y2player.diagnostics.FormatProbeController
 import com.schulzcode.y2player.diagnostics.Sev
 import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.input.HapticController
@@ -62,7 +61,6 @@ class MainActivity : Activity() {
     private var bluetoothUiActive = false
     private var uiStarted = false
     private lateinit var safeModeManager: SafeModeManager
-    private lateinit var formatProbeController: FormatProbeController
     private lateinit var playerView: Y2PlayerView
     private lateinit var inputController: Y2InputController
     private lateinit var hapticController: HapticController
@@ -207,19 +205,6 @@ class MainActivity : Activity() {
         uiSoundEffectsController = UiSoundEffectsController(this)
         bluetoothController = container.bluetoothController
         if (startupSafeMode) bluetoothController.stop()
-        formatProbeController = FormatProbeController(
-            container.logger,
-            onFinished = { results ->
-                backgroundExecutor.execute { runCatching { container.database.saveFormatProbe(results) } }
-                diagnosticsRepository.setProbeResults(results)
-                showMessage("Format test finished")
-            },
-            onCancelled = {
-                diagnosticsRepository.setProbeRunning(false)
-                showMessage("Format test cancelled")
-            },
-            onError = { message -> diagnosticsRepository.setError(message); showMessage(message) }
-        )
         hapticController = HapticController(this, container.eventLog)
         hapticController.setLevel(preferences.snapshot().hapticLevel)
         inputController = Y2InputController(::dispatchInput)
@@ -270,10 +255,6 @@ class MainActivity : Activity() {
         store.dispatch(AppAction.SafeModeChanged(safeModeManager.isSafeMode()))
         store.dispatch(AppAction.PreferencesChanged(preferences.snapshot()))
         store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
-        val database = container.database
-        val diagnostics = diagnosticsRepository
-        backgroundExecutor.execute { runCatching { database.loadFormatProbe() }.onSuccess(diagnostics::setProbeResults) }
-
         if (!startupSafeMode) libraryRepository.loadCached()
 
         // The playback service is started and bound in onStart, so a stopped and
@@ -375,7 +356,6 @@ class MainActivity : Activity() {
         destroyed = true
         mainHandler.removeCallbacks(clearMessageRunnable)
         mainHandler.removeCallbacks(markStableRunnable)
-        formatProbeController.shutdown()
         // Guarded: onStop normally already unbound and unregistered these, so both
         // are no-ops here. Safe if the Activity is destroyed without a prior onStop.
         unbindPlaybackServiceIfNeeded()
@@ -528,7 +508,13 @@ class MainActivity : Activity() {
             AppEffect.CycleAudioQuality -> {
                 val value = preferences.cycleAudioQuality()
                 applyPlaybackPreferences(value)
-                showMessage(if (value.audioQualityMode == AudioQualityMode.DIRECT_DAC) "Direct DAC mode requested" else "Balanced audio mode enabled")
+                showMessage(
+                    if (value.audioQualityMode == AudioQualityMode.DIRECT_DAC) {
+                        "Direct DAC unavailable; using standard AudioTrack output"
+                    } else {
+                        "Balanced AudioTrack output enabled"
+                    }
+                )
             }
             AppEffect.ToggleAudioEffects -> applyPlaybackPreferences(preferences.toggleAudioEffects())
             AppEffect.CycleEqualizerPreset -> {
@@ -554,15 +540,6 @@ class MainActivity : Activity() {
             AppEffect.ExportDiagnostics -> backgroundExecutor.execute {
                 diagnosticsRepository.export().onSuccess { file -> showMessage("Saved ${file.name}") }
                     .onFailure { showMessage(it.message ?: "Export failed") }
-            }
-            AppEffect.RunFormatProbe -> {
-                val state = store.state
-                if (state.playback.status in setOf(PlaybackStatus.PLAYING, PlaybackStatus.PREPARING)) {
-                    showMessage("Pause playback before running the format test")
-                } else {
-                    diagnosticsRepository.setProbeRunning(true)
-                    if (!formatProbeController.start(state.library.availableTracks)) diagnosticsRepository.setProbeRunning(false)
-                }
             }
             AppEffect.ResetLibrary -> {
                 requirePlayback { it.clearQueue() }

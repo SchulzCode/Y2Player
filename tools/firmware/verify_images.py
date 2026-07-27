@@ -7,11 +7,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sparse
 
 APK_PATH = "/priv-app/Y2Player.apk"
+NATIVE_LIBRARY_PATH = "/lib/liby2audio.so"
+APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
 # Absence checks intentionally retain these historical filenames so a stale
@@ -25,6 +28,51 @@ def sha256_file(path):
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sha256_stream(handle):
+    digest = hashlib.sha256()
+    for block in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def apk_native_library(apk):
+    with zipfile.ZipFile(apk) as archive:
+        candidates = [
+            info for info in archive.infolist()
+            if info.filename.endswith("/liby2audio.so")
+        ]
+        if [info.filename for info in candidates] != [APK_NATIVE_ENTRY]:
+            return None, None, [info.filename for info in candidates]
+        with archive.open(candidates[0]) as handle:
+            return candidates[0].file_size, sha256_stream(handle), [APK_NATIVE_ENTRY]
+
+
+def elf_description(path):
+    with open(path, "rb") as handle:
+        header = handle.read(52)
+    if len(header) < 52 or header[:4] != b"\x7fELF":
+        return None
+    elf_class = header[4]
+    byte_order = header[5]
+    if byte_order != 1:
+        return None
+    machine = int.from_bytes(header[18:20], "little")
+    flags = int.from_bytes(header[36:40], "little")
+    eabi = (flags >> 24) & 0xFF
+    return {
+        "class": elf_class,
+        "byte_order": byte_order,
+        "machine": machine,
+        "eabi": eabi,
+        "flags": flags,
+        "description": (
+            f"ELF{32 if elf_class == 1 else '?'} little-endian "
+            f"{'ARM' if machine == 40 else 'machine-' + str(machine)} "
+            f"EABI{eabi} (e_flags=0x{flags:08x})"
+        ),
+    }
 
 
 def query(image, command):
@@ -66,6 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--system", required=True)
     parser.add_argument("--apk", required=True)
+    parser.add_argument("--native-lib", required=True)
     parser.add_argument("--scatter", required=True)
     parser.add_argument("--report")
     args = parser.parse_args()
@@ -83,6 +132,27 @@ def main():
             problems.append(description)
 
     log("=== Independent system.img verification ===")
+    source_size = os.path.getsize(args.native_lib)
+    source_sha = sha256_file(args.native_lib)
+    source_elf = elf_description(args.native_lib)
+    check(source_elf is not None, "compiled native library is ELF")
+    check(
+        source_elf is not None
+        and source_elf["class"] == 1
+        and source_elf["byte_order"] == 1
+        and source_elf["machine"] == 40
+        and source_elf["eabi"] == 5,
+        "compiled native library ABI is ELF32 little-endian ARM EABI5",
+    )
+    if source_elf:
+        log("      native ELF : %s" % source_elf["description"])
+    log("      native size: %d bytes" % source_size)
+    log("      native sha : %s" % source_sha)
+    apk_native_size, apk_native_sha, apk_native_entries = apk_native_library(args.apk)
+    check(apk_native_entries == [APK_NATIVE_ENTRY],
+          "APK contains exactly %s" % APK_NATIVE_ENTRY)
+    check((apk_native_size, apk_native_sha) == (source_size, source_sha),
+          "APK native library size and SHA-256 match compiled artifact")
     partitions = scatter_sizes(args.scatter)
     check("ANDROID" in partitions, "scatter declares the ANDROID partition size")
     log("      file    : %s (%d bytes)" % (args.system, os.path.getsize(args.system)))
@@ -116,6 +186,39 @@ def main():
               "APK ownership is root:root")
         check("system_file" in query(raw, "ea_get %s security.selinux" % APK_PATH),
               "APK SELinux context is system_file")
+
+        native_stat = query(raw, "stat %s" % NATIVE_LIBRARY_PATH)
+        check("Inode" in native_stat, "%s exists" % NATIVE_LIBRARY_PATH)
+        check(stat_size(native_stat) == source_size,
+              "runtime library size matches compiled artifact (%d bytes)" % source_size)
+        runtime = os.path.join(work, "liby2audio.so")
+        check(dump(raw, NATIVE_LIBRARY_PATH, runtime), "runtime library can be read back")
+        if os.path.isfile(runtime):
+            runtime_sha = sha256_file(runtime)
+            check(runtime_sha == source_sha,
+                  "runtime library SHA-256 matches compiled and APK copies")
+            runtime_elf = elf_description(runtime)
+            check(runtime_elf is not None and runtime_elf["class"] == 1
+                  and runtime_elf["byte_order"] == 1
+                  and runtime_elf["machine"] == 40
+                  and runtime_elf["eabi"] == 5,
+                  "runtime library ABI is ELF32 little-endian ARM EABI5")
+            log("      runtime sha: %s" % runtime_sha)
+            if runtime_elf:
+                log("      runtime ELF: %s" % runtime_elf["description"])
+        native_mode = next((line for line in native_stat.splitlines() if "Mode:" in line), "")
+        check("0644" in native_mode, "runtime library mode is 0644")
+        check("User:     0" in native_stat and "Group:     0" in native_stat,
+              "runtime library ownership is root:root")
+        check("system_file" in query(
+            raw, "ea_get %s security.selinux" % NATIVE_LIBRARY_PATH
+        ), "runtime library SELinux context is system_file")
+
+        check(query(raw, "ls -p /lib").count("liby2audio.so") == 1,
+              "liby2audio.so exists exactly once under /system/lib")
+        for directory in ("/vendor/lib", "/lib64", "/vendor/lib64"):
+            check("liby2audio.so" not in query(raw, "ls -p %s" % directory),
+                  "no conflicting runtime library exists under /system%s" % directory)
 
         check("Inode" not in query(raw, "stat %s" % STOCK_LAUNCHER),
               "stock MyLauncher.apk is absent")

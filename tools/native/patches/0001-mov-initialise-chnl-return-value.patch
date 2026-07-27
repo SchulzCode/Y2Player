@@ -1,0 +1,34 @@
+mov: initialise the chnl atom handler return value
+
+mov_read_chnl() declares `int ret`, never assigns it, and returns it. The value
+is indeterminate.
+
+This matters for Y2Player because the mov demuxer is the path for AAC, ALAC and
+M4A, and `chnl` is a registered atom (mov.c, mov_default_parse_table). A negative
+return from any atom handler aborts the whole parse:
+
+    mov_read_default():
+        int err = parse(c, pb, a);
+        if (err < 0) { c->atom_depth--; return err; }
+
+So an M4A carrying a `chnl` box can fail to open depending on whatever happened
+to be in that register — nondeterministically, and looking to the user like a
+file that randomly refuses to play.
+
+Zero is chosen rather than capturing ff_mov_read_chnl()'s result because this
+function already returns 0 for the box versions it does not understand; the
+conservative fix keeps `chnl` non-fatal without changing what is parsed.
+
+Applies to: ffmpeg-8.1.2
+Reported by: clang -Wuninitialized during the Y2Player native build
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -1227,7 +1227,7 @@
+ {
+     int64_t end = av_sat_add64(avio_tell(pb), atom.size);
+     int version, flags;
+-    int ret;
++    int ret = 0;
+     AVStream *st;
+ 
+     if (c->fc->nb_streams < 1)

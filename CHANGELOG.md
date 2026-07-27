@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — unified FFmpeg engine
+
+- Replaced playback and format diagnostics with one FFmpeg 8.1.2 engine for MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
+- Added a reproducible NDK r25c/API-19/armeabi-v7a build that statically consolidates the allowlisted FFmpeg runtime into one `liby2audio.so`.
+- Installed that runtime at `/system/lib/liby2audio.so` in generated firmware, with byte-for-byte APK/image verification and stock Android 4.4 file metadata.
+- Added persistent AudioTrack PCM output, native seek/abort handling, playback-head position accounting, PCM gapless promotion, and PCM crossfade mixing.
+- Added explicit application wake-lock ownership and retained queue, focus, Bluetooth, media-control, storage, persistence, sleep-timer, and effects policies.
+- Removed playback and diagnostic framework-decoder paths and invalidated their stale unsupported-file verdicts.
+- Direct DAC now reports the audited stock-HAL limitation and falls back to standard AudioTrack without speculative device access.
+
 ## 1.2
 
 Mostly things people asked for. The menu has been reorganised, so a few settings
@@ -52,15 +62,15 @@ have moved.
   one merged track list. An album reached through an artist is now scoped to that
   artist. The global Albums list still merges shared names on purpose, so a
   compilation stays one album.
-- **ALAC files in an `.m4a` were reported as AAC.** They still cannot be played —
+- **ALAC files in an `.m4a` were reported as AAC.** In the 1.2 framework engine they could not be played —
   see below — but they are now identified correctly and labelled, instead of
   failing silently when you press play.
 
-### Why ALAC still does not play
+### Why ALAC did not play in 1.2
 
 Apple Lossless needs a decoder, and the Y2 runs Android 4.4. ALAC decoding was
 added to Android in version 12, eight years later. An app cannot supply the
-missing decoder: `MediaPlayer` and `MediaCodec` can only use codecs the operating
+missing decoder: the framework decoder and `MediaCodec` could only use codecs the operating
 system already has, so there is no setting or update to this app that would make
 an ALAC file play on this hardware.
 
@@ -116,7 +126,7 @@ A maintenance release. Everything here comes from bug reports and device logs fr
 
 ### Known limitations
 
-- **ALAC still cannot be played.** Android 4.4 has no ALAC decoder and one cannot be added from an app. Converting to FLAC is lossless and plays natively — `ffmpeg -i input.m4a -c:a flac output.flac`.
+- **ALAC could not be played by the 1.1 framework backend.** Converting to FLAC was the lossless workaround at that time.
 - Formats some firmware adds, such as WMA and APE, are deliberately left unlabelled rather than guessed at, since they may well play on your device.
 
 ## 1.0

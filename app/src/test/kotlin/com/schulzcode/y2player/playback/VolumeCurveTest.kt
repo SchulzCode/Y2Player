@@ -74,7 +74,7 @@ class VolumeCurveTest {
 
     /**
      * The gain is multiplied by the duck factor and by the fade/crossfade
-     * fraction before reaching MediaPlayer. Composition must stay in range and
+     * fraction before reaching decoded PCM. Composition must stay in range and
      * must collapse to silence whenever any factor is zero.
      */
     @Test fun composesWithDuckAndFadeFactors() {

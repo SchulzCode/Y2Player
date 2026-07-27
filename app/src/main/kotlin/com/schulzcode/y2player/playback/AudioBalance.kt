@@ -1,16 +1,16 @@
 package com.schulzcode.y2player.playback
 
 /**
- * Left/right channel balance, as a pair of gains applied to MediaPlayer.
+ * Left/right channel balance, as gains applied to decoded stereo PCM.
  *
  * Requested for asymmetric hearing loss. Implemented with
- * `MediaPlayer.setVolume(left, right)` rather than an `AudioEffect` because
+ * The gains are applied in the engine's PCM pass rather than an `AudioEffect` because
  * AOSP has no balance effect at any API level, and because a per-channel gain on
  * the player is the cheapest possible route — no extra thread, no DSP, nothing
  * added to the decode path, and it keeps working on firmware whose effect
  * framework is missing entirely.
  *
- * **It attenuates, never boosts.** MediaPlayer volume saturates at 1.0, so
+ * **It attenuates, never boosts.** PCM output saturates at full scale, so
  * leaning left lowers the right channel rather than raising the left. Total
  * loudness therefore drops as balance moves off centre, which is the honest
  * behaviour: the alternative would be to pre-attenuate both channels at centre
@@ -18,7 +18,7 @@ package com.schulzcode.y2player.playback
  *
  * **What this cannot do:** sum both channels into both ears. Someone with no
  * hearing on one side needs a mono downmix, not balance — with balance alone,
- * anything panned to the silenced channel is simply lost. MediaPlayer cannot mix
+ * anything panned to the silenced channel is simply lost. The engine does not mono-mix
  * channels, and the platform's own `MASTER_MONO` setting arrived in API 23, four
  * releases after this device. That would need a decode path of our own.
  */
