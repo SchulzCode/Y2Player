@@ -97,7 +97,9 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
 
         fun flush() {
             if (batch.isEmpty()) return
-            consume(batch.toList())
+            // The private callback consumes the paths synchronously, so copying
+            // every full lookup batch only adds temporary heap pressure.
+            consume(batch)
             batch.clear()
         }
 

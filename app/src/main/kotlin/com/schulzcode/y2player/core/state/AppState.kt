@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
+import com.schulzcode.y2player.playback.ReplayGainMode
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
 
@@ -97,6 +98,8 @@ data class PlayerPreferencesState(
     val volumeMode: VolumeMode = VolumeMode.SYSTEM,
     /** In-app level in `0..VolumeCurve.STEPS`. Only meaningful in PERCEPTUAL mode. */
     val volumeLevel: Int = VolumeCurve.STEPS,
+    /** Metadata loudness normalization. Off preserves the original PCM path exactly. */
+    val replayGainMode: ReplayGainMode = ReplayGainMode.OFF,
     /** Wheel detent feedback. Off by default; see [HapticLevel] for why it is a duration. */
     val hapticLevel: HapticLevel = HapticLevel.OFF,
     val keepScreenOnWhilePlaying: Boolean = false,

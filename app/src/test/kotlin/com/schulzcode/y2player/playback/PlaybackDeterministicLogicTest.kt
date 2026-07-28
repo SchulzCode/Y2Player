@@ -37,6 +37,8 @@ class PlaybackDeterministicLogicTest {
 
     @Test fun repeatedVolumeAndBalanceStepsCoalesce() {
         assertTrue(EngineCommand.Volume(0.2f).isSupersededBy(EngineCommand.Volume(0.9f)))
+        assertTrue(EngineCommand.OutputGain(0.2f).isSupersededBy(EngineCommand.OutputGain(0.9f)))
+        assertFalse(EngineCommand.OutputGain(0.2f).isSupersededBy(EngineCommand.Volume(0.9f)))
         assertTrue(EngineCommand.Balance(-10).isSupersededBy(EngineCommand.Balance(10)))
         assertFalse(EngineCommand.Volume(0.2f).isSupersededBy(EngineCommand.Balance(10)))
         assertFalse(EngineCommand.Balance(10).isSupersededBy(EngineCommand.Volume(0.2f)))
@@ -87,6 +89,19 @@ class PlaybackDeterministicLogicTest {
                 .isSupersededBy(EngineCommand.Start)
         )
         assertFalse(EngineCommand.ConfigureTransition(true, 0).clearsPending)
+    }
+
+    @Test fun replayGainConfigurationCoalescesToTheNewestShuffleState() {
+        assertTrue(
+            EngineCommand.ConfigureReplayGain(ReplayGainMode.TRACK_WHEN_SHUFFLING, false)
+                .isSupersededBy(
+                    EngineCommand.ConfigureReplayGain(ReplayGainMode.TRACK_WHEN_SHUFFLING, true)
+                )
+        )
+        assertFalse(
+            EngineCommand.ConfigureReplayGain(ReplayGainMode.ALBUM, false)
+                .isSupersededBy(EngineCommand.Start)
+        )
     }
 
 }

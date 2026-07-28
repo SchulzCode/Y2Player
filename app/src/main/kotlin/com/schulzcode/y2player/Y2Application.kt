@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.SystemClock
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.Sub
+import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.library.ScanReason
 import com.schulzcode.y2player.playback.MediaButtonReceiver
 import com.schulzcode.y2player.storage.StorageMonitor
@@ -268,6 +269,8 @@ class Y2Application : Application() {
 
     override fun onLowMemory() {
         container.libraryRepository.cancelScan("system low memory")
+        container.artworkLoaderOrNull()?.trimMemory()
+        ScreenContent.clearCachedRows()
         super.onLowMemory()
     }
 
@@ -282,6 +285,8 @@ class Y2Application : Application() {
             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
         ) {
             container.libraryRepository.cancelScan("trim memory level=$level")
+            container.artworkLoaderOrNull()?.trimMemory()
+            ScreenContent.clearCachedRows()
         }
         super.onTrimMemory(level)
     }

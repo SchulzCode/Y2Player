@@ -1521,17 +1521,24 @@ class Y2PlayerView(
     private fun iconForKey(key: String): Y2Icon = when {
         key == "collection_play" -> Y2Icon.PLAY
         key == "rescan" || key == "bt_refresh" -> Y2Icon.REFRESH
-        key == "songs" -> Y2Icon.SONG
+        key == "music" || key == "songs" -> Y2Icon.SONG
         key == "favorites" || key.contains("favorite") -> Y2Icon.FAVORITE
         key == "recent" || key == "playlist_recent" -> Y2Icon.RECENT
-        key == "albums" || key == "np_album" -> Y2Icon.ALBUM
-        key == "artists" || key == "np_artist" -> Y2Icon.ARTIST
+        key == "albums" || key.startsWith("track_album") -> Y2Icon.ALBUM
+        key == "artists" || key.startsWith("track_artist") -> Y2Icon.ARTIST
         key.startsWith("np_playlist") -> Y2Icon.PLAYLIST
         key == "folders" -> Y2Icon.FOLDER
         key == "now_playing" || key.startsWith("track_play") || key.startsWith("queue_play") -> Y2Icon.PLAYING
         key == "queue" || key.contains("queue") -> Y2Icon.QUEUE
         key == "bluetooth" || key.startsWith("bt_") -> Y2Icon.BLUETOOTH
-        key == "settings" || key == "system" || key == "playback" || key.contains("effects") || key.startsWith("eq_") -> Y2Icon.SETTINGS
+        key == "audio" -> Y2Icon.HEADPHONES
+        key == "settings" || key == "system" || key == "playback" || key.startsWith("playback_") ||
+            key == "sound" || key == "equalizer" || key == "sound_dynamics" || key.contains("effects") ||
+            key.startsWith("eq_") -> Y2Icon.SETTINGS
+        key == "interface" -> Y2Icon.DISPLAY
+        key == "library_settings" -> Y2Icon.PLAYLIST
+        key == "output_information" -> Y2Icon.DAC
+        key.startsWith("track_details") -> Y2Icon.INFO
         key == "storage" || key.startsWith("storage:") || key == "rescan" -> Y2Icon.STORAGE
         key == "display" || key.startsWith("brightness") || key.startsWith("timeout") || key == "keep_screen_on" -> Y2Icon.DISPLAY
         key == "diagnostics" || key.startsWith("diag_") -> Y2Icon.DIAGNOSTICS
@@ -1560,7 +1567,9 @@ class Y2PlayerView(
         if (active) return Y2Icon.CHECK
         val key = action.key
         return if (key in NAVIGATION_KEYS || key.startsWith("storage:") || key.startsWith("playlist:") ||
-            key.startsWith("np_album") || key.startsWith("np_artist") || key.startsWith("track_playlist")
+            key.startsWith("track_playlist") || key.startsWith("track_browse") || key.startsWith("track_details") ||
+            key.startsWith("track_album") || key.startsWith("track_artist") || key.startsWith("np_playlist") ||
+            key.startsWith("np_track_options")
         ) Y2Icon.CHEVRON else null
     }
 
@@ -1661,10 +1670,12 @@ class Y2PlayerView(
         private const val BATTERY_TEXT_REFERENCE = "100%"
         const val SHARED_ARTWORK_SIZE_PX = 256
         private val NAVIGATION_KEYS = setOf(
-            "songs", "albums", "artists", "playlists", "folders", "settings",
+            "music", "songs", "albums", "artists", "playlists", "folders", "audio", "settings",
             "playlist_favorites", "playlist_recent", "playback", "sort", "bluetooth",
             "display", "controls", "storage", "system", "diagnostics", "android_settings", "about",
-            "sound", "balance", "brightness", "timeout", "queue", "artist_all_songs"
+            "interface", "library_settings", "sound", "balance", "brightness", "timeout", "queue",
+            "queue_management", "playback_transitions", "playback_seeking", "playback_volume",
+            "playback_interruptions", "equalizer", "sound_dynamics", "output_information", "artist_all_songs"
         )
     }
 }

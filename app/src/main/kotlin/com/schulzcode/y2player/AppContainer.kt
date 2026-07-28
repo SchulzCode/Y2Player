@@ -85,7 +85,12 @@ class AppContainer(context: Context) {
      * entry and one MediaMetadataRetriever pass serve both per track change.
      * Never shut down: it lives for the process.
      */
-    val artworkLoader: AlbumArtworkLoader by lazy { AlbumArtworkLoader() }
+    private val artworkLoaderLazy = lazy { AlbumArtworkLoader() }
+    val artworkLoader: AlbumArtworkLoader by artworkLoaderLazy
+
+    /** Returns the process cache without constructing it during memory pressure. */
+    fun artworkLoaderOrNull(): AlbumArtworkLoader? =
+        if (artworkLoaderLazy.isInitialized()) artworkLoaderLazy.value else null
 
     /**
      * Measured hardware facts, resolved once. Y2Application warms this on a

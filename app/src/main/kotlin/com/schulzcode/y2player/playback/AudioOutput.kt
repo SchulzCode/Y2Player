@@ -44,6 +44,8 @@ internal interface AudioOutput {
      * the longer block is written from where the previous turn stopped.
      */
     fun write(pcm: ShortArray, offsetShorts: Int, decodedShortCount: Int): Int
+    /** Live post-buffer gain, applied equally to both output channels. */
+    fun setOutputGain(gain: Float)
     fun pause()
     fun resume()
     fun flush()
@@ -236,6 +238,14 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
         val decodedFrameCount = decodedShortCount / PcmFormat.CHANNELS
         writtenFrames += decodedFrameCount
         return decodedFrameCount
+    }
+
+    override fun setOutputGain(gain: Float) {
+        val safeGain = gain.coerceIn(0f, 1f)
+        val result = requireTrack().setStereoVolume(safeGain, safeGain)
+        if (result != AudioTrack.SUCCESS) {
+            throw AudioOutputException("AudioTrack volume update failed: $result")
+        }
     }
 
     override fun pause() {

@@ -211,6 +211,24 @@ class AudioOutputTest {
         assertEquals(Short.MIN_VALUE.toInt(), current[1].toInt())
     }
 
+    @Test fun crossfadeAppliesEachTracksReplayGainIndependently() {
+        val current = shortArrayOf(10_000, 10_000)
+        val next = shortArrayOf(10_000, 10_000)
+
+        PcmGain.crossfadeInto(
+            current, 0, next, 0,
+            frameCount = 1,
+            transitionFrame = 1, transitionFrames = 2,
+            level = 0.5f,
+            nextLevel = 1f,
+            balance = AudioBalance.CENTRE
+        )
+
+        // Midpoint: 10,000 * (0.5 ReplayGain * 0.5 fade + 1.0 * 0.5 fade).
+        assertEquals(7_500, current[0].toInt())
+        assertEquals(7_500, current[1].toInt())
+    }
+
     @Test fun crossfadeOfZeroFramesTouchesNothing() {
         val current = shortArrayOf(7, 7, 7, 7)
         PcmGain.crossfadeInto(

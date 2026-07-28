@@ -106,6 +106,13 @@ interface PlaybackEngine {
     fun setVolume(volume: Float)
 
     /**
+     * Applies a transient gain at AudioTrack itself, after PCM buffering.
+     * Pause/resume fades use this so retained buffered audio follows the same
+     * ramp as newly decoded audio instead of changing level at the buffer seam.
+     */
+    fun setOutputGain(gain: Float)
+
+    /**
      * Left/right balance in `-100..100`; see [AudioBalance].
      *
      * Separate from [setVolume] because the two compose: volume is the ramping
@@ -114,6 +121,9 @@ interface PlaybackEngine {
      * ramp step recomputing it, and a ramp that forgot to would silently recentre.
      */
     fun setBalance(balance: Int)
+
+    /** Selects per-track metadata gain; shuffle only changes the hybrid mode. */
+    fun configureReplayGain(mode: ReplayGainMode, shuffling: Boolean)
     fun currentPositionMs(): Long
     fun durationMs(): Long
     fun isPlaying(): Boolean
@@ -136,7 +146,9 @@ internal class UnavailablePlaybackEngine(private val reason: String) : PlaybackE
     override fun pause() = Unit
     override fun seekTo(positionMs: Long) = Unit
     override fun setVolume(volume: Float) = Unit
+    override fun setOutputGain(gain: Float) = Unit
     override fun setBalance(balance: Int) = Unit
+    override fun configureReplayGain(mode: ReplayGainMode, shuffling: Boolean) = Unit
     override fun currentPositionMs(): Long = 0
     override fun durationMs(): Long = 0
     override fun isPlaying(): Boolean = false

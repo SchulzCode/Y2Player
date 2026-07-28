@@ -17,6 +17,10 @@ internal object NativeAudio {
     external fun nativeSourceSampleRate(handle: Long): Int
     external fun nativeSourceChannels(handle: Long): Int
     external fun nativeCodecName(handle: Long): String
+    external fun nativeReplayGainTrackGain(handle: Long): Int
+    external fun nativeReplayGainTrackPeak(handle: Long): Long
+    external fun nativeReplayGainAlbumGain(handle: Long): Int
+    external fun nativeReplayGainAlbumPeak(handle: Long): Long
     external fun nativeErrorCategory(handle: Long): Int
     external fun nativeErrorDetail(handle: Long): String
     external fun nativeClose(handle: Long)
@@ -41,7 +45,8 @@ internal data class NativeStreamInfo(
     val durationMs: Long,
     val sourceSampleRate: Int,
     val sourceChannels: Int,
-    val codecName: String
+    val codecName: String,
+    val replayGain: ReplayGainMetadata = ReplayGainMetadata()
 )
 
 internal class NativeDecoderException(
@@ -70,7 +75,13 @@ internal class NativeDecoder : AutoCloseable {
             durationMs = NativeAudio.nativeDurationMs(current).coerceAtLeast(0L),
             sourceSampleRate = NativeAudio.nativeSourceSampleRate(current),
             sourceChannels = NativeAudio.nativeSourceChannels(current),
-            codecName = NativeAudio.nativeCodecName(current)
+            codecName = NativeAudio.nativeCodecName(current),
+            replayGain = ReplayGainMetadata(
+                trackGainDb = NativeAudio.nativeReplayGainTrackGain(current).gainDbOrNull(),
+                trackPeak = NativeAudio.nativeReplayGainTrackPeak(current).peakOrNull(),
+                albumGainDb = NativeAudio.nativeReplayGainAlbumGain(current).gainDbOrNull(),
+                albumPeak = NativeAudio.nativeReplayGainAlbumPeak(current).peakOrNull()
+            )
         )
     }
 
@@ -117,7 +128,14 @@ internal class NativeDecoder : AutoCloseable {
 
     companion object {
         private const val MAX_ERROR_DETAIL = 256
+        private const val REPLAY_GAIN_SCALE = 100_000f
 
         fun buildInformation(): String = NativeAudio.nativeBuildInformation()
+
+        private fun Int.gainDbOrNull(): Float? =
+            takeUnless { it == Int.MIN_VALUE }?.div(REPLAY_GAIN_SCALE)
+
+        private fun Long.peakOrNull(): Float? =
+            takeIf { it > 0L }?.div(REPLAY_GAIN_SCALE)
     }
 }

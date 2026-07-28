@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
+import com.schulzcode.y2player.playback.ReplayGainMode
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
 
@@ -39,6 +40,7 @@ class AppPreferences(context: Context) {
         verboseDiagnostics = boolean(KEY_VERBOSE_DIAGNOSTICS, false),
         volumeMode = VolumeMode.fromStorage(string(KEY_VOLUME_MODE, null)),
         volumeLevel = VolumeCurve.clampLevel(integer(KEY_VOLUME_LEVEL, VolumeCurve.STEPS)),
+        replayGainMode = ReplayGainMode.fromStorage(string(KEY_REPLAY_GAIN_MODE, null)),
         hapticLevel = HapticLevel.fromStorage(string(KEY_HAPTIC_LEVEL, null)),
         keepScreenOnWhilePlaying = boolean(KEY_KEEP_SCREEN_ON, false),
         lightTheme = boolean(KEY_LIGHT_THEME, false),
@@ -101,6 +103,11 @@ class AppPreferences(context: Context) {
     fun cycleAudioQuality(): PlayerPreferencesState {
         val next = snapshot().audioQualityMode.next()
         return commit { putString(KEY_AUDIO_QUALITY, next.storageId) }
+    }
+
+    fun cycleReplayGain(): PlayerPreferencesState {
+        val next = snapshot().replayGainMode.next()
+        return commit { putString(KEY_REPLAY_GAIN_MODE, next.storageId) }
     }
 
     fun cycleCrossfade(): PlayerPreferencesState = cycleInt(KEY_CROSSFADE, CROSSFADE_LEVELS, snapshot().crossfadeMs)
@@ -185,6 +192,7 @@ class AppPreferences(context: Context) {
         private const val KEY_VERBOSE_DIAGNOSTICS = "verbose_diagnostics"
         private const val KEY_VOLUME_MODE = "volume_mode"
         private const val KEY_VOLUME_LEVEL = "volume_level"
+        private const val KEY_REPLAY_GAIN_MODE = "replay_gain_mode"
         private const val KEY_HAPTIC_LEVEL = "haptic_level"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_LIGHT_THEME = "light_theme"

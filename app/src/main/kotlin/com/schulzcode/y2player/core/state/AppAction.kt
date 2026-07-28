@@ -89,6 +89,7 @@ sealed interface AppEffect {
     data object CyclePreviousThreshold : AppEffect
     data object ToggleDuckOnFocusLoss : AppEffect
     data object CycleVolumeMode : AppEffect
+    data object CycleReplayGain : AppEffect
     data object CycleHapticLevel : AppEffect
     data object CycleSleepTimer : AppEffect
     data object CycleAudioQuality : AppEffect

@@ -55,6 +55,7 @@ abi=armeabi-v7a
 # To evaluate it:
 #   adb shell grep -i Features /proc/cpuinfo      # look for "neon"
 #   Y2_ENABLE_NEON=1 tools/build-native-audio.ps1 # or export before this script
+#   ./gradlew assembleDebug -PnativeNeon=true     # explicitly accept that artifact
 #   measure: audio-thread CPU on MP3/FLAC/AAC, crossfade CPU, liby2audio.so size
 #
 # Toggling this changes the configure identity below, so FFmpeg rebuilds and the
@@ -269,6 +270,9 @@ cat "$report"
     if [[ ${#patch_files[@]} -gt 0 ]]; then
         sha256sum "${patch_files[@]}"
     fi
+    # Configuration selected outside this file must affect freshness too.
+    # Previously default and NEON builds produced the same source stamp.
+    printf '%s' "neon=$enable_neon" | sha256sum
 } | awk '{ print $1 }' | sha256sum | cut -d' ' -f1 > "$package_out/liby2audio.stamp"
 
 echo "native source stamp: $(cat "$package_out/liby2audio.stamp")"

@@ -2,6 +2,7 @@ package com.schulzcode.y2player.core.state
 
 sealed interface Screen {
     data object MainMenu : Screen
+    data object Music : Screen
     data object Songs : Screen
     data object Favorites : Screen
     data object RecentlyPlayed : Screen
@@ -21,18 +22,35 @@ sealed interface Screen {
     data class Folders(val volumeId: String? = null, val relativePath: String = "") : Screen
     data object Playlists : Screen
     data class PlaylistTracks(val playlistId: Long, val name: String) : Screen
-    data class TrackOptions(val trackId: Long, val sourcePlaylistId: Long? = null) : Screen
+    data class TrackOptions(
+        val trackId: Long,
+        val sourcePlaylistId: Long? = null,
+        val fromNowPlaying: Boolean = false
+    ) : Screen
+    data class TrackBrowse(val trackId: Long) : Screen
+    data class TrackDetails(val trackId: Long) : Screen
     data class AddToPlaylist(val trackId: Long) : Screen
     data class QueueOptions(val queueIndex: Int) : Screen
+    data object QueueManagement : Screen
     data object NowPlaying : Screen
     data object NowPlayingOptions : Screen
     data object Queue : Screen
+    data object Audio : Screen
     data object Settings : Screen
     data object PlaybackSettings : Screen
+    data object PlaybackTransitions : Screen
+    data object PlaybackSeeking : Screen
+    data object PlaybackVolume : Screen
+    data object PlaybackInterruptions : Screen
     data object SoundSettings : Screen
+    data object EqualizerSettings : Screen
+    data object SoundDynamics : Screen
+    data object OutputInformation : Screen
     data object EqualizerBands : Screen
     data object SortOrder : Screen
     data object Bluetooth : Screen
+    data object InterfaceSettings : Screen
+    data object LibrarySettings : Screen
     data object Display : Screen
     /**
      * Wheel and button feedback.

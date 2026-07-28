@@ -35,6 +35,25 @@ class QueueController(
         rebuildOrderKeepingCurrent()
     }
 
+    /**
+     * Starts a complete Shuffle All session at the first entry of a fresh
+     * permutation. Repeat All is intentional: after every complete pass a new
+     * permutation is generated instead of stopping or replaying the same order.
+     */
+    @Synchronized
+    fun replaceShuffled(newItems: List<Long>) {
+        items.clear()
+        items.addAll(newItems.take(MAX_QUEUE_ITEMS))
+        touchItems()
+        repeatMode = RepeatMode.ALL
+        shuffleEnabled = true
+        shuffleSeed = System.nanoTime()
+        playOrder = buildPlayOrder()
+        touchPlayOrder()
+        cursor = if (playOrder.isEmpty()) null else 0
+        currentIndex = cursor?.let(playOrder::get)
+    }
+
     @Synchronized
     fun restore(newItems: List<Long>, session: PersistedPlaybackSession?) {
         items.clear()
@@ -70,7 +89,10 @@ class QueueController(
         if (repeatMode == RepeatMode.ONE) return currentTrackId()
         val nextCursor = currentCursor + 1
         if (nextCursor < playOrder.size) return items.getOrNull(playOrder[nextCursor])
-        if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) return items.getOrNull(playOrder[0])
+        if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) {
+            val firstIndex = if (shuffleEnabled) nextShuffleOrder().first() else playOrder[0]
+            return items.getOrNull(firstIndex)
+        }
         return null
     }
 
@@ -108,6 +130,11 @@ class QueueController(
             return currentTrackId()
         }
         if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) {
+            if (shuffleEnabled) {
+                shuffleSeed = nextShuffleSeed()
+                playOrder = buildShuffleOrder(shuffleSeed, avoidFirstIndex = currentIndex)
+                touchPlayOrder()
+            }
             cursor = 0
             currentIndex = playOrder[0]
             return currentTrackId()
@@ -377,15 +404,27 @@ class QueueController(
         cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
     }
 
-    private fun buildPlayOrder(): MutableList<Int> {
+    private fun buildPlayOrder(): MutableList<Int> = buildShuffleOrder(shuffleSeed)
+
+    private fun buildShuffleOrder(seed: Long, avoidFirstIndex: Int? = null): MutableList<Int> {
         val order = items.indices.toMutableList()
         if (shuffleEnabled && order.size > 1) {
-            Collections.shuffle(order, Random(shuffleSeed))
+            Collections.shuffle(order, Random(seed))
+            if (order.first() == avoidFirstIndex) Collections.swap(order, 0, 1)
         }
         return order
     }
 
+    /** The next pass is predictable to peek/preload but changes when committed. */
+    private fun nextShuffleOrder(): MutableList<Int> =
+        buildShuffleOrder(nextShuffleSeed(), avoidFirstIndex = currentIndex)
+
+    private fun nextShuffleSeed(): Long =
+        shuffleSeed * NEXT_SEED_MULTIPLIER + NEXT_SEED_INCREMENT
+
     companion object {
         const val MAX_QUEUE_ITEMS = 50_000
+        private const val NEXT_SEED_MULTIPLIER = 6_364_136_223_846_793_005L
+        private const val NEXT_SEED_INCREMENT = 1_442_695_040_888_963_407L
     }
 }

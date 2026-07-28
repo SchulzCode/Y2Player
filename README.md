@@ -21,7 +21,7 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
 - Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
-- Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and pause/resume fades.
+- Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
 - Navigate entirely with the Y2 click wheel and hardware buttons.
 - Choose between the original dark interface and a light theme, and adjust left/right audio balance independently of firmware effects.
@@ -57,7 +57,7 @@ Library views include:
 - M3U and M3U8 playlist import/export;
 - configurable title, artist, album, recently-added, or file-modified sorting where applicable.
 
-Playback includes a persistent queue, shuffle, repeat one/all, previous/next behavior, short and held seeking, saved resume position, audio-focus handling, and safe pause when storage or a protected audio route disappears. Gapless playback preloads the next track; configurable crossfade takes priority when enabled.
+Playback includes a persistent queue, shuffle, repeat one/all, previous/next behavior, short and held seeking, saved resume position, audio-focus handling, and safe pause when storage or a protected audio route disappears. Shuffle All plays one complete randomized pass of the library, then automatically creates a fresh pass. Gapless playback preloads the next track; configurable crossfade takes priority when enabled.
 
 ## Controls
 
@@ -78,7 +78,7 @@ When the display is off or Android's keyguard is locked, Y2Player blocks the dev
 
 ## Interface and artwork
 
-The main interface is a low-overhead custom-drawn view sized around the Y2's landscape panel and physical focus navigation. Home combines the library menu with a compact playback pane. Now Playing shows embedded artwork when available, a fallback graphic otherwise, title/artist/album information, progress and time, playback state, output-route warnings, and cautious DAC information.
+The main interface is a low-overhead custom-drawn view sized around the Y2's landscape panel and physical focus navigation. Home keeps four primary destinations: Music, Shuffle All, Audio, and Settings. Music contains the library views; Audio groups Playback and Sound; Settings contains Bluetooth and separates Interface, Library, and System preferences. Now Playing shows embedded artwork when available, a fallback graphic otherwise, title/artist/album information, progress and time, playback state, output-route warnings, and cautious DAC information.
 
 ### Screenshots
 
@@ -104,6 +104,14 @@ Y2Player integrates with Android 4.4's Bluetooth A2DP and legacy remote-control 
 Transport buttons and AVRCP metadata are supported through the API 19 media-button and remote-control interfaces. Losing an active Bluetooth route pauses playback rather than leaking audio to the speaker; reconnecting requires an explicit Play command.
 
 ## Audio quality and sound effects
+
+ReplayGain is available under Playback in three modes:
+
+- **Album Gain** preserves the intended loudness differences within an album;
+- **Track Gain** normalizes each track independently;
+- **Track Gain while shuffling** uses Album Gain in normal queue order and Track Gain while shuffle is active.
+
+Y2Player reads the standard track/album gain and peak tags exported by FFmpeg. If the selected gain is missing, it falls back to the other tagged gain; if neither is present, that track plays unchanged. Peak tags cap positive gain where possible, and the PCM mixer saturates safely as a final guard. Y2Player does not calculate ReplayGain itself, so untagged files must be analyzed and tagged by another tool. Files without peak tags cannot receive metadata-based clipping prevention.
 
 Two audio-quality modes are available:
 

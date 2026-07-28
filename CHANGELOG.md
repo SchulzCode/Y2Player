@@ -6,6 +6,9 @@
 - Added a reproducible NDK r25c/API-19/armeabi-v7a build that statically consolidates the allowlisted FFmpeg runtime into one `liby2audio.so`.
 - Installed that runtime at `/system/lib/liby2audio.so` in generated firmware, with byte-for-byte APK/image verification and stock Android 4.4 file metadata.
 - Added persistent AudioTrack PCM output, native seek/abort handling, playback-head position accounting, PCM gapless promotion, and PCM crossfade mixing.
+- Added album, track, and shuffle-aware ReplayGain using embedded gain/peak metadata with peak-based clipping prevention.
+- Fixed Shuffle All to begin at the first entry of a complete library permutation and generate a fresh permutation after every full pass.
+- Simplified Home to Music, Shuffle All, Audio, and Settings. Audio groups Playback and Sound, while Bluetooth sits under Settings alongside focused Interface and Library submenus; detailed track, queue, and output actions moved out of contextual landing screens.
 - Added explicit application wake-lock ownership and retained queue, focus, Bluetooth, media-control, storage, persistence, sleep-timer, and effects policies.
 - Removed playback and diagnostic framework-decoder paths and invalidated their stale unsupported-file verdicts.
 - Direct DAC now reports the audited stock-HAL limitation and falls back to standard AudioTrack without speculative device access.

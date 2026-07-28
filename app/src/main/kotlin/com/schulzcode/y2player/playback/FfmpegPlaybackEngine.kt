@@ -78,8 +78,20 @@ internal sealed interface EngineCommand {
         override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is Volume
     }
 
+    data class OutputGain(val value: Float) : EngineCommand {
+        override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is OutputGain
+    }
+
     data class Balance(val value: Int) : EngineCommand {
         override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is Balance
+    }
+
+    data class ConfigureReplayGain(
+        val mode: ReplayGainMode,
+        val shuffling: Boolean
+    ) : EngineCommand {
+        override fun isSupersededBy(incoming: EngineCommand): Boolean =
+            incoming is ConfigureReplayGain
     }
 
     data object Cancel : EngineCommand {
@@ -101,8 +113,10 @@ internal sealed interface EngineCommand {
  */
 internal object PcmGain {
 
-    /** No attenuation. Compared with `>=` so a rounded gain can never re-enable the loop. */
+    /** No gain change. */
     const val UNITY = 1f
+    /** Defensive ceiling for malformed positive-gain metadata (+24.08 dB). */
+    const val MAX_LEVEL = 16f
 
     /**
      * Scales [decodedShortCount] interleaved stereo shorts in place.
@@ -129,9 +143,9 @@ internal object PcmGain {
         require(decodedShortCount % PcmFormat.CHANNELS == 0) {
             "decodedShortCount must contain complete PCM frames"
         }
-        if (level >= UNITY && AudioBalance.isCentred(balance)) return
+        if (level == UNITY && AudioBalance.isCentred(balance)) return
 
-        val safeLevel = level.coerceIn(0f, UNITY)
+        val safeLevel = level.coerceIn(0f, MAX_LEVEL)
         val left = safeLevel * AudioBalance.leftGain(balance)
         val right = safeLevel * AudioBalance.rightGain(balance)
         val end = offsetShorts + decodedShortCount
@@ -160,11 +174,11 @@ internal object PcmGain {
      * Reads and writes share an index within [current], so mixing in place is
      * safe and no third PCM block is needed.
      *
-     * The law is linear amplitude, deliberately: the two gains sum to exactly
-     * one, so a summed peak cannot exceed full scale for correlated material.
-     * An equal-power law would sound more even through the midpoint but sums to
-     * about +3 dB, which on a fixed-point output path means clipping unless
-     * headroom is reserved for every track.
+     * The fade law is linear amplitude, deliberately: its two coefficients sum
+     * to exactly one. ReplayGain is then composed independently on each side;
+     * matching peak tags cap those gains, and saturation remains the final guard
+     * when a file has gain metadata but no peak. An equal-power fade would add
+     * about +3 dB at the midpoint and require headroom even for unity-gain files.
      */
     fun crossfadeInto(
         current: ShortArray,
@@ -175,6 +189,7 @@ internal object PcmGain {
         transitionFrame: Long,
         transitionFrames: Long,
         level: Float,
+        nextLevel: Float = level,
         balance: Int
     ) {
         require(frameCount >= 0)
@@ -190,8 +205,8 @@ internal object PcmGain {
         for (decodedFrameIndex in 0 until frameCount) {
             val fraction = ((transitionFrame + decodedFrameIndex).toFloat() / span)
                 .coerceIn(0f, 1f)
-            val currentGain = level * (1f - fraction)
-            val nextGain = level * fraction
+            val currentGain = level.coerceIn(0f, MAX_LEVEL) * (1f - fraction)
+            val nextGain = nextLevel.coerceIn(0f, MAX_LEVEL) * fraction
             val currentIndex = currentOffsetShorts + decodedFrameIndex * PcmFormat.CHANNELS
             val nextIndex = nextOffsetShorts + decodedFrameIndex * PcmFormat.CHANNELS
             val currentLeft = current[currentIndex].toInt()
@@ -315,7 +330,9 @@ internal class FfmpegPlaybackEngine(
     private class Slot(
         val decoder: NativeDecoder,
         val requestId: Long,
-        val durationMs: Long
+        val durationMs: Long,
+        val replayGainMetadata: ReplayGainMetadata,
+        var replayGain: ReplayGainAdjustment = ReplayGainAdjustment()
     )
 
     private val appContext = context.applicationContext
@@ -371,6 +388,8 @@ internal class FfmpegPlaybackEngine(
     private var next: Slot? = null
     private var masterVolume = PcmGain.UNITY
     private var balance = AudioBalance.CENTRE
+    private var replayGainMode = ReplayGainMode.OFF
+    private var shuffling = false
     private var seekBaseMs = 0L
     private var currentOutputStartFrame = 0L
     private var completionPending = false
@@ -477,9 +496,19 @@ internal class FfmpegPlaybackEngine(
         enqueue(EngineCommand.Volume(volume.coerceIn(0f, PcmGain.UNITY)))
     }
 
+    override fun setOutputGain(gain: Float) {
+        if (releaseRequested) return
+        enqueue(EngineCommand.OutputGain(gain.coerceIn(0f, 1f)))
+    }
+
     override fun setBalance(balance: Int) {
         if (releaseRequested) return
         enqueue(EngineCommand.Balance(AudioBalance.clamp(balance)))
+    }
+
+    override fun configureReplayGain(mode: ReplayGainMode, shuffling: Boolean) {
+        if (releaseRequested) return
+        enqueue(EngineCommand.ConfigureReplayGain(mode, shuffling))
     }
 
     override fun currentPositionMs(): Long = publishedPositionMs
@@ -628,7 +657,14 @@ internal class FfmpegPlaybackEngine(
             EngineCommand.Pause -> performPause()
             is EngineCommand.Seek -> performSeek(command.positionMs)
             is EngineCommand.Volume -> masterVolume = command.value
+            is EngineCommand.OutputGain -> output.setOutputGain(command.value)
             is EngineCommand.Balance -> balance = command.value
+            is EngineCommand.ConfigureReplayGain -> {
+                replayGainMode = command.mode
+                shuffling = command.shuffling
+                current?.updateReplayGain()
+                next?.updateReplayGain()
+            }
             EngineCommand.Cancel -> performCancel()
             EngineCommand.Release -> performRelease()
         }
@@ -676,6 +712,16 @@ internal class FfmpegPlaybackEngine(
         preparedNextRequestId = null
     }
 
+    private fun Slot.updateReplayGain() {
+        replayGain = ReplayGain.resolve(replayGainMode, shuffling, replayGainMetadata)
+    }
+
+    private fun ReplayGainAdjustment.logValue(): String = when (source) {
+        ReplayGainSource.NONE -> "replayGain=none"
+        else -> "replayGain=${source.name.lowercase()} gainDb=$gainDb factor=$linearGain " +
+            "peak=${peak ?: "unknown"} limited=$clippingPrevented"
+    }
+
     private fun performPrepare(command: EngineCommand.Prepare) {
         closeCurrent()
         closeNext()
@@ -700,13 +746,16 @@ internal class FfmpegPlaybackEngine(
         currentDecoder = decoder
         try {
             val info = decoder.open(command.track.absolutePath, PcmFormat.SAMPLE_RATE, PcmFormat.CHANNELS)
-            current = Slot(decoder, command.requestId, info.durationMs)
+            val slot = Slot(decoder, command.requestId, info.durationMs, info.replayGain)
+            slot.updateReplayGain()
+            current = slot
             publishedDurationMs = info.durationMs
             enterState(EngineState.READY)
             logger.info(
                 "PlaybackEngine",
                 "prepared request=${command.requestId} codec=${info.codecName} " +
-                    "source=${info.sourceSampleRate}Hz/${info.sourceChannels}ch duration=${info.durationMs}"
+                    "source=${info.sourceSampleRate}Hz/${info.sourceChannels}ch duration=${info.durationMs} " +
+                    slot.replayGain.logValue()
             )
             listener?.onPrepared(command.requestId, info.durationMs)
         } catch (error: NativeDecoderException) {
@@ -733,12 +782,14 @@ internal class FfmpegPlaybackEngine(
         nextDecoder = decoder
         try {
             val info = decoder.open(command.track.absolutePath, PcmFormat.SAMPLE_RATE, PcmFormat.CHANNELS)
-            next = Slot(decoder, command.requestId, info.durationMs)
+            val slot = Slot(decoder, command.requestId, info.durationMs, info.replayGain)
+            slot.updateReplayGain()
+            next = slot
             preparedNextRequestId = command.requestId
             logger.info(
                 "PlaybackEngine",
                 "preloaded request=${command.requestId} codec=${info.codecName} " +
-                    "gapless=$gaplessEnabled crossfadeMs=$crossfadeMs"
+                    "gapless=$gaplessEnabled crossfadeMs=$crossfadeMs ${slot.replayGain.logValue()}"
             )
             listener?.onNextPrepared(command.requestId, info.durationMs)
         } catch (error: NativeDecoderException) {
@@ -889,10 +940,16 @@ internal class FfmpegPlaybackEngine(
 
     private fun performStart() {
         if (current == null || engineState !in STARTABLE_STATES) return
+        // A paused MODE_STREAM track retains submitted PCM. It is therefore
+        // already able to make audible progress as soon as play() returns; do
+        // not wait for another blocking write before telling the service to
+        // begin its live output fade.
+        val hasRetainedAudio = output.submittedFrames > output.playedFrames
         output.resume()
         enterState(EngineState.PLAYING)
-        // Confirmed by the pump once PCM has actually reached the track.
         pendingStartRequestId = current?.requestId ?: 0L
+        if (hasRetainedAudio) confirmStartedIfPending()
+        // An empty output is confirmed by the pump once PCM reaches the track.
         schedulePump()
     }
 
@@ -1061,7 +1118,13 @@ internal class FfmpegPlaybackEngine(
 
         val offsetShorts = currentBlock.consumedShortOffset
         val decodedShortCount = frameCount * PcmFormat.CHANNELS
-        PcmGain.apply(currentBlock.pcm, offsetShorts, decodedShortCount, masterVolume, balance)
+        PcmGain.apply(
+            currentBlock.pcm,
+            offsetShorts,
+            decodedShortCount,
+            masterVolume * slot.replayGain.linearGain,
+            balance
+        )
         output.write(currentBlock.pcm, offsetShorts, decodedShortCount)
         currentBlock.consume(frameCount)
         updatePublishedPosition()
@@ -1125,7 +1188,8 @@ internal class FfmpegPlaybackEngine(
             mixFrameCount,
             transitionedFrames,
             transitionFrames,
-            masterVolume,
+            masterVolume * currentSlot.replayGain.linearGain,
+            masterVolume * nextSlot.replayGain.linearGain,
             balance
         )
         output.write(

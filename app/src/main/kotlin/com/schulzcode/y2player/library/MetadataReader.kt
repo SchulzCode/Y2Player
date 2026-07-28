@@ -15,8 +15,15 @@ import java.io.File
 class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderParser()) {
     private var retriever: MediaMetadataRetriever? = null
 
-    fun read(root: StorageRoot, file: File): TrackDraft {
+    fun read(
+        root: StorageRoot,
+        file: File,
+        fileSize: Long = file.length(),
+        modifiedAt: Long = file.lastModified()
+    ): TrackDraft {
         val technical = headerParser.read(file)
+        val absolutePath = file.absolutePath
+        val extension = file.extension.lowercase()
         var retrieverError: String? = null
         var title: String? = null
         var artist: String? = null
@@ -28,7 +35,7 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
         var mimeType: String? = null
         val active = retriever ?: MediaMetadataRetriever().also { retriever = it }
         try {
-            active.setDataSource(file.absolutePath)
+            active.setDataSource(absolutePath)
             title = active.text(MediaMetadataRetriever.METADATA_KEY_TITLE)
             artist = active.text(MediaMetadataRetriever.METADATA_KEY_ARTIST)
             album = active.text(MediaMetadataRetriever.METADATA_KEY_ALBUM)
@@ -43,7 +50,7 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
         }
         return TrackDraft(
             volumeId = root.id,
-            absolutePath = file.absolutePath,
+            absolutePath = absolutePath,
             relativePath = runCatching { file.relativeTo(root.directory).path.replace('\\', '/') }.getOrElse { file.name },
             title = title ?: file.nameWithoutExtension,
             artist = artist,
@@ -52,15 +59,15 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
             trackNumber = trackNumber,
             discNumber = discNumber,
             durationMs = durationMs?.takeIf { it > 0 } ?: technical?.durationMs ?: 0L,
-            fileSize = file.length(),
-            modifiedAt = file.lastModified(),
-            codec = technical?.codec ?: mimeType ?: file.extension.lowercase(),
+            fileSize = fileSize,
+            modifiedAt = modifiedAt,
+            codec = technical?.codec ?: mimeType ?: extension,
             sampleRate = technical?.sampleRate,
             bitDepth = technical?.bitDepth,
             channels = technical?.channels,
             // A header-only result is enough to index formats unsupported by MediaMetadataRetriever.
             scanError = if (technical == null) retrieverError else null,
-            playbackError = unreadableContainer(file, technical, retrieverError)
+            playbackError = unreadableContainer(extension, technical, retrieverError)
         )
     }
 
@@ -78,13 +85,13 @@ class MetadataReader(private val headerParser: AudioHeaderParser = AudioHeaderPa
      * files, which is worse than saying nothing.
      */
     private fun unreadableContainer(
-        file: File,
+        extension: String,
         technical: AudioHeaderParser.Result?,
         retrieverError: String?
     ): String? {
         if (technical != null || retrieverError == null) return null
-        if (!headerParser.vouchesFor(file.extension)) return null
-        return "not a valid ${file.extension.lowercase()} file"
+        if (!headerParser.vouchesFor(extension)) return null
+        return "not a valid $extension file"
     }
 
     /** Frees the native retriever; safe to call repeatedly, called between scans. */

@@ -65,12 +65,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             prepareCurrent(autoPlay = true, positionMs = 0)
         }
 
-        /** Shuffle All: random start track, shuffle enabled with a fresh seed. */
+        /** Shuffle All: every library track once per pass, then a fresh pass. */
         fun playCollectionShuffled(trackIds: List<Long>) = post {
             if (trackIds.isEmpty()) return@post
             beginExplicitPlaybackRequest()
-            queue.replace(trackIds, startIndex = (Math.random() * trackIds.size).toInt().coerceIn(0, trackIds.size - 1))
-            if (!queue.snapshot().shuffleEnabled) queue.toggleShuffle()
+            queue.replaceShuffled(trackIds)
             currentRetryCount = 0
             consecutiveErrors = 0
             prepareCurrent(autoPlay = true, positionMs = 0)
@@ -258,6 +257,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var audioEffectsSessionApplied = false
     private val fadeGeneration = GenerationGuard()
     private var outputVolume = 1f
+    private var transientOutputGain = 1f
     private var sleepTimerMode = SleepTimerMode.OFF
     private var sleepTimerDeadlineElapsed: Long? = null
     private var sleepTimerCallback: Runnable? = null
@@ -320,6 +320,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             )
             queue = QueueController()
             restorePersistedState(skipQueue = safeModeManager.isSafeMode())
+            syncReplayGain()
             publishSnapshot()
         }
     }
@@ -555,7 +556,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         cancelCurrentWatchdog(requestId)
         awaitingStartRequest = null
         val fadeMs = currentPreferences.pauseResumeFadeMs.toLong()
-        if (fadeMs > 0) fadeToVolume(effectiveVolume(), fadeMs)
+        if (fadeMs > 0) fadeOutputGain(1f, fadeMs)
+        else setTransientOutputGain(1f)
         recordCurrentPlaybackStart()
         enterForeground()
         snapshot = buildSnapshot(
@@ -794,14 +796,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     override fun onPermanentLoss() = post {
         safetyPolicy.onPermanentFocusLoss()
         duckedForFocus = false
-        if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false, useFade = false)
+        if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false)
     }
 
     override fun onTransientLoss() = post {
         val wasPlaying = engine.isPlaying()
         safetyPolicy.onTransientFocusLoss(wasPlaying)
         duckedForFocus = false
-        if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false, useFade = false)
+        if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false)
     }
 
     override fun onDuck() = post {
@@ -811,7 +813,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             fadeToVolume(effectiveVolume(), SHORT_FOCUS_FADE_MS)
         } else {
             safetyPolicy.onTransientFocusLoss(wasPlaying = true)
-            pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false, useFade = false)
+            pauseInternal(PauseReason.AUDIO_FOCUS, abandonFocus = false)
         }
     }
 
@@ -831,7 +833,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (snapshot.status != PlaybackStatus.PLAYING) togglePlaybackInternal()
             }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> post {
-                if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.USER, useFade = false)
+                if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.USER)
                 else {
                     safetyPolicy.onManualPause()
                     duckedForFocus = false
@@ -929,10 +931,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // the user demonstrates intent to control it.
         MediaButtonReceiver.register(this, logger)
         cancelVolumeFade()
-        // Start silent when fading; onStarted raises the gain once PCM is
-        // flowing, so the ramp can never run against a player that never began.
-        if (currentPreferences.pauseResumeFadeMs > 0) setOutputVolume(0f)
-        else setOutputVolume(effectiveVolume())
+        setOutputVolume(effectiveVolume())
+        // This gate lives on AudioTrack rather than in newly decoded PCM, so it
+        // also covers the old buffered frames retained across pause/resume.
+        if (currentPreferences.pauseResumeFadeMs > 0) setTransientOutputGain(0f)
         engine.start()
     }
 
@@ -972,42 +974,33 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private fun pauseInternal(
         reason: PauseReason,
         abandonFocus: Boolean = true,
-        useFade: Boolean = true,
         errorMessage: String? = null
     ) {
         if (reason == PauseReason.USER) safetyPolicy.onManualPause()
         val position = currentPosition()
         val duration = currentDuration()
         val preparing = snapshot.status == PlaybackStatus.PREPARING
-        val fadeMs = if (useFade && !preparing && ::engine.isInitialized && engine.isPlaying()) {
-            currentPreferences.pauseResumeFadeMs.toLong()
-        } else {
-            0L
-        }
-
         releasePlaybackResources(
             cancelPreparation = preparing,
             abandonFocus = abandonFocus,
-            // A fade about to start owns the gain; cancelling here would strand it.
-            cancelFade = fadeMs <= 0L
+            // For a loaded track, freeze first and restore the transient gate
+            // afterwards so a cancelled resume ramp cannot briefly jump louder.
+            cancelFade = preparing
         )
 
         if (!preparing && ::engine.isInitialized) {
+            cancelVolumeFade(resetOutputGain = false)
             // A paused track holds no second decoder — except mid-transition,
             // where the crossfade is frozen rather than thrown away: the engine
             // keeps its mix position and the prepared decoder, so resuming
             // continues the fade instead of snapping the outgoing track back to
             // full gain.
             if (!engine.isTransitioning) clearPreload()
-            if (fadeMs > 0L) {
-                fadeToVolume(0f, fadeMs) {
-                    engine.pause()
-                    setOutputVolume(effectiveVolume())
-                }
-            } else {
-                engine.pause()
-                setOutputVolume(effectiveVolume())
-            }
+            // Pause immediately. A fade-out necessarily consumes song content
+            // while becoming inaudible, which made resume sound like a skip.
+            engine.pause()
+            setTransientOutputGain(1f)
+            setOutputVolume(effectiveVolume())
         }
         snapshot = buildSnapshot(PlaybackStatus.PAUSED, position, duration, reason, errorMessage)
         persistSession(positionOverride = position)
@@ -1202,6 +1195,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
      * track transition.
      */
     private fun afterQueueMutation() {
+        syncReplayGain()
         refreshSnapshot()
         persistQueueState()
         revalidatePreload()
@@ -1267,6 +1261,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         // audible boundary.
         lastPromotedRequestId = 0L
         engine.prepare(track, activeRequestId)
+        // Prepare intentionally clears older engine commands. Queue the current
+        // ReplayGain policy afterwards so a new shuffled collection cannot erase
+        // the mode change that makes its first track use Track Gain.
+        syncReplayGain()
         scheduleCurrentWatchdog(activeRequestId)
     }
 
@@ -1400,23 +1398,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun scheduleProgress() {
         playbackHandler.removeCallbacks(progressRunnable)
-        val duration = if (::engine.isInitialized) engine.durationMs() else 0L
-        val remaining = if (duration > 0L && engine.isPlaying()) {
-            (duration - engine.currentPositionMs()).coerceAtLeast(0L)
-        } else null
-        playbackHandler.postDelayed(progressRunnable, progressInterval(remaining))
+        playbackHandler.postDelayed(progressRunnable, progressInterval())
     }
 
     /**
      * How often to refresh the displayed position.
      *
-     * This is now purely a display cadence. It used to also have to be fast
-     * enough not to miss a crossfade or a preload deadline, which is why it
-     * dropped to 250 ms near the end of every track and tightened again with the
-     * screen off. The engine schedules both of those itself, so with no UI bound
-     * there is nothing left to be on time for.
+     * This is now purely a display cadence. While UI is bound, sampling four
+     * times per second prevents Handler jitter from stepping over a whole-second
+     * boundary; [lastPublishedProgressSecond] still limits UI publication to one
+     * update per displayed second. The engine schedules transitions itself, so
+     * with no UI bound this can use the slower background cadence.
      */
-    private fun progressInterval(@Suppress("UNUSED_PARAMETER") remainingMs: Long? = null): Long =
+    private fun progressInterval(): Long =
         if (boundClients == 0) BACKGROUND_PROGRESS_INTERVAL_MS else PROGRESS_INTERVAL_MS
 
     private val progressRunnable = object : Runnable {
@@ -1425,7 +1419,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val position = engine.currentPositionMs()
             val duration = engine.durationMs()
             if (consecutiveErrors > 0 && position >= STABLE_PLAYBACK_RESET_MS) consecutiveErrors = 0
-            val remaining = (duration - position).coerceAtLeast(0)
             // Nothing about transitions happens here any more: preload and
             // crossfade are scheduled by the engine against the frame counter.
             // This loop only moves the displayed position and persists it.
@@ -1449,7 +1442,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                     database.updatePlaybackPosition(if (currentPreferences.resumePosition) position else 0)
                 }
             }
-            playbackHandler.postDelayed(this, progressInterval(remaining))
+            playbackHandler.postDelayed(this, progressInterval())
         }
     }
 
@@ -1671,7 +1664,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                     SystemClock.elapsedRealtime() >= sleepTimerDeadlineElapsed!!
                 ) {
                     clearSleepTimer()
-                    pauseInternal(PauseReason.SLEEP_TIMER, useFade = true)
+                    pauseInternal(PauseReason.SLEEP_TIMER)
                 }
             }
             sleepTimerCallback = callback
@@ -1766,6 +1759,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             gaplessEnabled = effective.gaplessEnabled,
             crossfadeMs = effective.crossfadeMs.toLong()
         )
+        syncReplayGain()
         // A volume step must be audible immediately. While a fade is running,
         // its terminal update applies the newest steady-state gain instead.
         if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
@@ -1780,7 +1774,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun applyVolumeModeTransitionInternal(value: PlayerPreferencesState, systemVolumeIndex: Int) {
-        // A pause/focus fade owns the engine PCM gain for only a short bounded
+        // A resume/focus fade owns an output gain layer for only a short bounded
         // interval. Deferring preserves its completion callback and avoids
         // raising the system layer before the transferred app gain is active.
         if (fadeInProgress) {
@@ -1842,6 +1836,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         appVolumeGain() * (if (duckedForFocus) EFFECTIVE_DUCK_VOLUME else 1f)
 
     private fun fadeToVolume(target: Float, durationMs: Long, onComplete: (() -> Unit)? = null) {
+        // A focus ramp supersedes any resume ramp. Restore the live gate first
+        // so cancelling the latter can never strand playback attenuated.
+        if (transientOutputGain != 1f) setTransientOutputGain(1f)
         val from = outputVolume
         val safeTarget = target.coerceIn(0f, 1f)
         val generation = fadeGeneration.advance()
@@ -1872,14 +1869,57 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         playbackHandler.post(runnable)
     }
 
-    private fun cancelVolumeFade() {
+    /**
+     * Ramps AudioTrack's live gain instead of modifying future PCM blocks.
+     * MODE_STREAM retains already-submitted audio while paused, so this is the
+     * only layer where a resume fade covers both retained and new audio.
+     */
+    private fun fadeOutputGain(target: Float, durationMs: Long) {
+        val from = transientOutputGain
+        val safeTarget = target.coerceIn(0f, 1f)
+        val generation = fadeGeneration.advance()
+        if (durationMs <= 0) {
+            fadeInProgress = false
+            setTransientOutputGain(safeTarget)
+            return
+        }
+        fadeInProgress = true
+        val startedAt = SystemClock.uptimeMillis()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!fadeGeneration.isCurrent(generation)) return
+                val fraction = ((SystemClock.uptimeMillis() - startedAt).toFloat() / durationMs)
+                    .coerceIn(0f, 1f)
+                setTransientOutputGain(from + (safeTarget - from) * fraction)
+                if (fraction >= 1f) {
+                    fadeInProgress = false
+                    // A preference change during the fade was deliberately
+                    // deferred; settle both gain layers at their current values.
+                    setOutputVolume(effectiveVolume())
+                    normalizeSystemVolumeForAppControl()
+                } else playbackHandler.postDelayed(this, VOLUME_FADE_STEP_MS)
+            }
+        }
+        playbackHandler.post(runnable)
+    }
+
+    private fun cancelVolumeFade(resetOutputGain: Boolean = true) {
         fadeGeneration.advance()
         fadeInProgress = false
+        if (resetOutputGain && ::engine.isInitialized) {
+            setTransientOutputGain(1f)
+            setOutputVolume(effectiveVolume())
+        }
     }
 
     private fun setOutputVolume(value: Float) {
         outputVolume = value.coerceIn(0f, 1f)
         engine.setVolume(outputVolume)
+    }
+
+    private fun setTransientOutputGain(value: Float) {
+        transientOutputGain = value.coerceIn(0f, 1f)
+        engine.setOutputGain(transientOutputGain)
     }
 
     private fun beginExplicitPlaybackRequest() {
@@ -1928,7 +1968,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         clearPreload()
         pauseInternal(
             PauseReason.OUTPUT_DISCONNECTED,
-            useFade = false,
             errorMessage = ROUTE_LOSS_MESSAGE
         )
     }
@@ -1941,6 +1980,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 pauseResumeFadeMs = 0
             )
         } else value
+    }
+
+    private fun syncReplayGain() {
+        if (!::engine.isInitialized || !::queue.isInitialized) return
+        engine.configureReplayGain(
+            currentPreferences.replayGainMode,
+            queue.snapshot().shuffleEnabled
+        )
     }
 
     private fun buildSnapshot(
@@ -2198,7 +2245,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         const val ACTION_MEDIA_BUTTON = "com.schulzcode.y2player.action.MEDIA_BUTTON"
         const val EXTRA_MEDIA_KEY_CODE = "com.schulzcode.y2player.extra.MEDIA_KEY_CODE"
         private const val NOTIFICATION_ID = 19
-        private const val PROGRESS_INTERVAL_MS = 1_000L
+        private const val PROGRESS_INTERVAL_MS = 250L
         // Screen off with no UI bound: poll every 5 s and persist at most every 10 s.
         private const val BACKGROUND_PROGRESS_INTERVAL_MS = 5_000L
         private const val BACKGROUND_POSITION_PERSIST_INTERVAL_MS = 10_000L

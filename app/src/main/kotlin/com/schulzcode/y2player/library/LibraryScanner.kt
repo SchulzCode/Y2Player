@@ -97,7 +97,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         // whose application heap is not large.
         val seenFiles = HashSet<String>()
         val rootPrefixLength = rootCanonicalPrefixLength(root)
-        val audioBuffer = ArrayList<File>(BATCH_SIZE)
+        var audioBuffer = ArrayList<File>(BATCH_SIZE)
         val playlists = ArrayList<File>()
         var processed = 0
         // "I cannot guarantee I saw every file on this volume." Only directory-
@@ -107,7 +107,14 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         var coverageGap: CoverageGap? = null
         var recoverableErrors = 0
         var limitReached = false
-        var cost = ScanCost()
+        // Primitive counters avoid one ScanCost allocation per metadata read.
+        // A first scan can reach MAX_AUDIO_FILES, so this removes up to 100k
+        // short-lived objects from an already I/O-heavy path.
+        var costFilesRead = 0
+        var costBytesRead = 0L
+        var costMetadataMs = 0L
+        var costYieldMs = 0L
+        var costYields = 0
         // Carried across batches, not reset per batch: the back-off interval is
         // deliberately independent of BATCH_SIZE, which exists to size database
         // transactions and has no business deciding how often audio gets the
@@ -137,32 +144,44 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
 
         fun flush() {
             if (audioBuffer.isEmpty() || cancellation.isCancelled()) return
-            val files = audioBuffer.toList()
-            audioBuffer.clear()
-            val known = fingerprintLookup(files.map { it.absolutePath })
+            // Swap the full buffer out instead of copying it every batch.
+            val files = audioBuffer
+            audioBuffer = ArrayList(BATCH_SIZE)
+            val paths = ArrayList<String>(files.size)
+            files.forEach { paths.add(it.absolutePath) }
+            val known = fingerprintLookup(paths)
             val batch = ArrayList<ScannedFile>(files.size)
-            files.forEach { file ->
-                if (cancellation.isCancelled()) return@forEach
-                if (!file.isFile || !file.canRead() || file.length() <= 0L) {
+            files.forEachIndexed { index, file ->
+                if (cancellation.isCancelled()) return@forEachIndexed
+                val path = paths[index]
+                if (!file.isFile || !file.canRead()) {
                     // One unreadable or zero-byte file is not a failed scan. It
                     // simply does not get its seen-token refreshed, so finishScan
                     // marks it unavailable — the correct outcome for a file that
                     // cannot be read.
                     recoverableErrors += 1
-                    return@forEach
+                    return@forEachIndexed
                 }
-                val cached = known[file.absolutePath]
-                val changed = cached == null || cached.fileSize != file.length() || cached.modifiedAt != file.lastModified()
+                // These are native filesystem calls. Cache the values once and
+                // pass them through metadata extraction instead of re-statting.
+                val fileSize = file.length()
+                if (fileSize <= 0L) {
+                    recoverableErrors += 1
+                    return@forEachIndexed
+                }
+                val modifiedAt = file.lastModified()
+                val cached = known[path]
+                val changed = cached == null || cached.fileSize != fileSize || cached.modifiedAt != modifiedAt
                 if (!changed) {
-                    batch += ScannedFile(file.absolutePath, null)
+                    batch += ScannedFile(path, null)
                     processed += 1
-                    return@forEach
+                    return@forEachIndexed
                 }
                 var draft: TrackDraft? = null
                 var failed = false
                 val startedAt = System.nanoTime()
                 try {
-                    draft = metadataReader.read(root, file)
+                    draft = metadataReader.read(root, file, fileSize, modifiedAt)
                 } catch (_: Exception) {
                     // Same reasoning as an unreadable file: one bad decode says
                     // nothing about whether the walk covered the volume.
@@ -174,18 +193,20 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 val elapsed = System.nanoTime() - startedAt
                 groupNanos += elapsed
                 groupFiles += 1
-                cost = cost.copy(
-                    filesRead = cost.filesRead + 1,
-                    bytesRead = cost.bytesRead + file.length(),
-                    metadataMs = cost.metadataMs + elapsed / NANOS_PER_MS
-                )
+                costFilesRead += 1
+                costBytesRead += fileSize
+                costMetadataMs += elapsed / NANOS_PER_MS
                 if (groupFiles >= YIELD_FILE_INTERVAL) {
-                    cost += yieldToPlayback(cancellation, playbackActive, groupNanos)
+                    val yieldedMs = yieldToPlayback(cancellation, playbackActive, groupNanos)
+                    if (yieldedMs >= 0L) {
+                        costYieldMs += yieldedMs
+                        costYields += 1
+                    }
                     groupFiles = 0
                     groupNanos = 0L
                 }
-                if (failed) return@forEach
-                batch += ScannedFile(file.absolutePath, draft)
+                if (failed) return@forEachIndexed
+                batch += ScannedFile(path, draft)
                 processed += 1
             }
             // Re-check immediately before handing the batch over: cancellation is
@@ -275,7 +296,13 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             playlistFiles = playlists,
             recoverableErrors = recoverableErrors,
             coverageGap = coverageGap,
-            cost = cost
+            cost = ScanCost(
+                filesRead = costFilesRead,
+                bytesRead = costBytesRead,
+                metadataMs = costMetadataMs,
+                yieldMs = costYieldMs,
+                yields = costYields
+            )
         )
     }
 
@@ -309,9 +336,9 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         cancellation: ScanCancellation,
         playbackActive: () -> Boolean,
         workNanos: Long
-    ): ScanCost {
-        if (cancellation.isCancelled()) return ScanCost()
-        if (!runCatching { playbackActive() }.getOrDefault(false)) return ScanCost()
+    ): Long {
+        if (cancellation.isCancelled()) return NO_YIELD
+        if (!runCatching { playbackActive() }.getOrDefault(false)) return NO_YIELD
         val target = (workNanos / YIELD_WORK_DIVISOR / NANOS_PER_MS)
             .coerceIn(MIN_YIELD_MS, MAX_YIELD_MS)
         val startedAt = System.nanoTime()
@@ -319,7 +346,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         // cancellation rather than swallowing it.
         runCatching { Thread.sleep(target) }
             .onFailure { if (it is InterruptedException) Thread.currentThread().interrupt() }
-        return ScanCost(yieldMs = (System.nanoTime() - startedAt) / NANOS_PER_MS, yields = 1)
+        return (System.nanoTime() - startedAt) / NANOS_PER_MS
     }
 
     /**
@@ -365,6 +392,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         const val BATCH_SIZE = 64
 
         private const val NANOS_PER_MS = 1_000_000L
+        private const val NO_YIELD = -1L
 
         /**
          * How many newly-read files may pass before audio gets a gap.

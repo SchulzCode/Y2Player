@@ -55,11 +55,19 @@ class AppReducerNowPlayingTest {
         assertEquals(Screen.Songs, AppReducer.reduce(result.state, AppAction.Back).state.currentScreen)
     }
 
-    @Test fun mainMenuHasNoBluetoothDuplicateAndKeepsMusicEntriesFirst() {
+    @Test fun mainMenuKeepsOnlyTheFourPrimaryDestinations() {
         val rows = ScreenContent.rows(AppState())
-        assertTrue(rows.none { (it as? ScreenRow.Action)?.key == "bluetooth" })
-        assertEquals("songs", (rows.first() as ScreenRow.Action).key)
-        assertEquals("settings", (rows.last() as ScreenRow.Action).key)
+        assertEquals(
+            listOf("music", "shuffle_all", "audio", "settings"),
+            rows.map { (it as ScreenRow.Action).key }
+        )
+
+        val music = AppReducer.reduce(AppState(), AppAction.Confirm).state
+        assertEquals(Screen.Music, music.currentScreen)
+        assertEquals(
+            listOf("songs", "albums", "artists", "playlists", "folders"),
+            ScreenContent.rows(music).map { (it as ScreenRow.Action).key }
+        )
     }
 
     /** G2: HOME re-entry returns a launcher to its top level, from any depth. */
@@ -79,9 +87,9 @@ class AppReducerNowPlayingTest {
 
     /** Idempotent: pressing HOME on the home screen must not disturb the selection. */
     @Test fun navigateHomeOnHomeScreenIsANoOp() {
-        val home = AppState(screenStack = listOf(ScreenEntry(Screen.MainMenu, 4)))
+        val home = AppState(screenStack = listOf(ScreenEntry(Screen.MainMenu, 2)))
         val result = AppReducer.reduce(home, AppAction.NavigateHome).state
-        assertEquals(4, result.selectedIndex)
+        assertEquals(2, result.selectedIndex)
     }
 
     /** G3: the platform Settings escape hatch lives at the bottom of System. */
@@ -105,7 +113,11 @@ class AppReducerNowPlayingTest {
             screenStack = listOf(ScreenEntry(Screen.Songs)),
             library = LibraryState(tracks = listOf(track))
         )
-        assertEquals(Screen.TrackOptions(1), AppReducer.reduce(state, AppAction.ConfirmLong).state.currentScreen)
+        val options = AppReducer.reduce(state, AppAction.ConfirmLong).state
+        assertEquals(Screen.TrackOptions(1), options.currentScreen)
+        val keys = ScreenContent.rows(options).filterIsInstance<ScreenRow.Action>().map { it.key }
+        assertTrue("track-list options keep Favorite", "track_favorite:1" in keys)
+        assertTrue("track-list options keep Add to Playlist", "track_playlist:1" in keys)
     }
 
     @Test fun optionsMenuTogglesShuffleAndRepeat() {
@@ -118,9 +130,34 @@ class AppReducerNowPlayingTest {
         assertEquals(AppEffect.ToggleFavorite(1), optionsReductionFor("np_favorite:1").effects.single())
     }
 
-    @Test fun optionsMenuNavigatesToAlbumAndArtist() {
-        assertEquals(Screen.AlbumSongs("Album"), optionsReductionFor("np_album").state.currentScreen)
-        assertEquals(Screen.ArtistSongs("Artist"), optionsReductionFor("np_artist").state.currentScreen)
+    @Test fun optionsMenuOpensAddToPlaylistForTheCurrentTrack() {
+        assertEquals(Screen.AddToPlaylist(1), optionsReductionFor("np_playlist:1").state.currentScreen)
+    }
+
+    @Test fun optionsMenuGroupsTrackNavigationUnderTrackOptions() {
+        val trackOptions = optionsReductionFor("np_track_options:1").state
+        assertEquals(Screen.TrackOptions(1, fromNowPlaying = true), trackOptions.currentScreen)
+        assertEquals(
+            listOf("track_browse:1", "track_details:1"),
+            ScreenContent.rows(trackOptions).map { (it as ScreenRow.Action).key }
+        )
+
+        val browseIndex = ScreenContent.rows(trackOptions)
+            .indexOfFirst { (it as? ScreenRow.Action)?.key == "track_browse:1" }
+        val browse = AppReducer.reduce(
+            trackOptions.copy(
+                screenStack = trackOptions.screenStack.dropLast(1) +
+                    trackOptions.currentEntry.copy(selectedIndex = browseIndex)
+            ),
+            AppAction.Confirm
+        ).state
+        assertEquals(Screen.TrackBrowse(1), browse.currentScreen)
+
+        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(browse, AppAction.Confirm).state.currentScreen)
+        val artistSelected = browse.copy(
+            screenStack = browse.screenStack.dropLast(1) + browse.currentEntry.copy(selectedIndex = 1)
+        )
+        assertEquals(Screen.ArtistSongs("Artist"), AppReducer.reduce(artistSelected, AppAction.Confirm).state.currentScreen)
     }
 
     @Test fun queueOpensFocusedOnTheCurrentTrackFromPlaybackOptions() {
@@ -168,7 +205,7 @@ class AppReducerNowPlayingTest {
         // what the menu contains, so adding Controls failed it without explaining
         // anything, and a reordering would have passed it silently.
         assertEquals(
-            listOf("bluetooth", "playback", "sound", "controls", "display", "sort", "storage", "system"),
+            listOf("bluetooth", "interface", "library_settings", "system"),
             rows.map { (it as ScreenRow.Action).key }
         )
         val systemIndex = rows.indexOfFirst { (it as? ScreenRow.Action)?.key == "system" }
@@ -180,16 +217,45 @@ class AppReducerNowPlayingTest {
         assertEquals(Screen.Diagnostics, AppReducer.reduce(diagSelected, AppAction.Confirm).state.currentScreen)
     }
 
+    @Test fun audioOwnsPlaybackAndSoundWhileSettingsOwnsBluetooth() {
+        val home = AppState()
+        val audioIndex = ScreenContent.rows(home)
+            .indexOfFirst { (it as? ScreenRow.Action)?.key == "audio" }
+        assertTrue(audioIndex >= 0)
+
+        val audio = AppReducer.reduce(
+            home.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu, audioIndex))),
+            AppAction.Confirm
+        ).state
+        assertEquals(Screen.Audio, audio.currentScreen)
+        assertEquals("Audio", ScreenContent.title(audio))
+        assertEquals(
+            listOf("playback", "sound"),
+            ScreenContent.rows(audio).map { (it as ScreenRow.Action).key }
+        )
+
+        assertEquals(Screen.PlaybackSettings, AppReducer.reduce(audio, AppAction.Confirm).state.currentScreen)
+        val soundSelected = audio.copy(
+            screenStack = audio.screenStack.dropLast(1) + audio.currentEntry.copy(selectedIndex = 1)
+        )
+        assertEquals(Screen.SoundSettings, AppReducer.reduce(soundSelected, AppAction.Confirm).state.currentScreen)
+
+        val settings = AppState(screenStack = listOf(ScreenEntry(Screen.Settings)))
+        assertEquals(Screen.Bluetooth, AppReducer.reduce(settings, AppAction.Confirm).state.currentScreen)
+    }
+
     @Test fun playingNextLabelReflectsRepeatOneAndQueueOrder() {
         val base = optionsState()
         val repeatOne = base.copy(playback = base.playback.copy(repeatMode = RepeatMode.ONE))
-        val nextRow = ScreenContent.rows(repeatOne).first { (it as? ScreenRow.Group)?.key == "np_next" }
-        assertTrue(nextRow.subtitle!!.contains("repeat one"))
+        val queueRow = ScreenContent.rows(repeatOne)
+            .filterIsInstance<ScreenRow.Action>().first { it.key == "queue" }
+        assertTrue(queueRow.subtitle!!.contains("repeat one"))
 
         val linear = base.copy(
             playback = base.playback.copy(queue = listOf(1L, 1L), currentQueueIndex = 0)
         )
-        val linearRow = ScreenContent.rows(linear).first { (it as? ScreenRow.Group)?.key == "np_next" }
-        assertEquals("Song", linearRow.subtitle)
+        val linearRow = ScreenContent.rows(linear)
+            .filterIsInstance<ScreenRow.Action>().first { it.key == "queue" }
+        assertEquals("1 of 2 · Next: Song", linearRow.subtitle)
     }
 }

@@ -14,6 +14,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/replaygain.h>
 #include <libswresample/swresample.h>
 
 enum y2_error_category {
@@ -615,6 +616,58 @@ static jstring native_codec_name(JNIEnv *env, jobject instance, jlong handle) {
     return (*env)->NewStringUTF(env, name);
 }
 
+/**
+ * ReplayGain is exported by FFmpeg's demuxers as typed stream side data. Using
+ * that representation keeps ID3, Vorbis-comment, FLAC, MP4 and APE tag parsing
+ * inside FFmpeg instead of maintaining a second container parser in the app.
+ */
+static const AVReplayGain *decoder_replay_gain(const y2_decoder *decoder) {
+    const AVPacketSideData *side_data;
+    const AVCodecParameters *parameters;
+
+    if (decoder == NULL || decoder->stream == NULL || decoder->stream->codecpar == NULL) {
+        return NULL;
+    }
+    parameters = decoder->stream->codecpar;
+    side_data = av_packet_side_data_get(
+        parameters->coded_side_data,
+        parameters->nb_coded_side_data,
+        AV_PKT_DATA_REPLAYGAIN
+    );
+    if (side_data == NULL || side_data->size < sizeof(AVReplayGain)) {
+        return NULL;
+    }
+    return (const AVReplayGain *) side_data->data;
+}
+
+static jint native_replay_gain_track_gain(JNIEnv *env, jobject instance, jlong handle) {
+    const AVReplayGain *gain = decoder_replay_gain(decoder_from_handle(handle));
+    (void) env;
+    (void) instance;
+    return gain == NULL ? INT32_MIN : gain->track_gain;
+}
+
+static jlong native_replay_gain_track_peak(JNIEnv *env, jobject instance, jlong handle) {
+    const AVReplayGain *gain = decoder_replay_gain(decoder_from_handle(handle));
+    (void) env;
+    (void) instance;
+    return gain == NULL ? 0 : (jlong) gain->track_peak;
+}
+
+static jint native_replay_gain_album_gain(JNIEnv *env, jobject instance, jlong handle) {
+    const AVReplayGain *gain = decoder_replay_gain(decoder_from_handle(handle));
+    (void) env;
+    (void) instance;
+    return gain == NULL ? INT32_MIN : gain->album_gain;
+}
+
+static jlong native_replay_gain_album_peak(JNIEnv *env, jobject instance, jlong handle) {
+    const AVReplayGain *gain = decoder_replay_gain(decoder_from_handle(handle));
+    (void) env;
+    (void) instance;
+    return gain == NULL ? 0 : (jlong) gain->album_peak;
+}
+
 static jint native_error_category(JNIEnv *env, jobject instance, jlong handle) {
     y2_decoder *decoder = decoder_from_handle(handle);
     (void) env;
@@ -687,6 +740,10 @@ static const JNINativeMethod native_audio_methods[] = {
     { "nativeSourceSampleRate", "(J)I", (void *) native_source_sample_rate },
     { "nativeSourceChannels", "(J)I", (void *) native_source_channels },
     { "nativeCodecName", "(J)Ljava/lang/String;", (void *) native_codec_name },
+    { "nativeReplayGainTrackGain", "(J)I", (void *) native_replay_gain_track_gain },
+    { "nativeReplayGainTrackPeak", "(J)J", (void *) native_replay_gain_track_peak },
+    { "nativeReplayGainAlbumGain", "(J)I", (void *) native_replay_gain_album_gain },
+    { "nativeReplayGainAlbumPeak", "(J)J", (void *) native_replay_gain_album_peak },
     { "nativeErrorCategory", "(J)I", (void *) native_error_category },
     { "nativeErrorDetail", "(J)Ljava/lang/String;", (void *) native_error_detail },
     { "nativeClose", "(J)V", (void *) native_close },

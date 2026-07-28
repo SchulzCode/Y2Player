@@ -151,8 +151,8 @@ android {
  * The stamp covers everything that can change the output: the JNI source, its
  * version script, build-ffmpeg.sh — which carries the FFmpeg and NDK hashes,
  * every configure flag and every compiler flag as literals — and every file in
- * tools/native/patches. So a NEON toggle, a codec allowlist change or an edited
- * FFmpeg patch all invalidate the packaged binary.
+ * tools/native/patches, plus the selected NEON mode. So a NEON toggle, a codec
+ * allowlist change or an edited FFmpeg patch all invalidate the packaged binary.
  */
 val verifyNativeAudioStamp by tasks.registering {
     val nativeSource = rootProject.file("app/src/main/c/y2audio.c")
@@ -167,6 +167,16 @@ val verifyNativeAudioStamp by tasks.registering {
         ?: emptyList()
     val stampFile = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.stamp")
     val library = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.so")
+
+    // Configuration selected outside the native script is part of the artifact
+    // identity too. Ordinary builds expect the conservative non-NEON binary;
+    // evaluation builds must explicitly opt into the matching identity.
+    val nativeNeon = when (val value = project.findProperty("nativeNeon")?.toString()?.lowercase()) {
+        null, "false", "0" -> false
+        "true", "1" -> true
+        else -> throw GradleException("nativeNeon must be true/false or 1/0, not '$value'")
+    }
+    inputs.property("nativeNeon", nativeNeon)
 
     // Kotlin-only iteration before the native library has been rebuilt is a real
     // workflow, so there is an explicit way past this. It has to be typed, which
@@ -206,7 +216,9 @@ val verifyNativeAudioStamp by tasks.registering {
             MessageDigest.getInstance("SHA-256")
                 .digest(source.readBytes())
                 .joinToString("") { byte -> String.format("%02x", byte) } + "\n"
-        }
+        } + MessageDigest.getInstance("SHA-256")
+            .digest("neon=${if (nativeNeon) 1 else 0}".toByteArray())
+            .joinToString("") { byte -> String.format("%02x", byte) } + "\n"
         val expected = MessageDigest.getInstance("SHA-256")
             .digest(perFileDigests.toByteArray())
             .joinToString("") { byte -> String.format("%02x", byte) }

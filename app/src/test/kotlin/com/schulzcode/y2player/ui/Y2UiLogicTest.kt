@@ -173,9 +173,9 @@ class Y2UiLogicTest {
     }
 
     @Test fun mainMenuRowCalculationRemainsStableForWheelNavigation() {
-        // Seven browsing rows (docs/PRODUCT_DESIGN.md): the playing track lives in the
-        // home player pane, not in the menu.
-        assertEquals(7, ScreenContent.rows(AppState()).size)
+        // The playing track lives in the home player pane, not in the menu. The four
+        // primary destinations keep the launcher quick to scan with the wheel.
+        assertEquals(4, ScreenContent.rows(AppState()).size)
     }
 
     private fun contrastRatio(first: Int, second: Int): Double {

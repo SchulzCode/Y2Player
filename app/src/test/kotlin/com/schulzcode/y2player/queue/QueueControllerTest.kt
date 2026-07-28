@@ -39,6 +39,24 @@ class QueueControllerTest {
     }
 
     @Test
+    fun shuffleAllStartsAtBeginningAndPlaysTheCompleteLibrary() {
+        val queue = QueueController()
+        val tracks = (1L..12L).toList()
+
+        queue.replaceShuffled(tracks)
+
+        val session = queue.session(positionMs = 0)
+        assertTrue(queue.snapshot().shuffleEnabled)
+        assertEquals(RepeatMode.ALL, queue.snapshot().repeatMode)
+        assertEquals(session.playOrder!!.first(), queue.currentIndex())
+
+        val firstPass = mutableListOf(queue.currentTrackId()!!)
+        repeat(tracks.size - 1) { firstPass += queue.next()!! }
+        assertEquals(tracks.toSet(), firstPass.toSet())
+        assertEquals(tracks.size, firstPass.distinct().size)
+    }
+
+    @Test
     fun removeBeforeCurrentAdjustsIndexWithoutChangingTrack() {
         val queue = QueueController(listOf(10, 20, 30), initialIndex = 2)
 
@@ -306,9 +324,9 @@ class QueueControllerTest {
         assertEquals(first, restored.previous())
     }
 
-    /** Repeat All + shuffle wraps into the same pass order, keeping history navigable. */
+    /** Repeat All + shuffle starts a fresh pass that preload can predict. */
     @Test
-    fun repeatAllShuffleWrapKeepsHistoryConsistent() {
+    fun repeatAllShuffleStartsFreshPassWithoutImmediateRepeat() {
         val queue = QueueController()
         queue.restore(
             newItems = listOf(1, 2, 3),
@@ -321,8 +339,15 @@ class QueueControllerTest {
         repeat(2) { pass += queue.next()!! }
         assertEquals(listOf(3L, 1L, 2L), pass)
 
-        assertEquals(pass[0], queue.next())      // wrap to the start of the same pass
-        assertEquals(pass[2], queue.previous())  // previous crosses the wrap backwards
+        val oldSession = queue.session(positionMs = 0)
+        val peeked = queue.peekNext()
+        val nextPassFirst = queue.next()
+        val newSession = queue.session(positionMs = 0)
+
+        assertEquals(peeked, nextPassFirst)
+        assertTrue(nextPassFirst != pass.last())
+        assertTrue(oldSession.shuffleSeed != newSession.shuffleSeed)
+        assertEquals(setOf(0, 1, 2), newSession.playOrder!!.toSet())
     }
 
     @Test

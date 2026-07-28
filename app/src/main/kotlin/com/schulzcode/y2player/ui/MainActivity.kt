@@ -504,6 +504,7 @@ class MainActivity : Activity() {
                 )
             }
             AppEffect.CycleVolumeMode -> cycleVolumeMode()
+            AppEffect.CycleReplayGain -> applyPlaybackPreferences(preferences.cycleReplayGain())
             AppEffect.CycleSleepTimer -> requirePlayback { it.cycleSleepTimer() }
             AppEffect.CycleAudioQuality -> {
                 val value = preferences.cycleAudioQuality()
