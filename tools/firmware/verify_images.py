@@ -14,6 +14,9 @@ import sparse
 
 APK_PATH = "/priv-app/Y2Player.apk"
 NATIVE_LIBRARY_PATH = "/lib/liby2audio.so"
+PRIMARY_AUDIO_HAL_PATH = "/lib/libaudio.primary.default.so"
+PRIMARY_AUDIO_HAL_SIZE = 753072
+PRIMARY_AUDIO_HAL_SHA256 = "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
@@ -213,6 +216,35 @@ def main():
         check("system_file" in query(
             raw, "ea_get %s security.selinux" % NATIVE_LIBRARY_PATH
         ), "runtime library SELinux context is system_file")
+
+        hal_stat = query(raw, "stat %s" % PRIMARY_AUDIO_HAL_PATH)
+        check("Inode" in hal_stat, "%s exists" % PRIMARY_AUDIO_HAL_PATH)
+        check(stat_size(hal_stat) == PRIMARY_AUDIO_HAL_SIZE,
+              "patched primary-audio HAL size is %d bytes" % PRIMARY_AUDIO_HAL_SIZE)
+        hal_mode = next((line for line in hal_stat.splitlines() if "Mode:" in line), "")
+        check("0644" in hal_mode, "patched primary-audio HAL mode is 0644")
+        check("User:     0" in hal_stat and "Group:     0" in hal_stat,
+              "patched primary-audio HAL ownership is root:root")
+        check("system_file" in query(
+            raw, "ea_get %s security.selinux" % PRIMARY_AUDIO_HAL_PATH
+        ), "patched primary-audio HAL SELinux context is system_file")
+        embedded_hal = os.path.join(work, "libaudio.primary.default.so")
+        check(dump(raw, PRIMARY_AUDIO_HAL_PATH, embedded_hal),
+              "patched primary-audio HAL can be read back")
+        if os.path.isfile(embedded_hal):
+            embedded_hal_sha = sha256_file(embedded_hal)
+            check(embedded_hal_sha == PRIMARY_AUDIO_HAL_SHA256,
+                  "patched primary-audio HAL SHA-256 matches the audited patch")
+            embedded_hal_elf = elf_description(embedded_hal)
+            check(embedded_hal_elf is not None
+                  and embedded_hal_elf["class"] == 1
+                  and embedded_hal_elf["byte_order"] == 1
+                  and embedded_hal_elf["machine"] == 40
+                  and embedded_hal_elf["eabi"] == 5,
+                  "patched primary-audio HAL ABI is ELF32 little-endian ARM EABI5")
+            log("      HAL sha    : %s" % embedded_hal_sha)
+            if embedded_hal_elf:
+                log("      HAL ELF    : %s" % embedded_hal_elf["description"])
 
         check(query(raw, "ls -p /lib").count("liby2audio.so") == 1,
               "liby2audio.so exists exactly once under /system/lib")

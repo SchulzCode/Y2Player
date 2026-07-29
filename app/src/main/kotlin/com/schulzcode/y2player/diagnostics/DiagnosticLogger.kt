@@ -47,6 +47,7 @@ class DiagnosticLogger(
     private val appContext = context.applicationContext
     private val directory = File(appContext.filesDir, "diagnostics").apply { mkdirs() }
     private val activeFile = File(directory, "y2player.log")
+    private val nativeCrashFile = File(directory, "y2-native-crash.log")
     // Guards file access and the (non-thread-safe) date formatter.
     private val fileLock = Any()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -163,6 +164,12 @@ class DiagnosticLogger(
                 writer.appendLine("Build: ${Build.DISPLAY}")
                 writer.appendLine()
                 logFilesOldestFirst().forEach { file ->
+                    writer.appendLine("===== ${file.name} =====")
+                    runCatching { file.forEachLine { writer.appendLine(it) } }
+                        .onFailure { writer.appendLine("Unable to read ${file.name}: ${it.javaClass.simpleName}") }
+                    writer.appendLine()
+                }
+                nativeCrashFile.takeIf(File::exists)?.let { file ->
                     writer.appendLine("===== ${file.name} =====")
                     runCatching { file.forEachLine { writer.appendLine(it) } }
                         .onFailure { writer.appendLine("Unable to read ${file.name}: ${it.javaClass.simpleName}") }

@@ -36,6 +36,15 @@ object Y2UiLogic {
         return (positionMs.toDouble() / durationMs.toDouble()).coerceIn(0.0, 1.0).toFloat()
     }
 
+    /**
+     * Uses the existing index as a rescan baseline without pretending it is an
+     * exact total when this is the first scan or newly discovered files exceed it.
+     */
+    fun scanProgressFraction(processedFiles: Int, expectedFiles: Int): Float? {
+        if (expectedFiles <= 0 || processedFiles > expectedFiles) return null
+        return (processedFiles.coerceAtLeast(0).toFloat() / expectedFiles).coerceIn(0f, 1f)
+    }
+
     fun visibleRowCount(availableHeightPx: Float, rowHeightPx: Float): Int {
         if (rowHeightPx <= 0f) return 1
         return (availableHeightPx.coerceAtLeast(0f) / rowHeightPx).toInt().coerceAtLeast(1)

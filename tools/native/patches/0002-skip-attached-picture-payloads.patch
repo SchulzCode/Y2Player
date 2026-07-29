@@ -1,0 +1,220 @@
+avformat: allow metadata probes to skip attached-picture payloads
+
+Y2Player scans libraries on a low-memory Android 4.4 device.  Its metadata
+pass only needs to know whether cover art exists; copying compressed artwork
+into AVPacket buffers during every scan wastes RAM and can make a malicious
+picture block bypass the caller's probe-byte budget.
+
+Add an opt-in AVFormatContext flag used by Y2Player's private static build.
+Demuxers still identify picture entries and expose an attached-picture stream,
+but the packet is left empty.  A later, explicitly requested artwork probe
+leaves the flag clear and retains normal FFmpeg behaviour.
+
+The Vorbis-comment and ID3 paths need early exits because they otherwise
+allocate/base64-decode the complete picture before ff_add_attached_pic().  FLAC
+also needs to skip its picture block before allocating a block-sized buffer.
+
+FFmpeg's dictionary ID3 reader historically passed a NULL AVFormatContext to
+the frame readers.  Carry the owning context through that internal API so APIC
+parsing can safely inspect the opt-in limits before allocating the picture.
+
+Applies to: ffmpeg-8.1.2
+--- a/libavformat/avformat.h
++++ b/libavformat/avformat.h
+@@ -1884,6 +1884,24 @@ typedef struct AVFormatContext {
+      */
+     int64_t duration_probesize;
+ 
++    /**
++     * Skip attached-picture payloads while retaining an empty attached-picture
++     * stream so callers can detect their presence. This is an opt-in demuxing
++     * optimisation for metadata-only inspection.
++     *
++     * Demuxing only, set by the caller before avformat_open_input().
++     */
++    int skip_attached_picture_payloads;
++
++    /**
++     * Maximum compressed attached-picture size to retain, or zero for FFmpeg's
++     * normal unlimited behaviour. Oversized pictures remain detectable but
++     * their payload is skipped.
++     *
++     * Demuxing only, set by the caller before avformat_open_input().
++     */
++    int64_t max_attached_picture_payload_size;
++
+     /**
+      * Name of this format context, only used for logging purposes.
+      */
+--- a/libavformat/demux_utils.c
++++ b/libavformat/demux_utils.c
+@@ -114,6 +114,28 @@ int ff_add_attached_pic(AVFormatContext *s, AVStream *st0, AVIOContext *pb,
+     if (!st && !(st = avformat_new_stream(s, NULL)))
+         return AVERROR(ENOMEM);
+     pkt = &st->attached_pic;
++    if (s->skip_attached_picture_payloads ||
++        (s->max_attached_picture_payload_size > 0 &&
++         ((buf && *buf && (*buf)->size > AV_INPUT_BUFFER_PADDING_SIZE &&
++                         (*buf)->size - AV_INPUT_BUFFER_PADDING_SIZE >
++                         s->max_attached_picture_payload_size) ||
++          (!buf && size > s->max_attached_picture_payload_size)))) {
++        av_packet_unref(pkt);
++        if (buf) {
++            av_buffer_unref(buf);
++        } else if (pb && size > 0) {
++            int64_t skip_result = avio_skip(pb, size);
++            if (skip_result < 0) {
++                ret = (int) skip_result;
++                goto fail;
++            }
++        }
++        st->disposition          |= AV_DISPOSITION_ATTACHED_PIC;
++        st->codecpar->codec_type  = AVMEDIA_TYPE_VIDEO;
++        pkt->stream_index         = st->index;
++        pkt->flags               |= AV_PKT_FLAG_KEY;
++        return 0;
++    }
+     if (buf) {
+         av_assert1(*buf);
+         av_packet_unref(pkt);
+--- a/libavformat/flacdec.c
++++ b/libavformat/flacdec.c
+@@ -91,5 +91,16 @@ static int flac_read_header(AVFormatContext *s)
+         flac_parse_block_header(header, &metadata_last, &metadata_type,
+                                    &metadata_size);
++        if (metadata_type == FLAC_METADATA_TYPE_PICTURE &&
++            (s->skip_attached_picture_payloads ||
++             (s->max_attached_picture_payload_size > 0 && metadata_size >
++              s->max_attached_picture_payload_size))) {
++            ret = ff_add_attached_pic(s, NULL, s->pb, NULL, metadata_size);
++            if (ret < 0) {
++                av_log(s, AV_LOG_ERROR, "Error skipping attached picture.\n");
++                return ret;
++            }
++            continue;
++        }
+         switch (metadata_type) {
+         /* allocate and read metadata block for supported types */
+         case FLAC_METADATA_TYPE_STREAMINFO:
+--- a/libavformat/id3v2.c
++++ b/libavformat/id3v2.c
+@@ -672,11 +672,18 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
+                "Error decoding attached picture description.\n");
+         goto fail;
+     }
+ 
+-    apic->buf = av_buffer_alloc(taglen + AV_INPUT_BUFFER_PADDING_SIZE);
+-    if (!apic->buf || !taglen || avio_read(pb, apic->buf->data, taglen) != taglen)
+-        goto fail;
+-    memset(apic->buf->data + taglen, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++    if (s && (s->skip_attached_picture_payloads ||
++              (s->max_attached_picture_payload_size > 0 &&
++               taglen > s->max_attached_picture_payload_size))) {
++        if (avio_skip(pb, taglen) < 0)
++            goto fail;
++    } else {
++        apic->buf = av_buffer_alloc(taglen + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!apic->buf || !taglen || avio_read(pb, apic->buf->data, taglen) != taglen)
++            goto fail;
++        memset(apic->buf->data + taglen, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++    }
+ 
+     new_extra->tag  = "APIC";
+ 
+@@ -1140,10 +1147,10 @@ static void id3v2_read_internal(AVIOContext *pb, AVDictionary **metadata,
+         *extra_metap = extra_meta.head;
+ }
+ 
+-void ff_id3v2_read_dict(AVIOContext *pb, AVDictionary **metadata,
++void ff_id3v2_read_dict(AVFormatContext *s, AVIOContext *pb, AVDictionary **metadata,
+                         const char *magic, ID3v2ExtraMeta **extra_meta)
+ {
+-    id3v2_read_internal(pb, metadata, NULL, magic, extra_meta, 0);
++    id3v2_read_internal(pb, metadata, s, magic, extra_meta, 0);
+ }
+ 
+ void ff_id3v2_read(AVFormatContext *s, const char *magic,
+@@ -1181,13 +1188,16 @@ int ff_id3v2_parse_apic(AVFormatContext *s, ID3v2ExtraMeta *extra_meta)
+             continue;
+         apic = &cur->data.apic;
+ 
+-        ret = ff_add_attached_pic(s, NULL, NULL, &apic->buf, 0);
++        ret = apic->buf == NULL
++            ? ff_add_attached_pic(s, NULL, NULL, NULL, 0)
++            : ff_add_attached_pic(s, NULL, NULL, &apic->buf, 0);
+         if (ret < 0)
+             return ret;
+         st  = s->streams[s->nb_streams - 1];
+         st->codecpar->codec_id   = apic->id;
+ 
+-        if (AV_RB64(st->attached_pic.data) == PNGSIG)
++        if (st->attached_pic.size >= 8 &&
++            AV_RB64(st->attached_pic.data) == PNGSIG)
+             st->codecpar->codec_id = AV_CODEC_ID_PNG;
+ 
+         if (apic->description[0])
+--- a/libavformat/id3v2.h
++++ b/libavformat/id3v2.h
+@@ -114,7 +114,8 @@ int ff_id3v2_tag_len(const uint8_t *buf);
+  * @param[out] extra_meta If not NULL, extra metadata is parsed into a list of
+  * ID3v2ExtraMeta structs and *extra_meta points to the head of the list
+  */
+-void ff_id3v2_read_dict(AVIOContext *pb, AVDictionary **metadata, const char *magic, ID3v2ExtraMeta **extra_meta);
++void ff_id3v2_read_dict(AVFormatContext *s, AVIOContext *pb, AVDictionary **metadata,
++                        const char *magic, ID3v2ExtraMeta **extra_meta);
+ 
+ /**
+  * Read an ID3v2 tag, including supported extra metadata.
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -317,7 +317,7 @@ int avformat_open_input(AVFormatContext **ps, const char *filename,
+ 
+     /* e.g. AVFMT_NOFILE formats will not have an AVIOContext */
+     if (s->pb && is_id3v2_format(s->iformat))
+-        ff_id3v2_read_dict(s->pb, &si->id3v2_meta, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta);
++        ff_id3v2_read_dict(s, s->pb, &si->id3v2_meta, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta);
+ 
+     if (ffifmt(s->iformat)->read_header)
+         if ((ret = ffifmt(s->iformat)->read_header(s)) < 0) {
+--- a/libavformat/aacdec.c
++++ b/libavformat/aacdec.c
+@@ -147,7 +147,7 @@ static int handle_id3(AVFormatContext *s, AVPacket *pkt)
+         return ret;
+ 
+     ffio_init_read_context(&pb, pkt->data, pkt->size);
+-    ff_id3v2_read_dict(&pb.pub, &metadata, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta);
++    ff_id3v2_read_dict(s, &pb.pub, &metadata, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta);
+     if ((ret = ff_id3v2_parse_priv_dict(&metadata, id3v2_extra_meta)) < 0)
+         goto error;
+ 
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1165,7 +1165,7 @@ static void parse_id3(AVFormatContext *s, AVIOContext *pb,
+     static const char id3_priv_owner_audio_setup[] = "com.apple.streaming.audioDescription";
+     ID3v2ExtraMeta *meta;
+ 
+-    ff_id3v2_read_dict(pb, metadata, ID3v2_DEFAULT_MAGIC, extra_meta);
++    ff_id3v2_read_dict(s, pb, metadata, ID3v2_DEFAULT_MAGIC, extra_meta);
+     for (meta = *extra_meta; meta; meta = meta->next) {
+         if (!strcmp(meta->tag, "PRIV")) {
+             ID3v2ExtraMetaPRIV *priv = &meta->data.priv;
+--- a/libavformat/oggparsevorbis.c
++++ b/libavformat/oggparsevorbis.c
+@@ -118,6 +118,16 @@ static int vorbis_parse_single_comment(AVFormatContext *as, AVDictionary **m,
+      * recommended way of embedding cover art within VorbisComments."
+      */
+     if (!av_strcasecmp(t, "METADATA_BLOCK_PICTURE") && parse_picture) {
++        int ret, len = AV_BASE64_DECODE_SIZE(vl);
++        if (as->skip_attached_picture_payloads ||
++            (as->max_attached_picture_payload_size > 0 &&
++             len > as->max_attached_picture_payload_size)) {
++            ret = ff_add_attached_pic(as, NULL, NULL, NULL, 0);
++            if (ret < 0) {
++                av_log(as, AV_LOG_WARNING, "Failed to record cover art block.\n");
++                goto end;
++            }
++            goto end;
++        }
+-        int ret, len = AV_BASE64_DECODE_SIZE(vl);
+         uint8_t *pict = av_malloc(len + AV_INPUT_BUFFER_PADDING_SIZE);
+ 

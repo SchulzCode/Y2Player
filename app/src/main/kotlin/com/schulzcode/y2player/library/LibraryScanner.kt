@@ -38,7 +38,7 @@ enum class CoverageGap { ROOT_UNREADABLE, DIRECTORY_UNREADABLE, FILE_LIMIT }
  *
  * [bytesRead] is the discriminator worth having: metadata extraction is supposed to
  * read a bounded header, so cost should track the *number* of files. If it tracks
- * their size instead, the platform extractor is reading file bodies — which for a
+ * their size instead, the metadata probe is reading file bodies — which for a
  * library of large VBR MP3s would dwarf everything else and would change what is
  * worth optimising next.
  */
@@ -46,7 +46,7 @@ data class ScanCost(
     /** Files whose metadata was actually extracted, not merely stat-ed. */
     val filesRead: Int = 0,
     val bytesRead: Long = 0,
-    /** Wall time inside [MetadataReader.read], the part that runs in the media server. */
+    /** Wall time inside the metadata-only FFmpeg container probe. */
     val metadataMs: Long = 0,
     val yieldMs: Long = 0,
     val yields: Int = 0
@@ -73,9 +73,6 @@ data class ScanOutcome(
 }
 
 class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader()) {
-    /** Frees the shared retriever's native resources; call after a scan completes. */
-    fun releaseMetadata() = metadataReader.release()
-
     /**
      * @param playbackActive whether audio is playing right now. When it is, the
      *   scan pauses briefly after any batch that actually read metadata — see
@@ -87,7 +84,8 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         cancellation: ScanCancellation,
         onBatch: (List<ScannedFile>) -> Unit,
         onProgress: (path: String, processed: Int) -> Unit,
-        playbackActive: () -> Boolean = { false }
+        playbackActive: () -> Boolean = { false },
+        profiler: ScanProfiler = ScanProfiler(enabled = false)
     ): ScanOutcome {
         val stack = ArrayDeque<File>()
         val visited = HashSet<String>()
@@ -117,13 +115,15 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         var costYields = 0
         // Carried across batches, not reset per batch: the back-off interval is
         // deliberately independent of BATCH_SIZE, which exists to size database
-        // transactions and has no business deciding how often audio gets the
-        // media server back.
+        // transactions and has no business deciding how often playback gets CPU
+        // and storage bandwidth back.
         var groupFiles = 0
         var groupNanos = 0L
+        val rootSetupStarted = profiler.start()
         val rootCanonical = try {
             root.directory.canonicalPath.trimEnd(File.separatorChar)
         } catch (_: IOException) {
+            profiler.stop(ScanPhase.ROOT_SETUP, rootSetupStarted)
             return ScanOutcome(
                 processedFiles = 0,
                 cancelled = false,
@@ -132,6 +132,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 coverageGap = CoverageGap.ROOT_UNREADABLE
             )
         } catch (_: SecurityException) {
+            profiler.stop(ScanPhase.ROOT_SETUP, rootSetupStarted)
             return ScanOutcome(
                 processedFiles = 0,
                 cancelled = false,
@@ -141,20 +142,27 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
             )
         }
         stack.add(root.directory)
+        profiler.stop(ScanPhase.ROOT_SETUP, rootSetupStarted)
 
         fun flush() {
             if (audioBuffer.isEmpty() || cancellation.isCancelled()) return
             // Swap the full buffer out instead of copying it every batch.
             val files = audioBuffer
             audioBuffer = ArrayList(BATCH_SIZE)
+            val pathStarted = profiler.start()
             val paths = ArrayList<String>(files.size)
             files.forEach { paths.add(it.absolutePath) }
+            profiler.stop(ScanPhase.PATH_BUILD, pathStarted)
+            val fingerprintStarted = profiler.start()
             val known = fingerprintLookup(paths)
+            profiler.stop(ScanPhase.FINGERPRINT_QUERY, fingerprintStarted)
             val batch = ArrayList<ScannedFile>(files.size)
             files.forEachIndexed { index, file ->
                 if (cancellation.isCancelled()) return@forEachIndexed
                 val path = paths[index]
+                val statStarted = profiler.start()
                 if (!file.isFile || !file.canRead()) {
+                    profiler.stop(ScanPhase.FILE_STAT_COMPARE, statStarted)
                     // One unreadable or zero-byte file is not a failed scan. It
                     // simply does not get its seen-token refreshed, so finishScan
                     // marks it unavailable — the correct outcome for a file that
@@ -166,12 +174,14 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 // pass them through metadata extraction instead of re-statting.
                 val fileSize = file.length()
                 if (fileSize <= 0L) {
+                    profiler.stop(ScanPhase.FILE_STAT_COMPARE, statStarted)
                     recoverableErrors += 1
                     return@forEachIndexed
                 }
                 val modifiedAt = file.lastModified()
                 val cached = known[path]
                 val changed = cached == null || cached.fileSize != fileSize || cached.modifiedAt != modifiedAt
+                profiler.stop(ScanPhase.FILE_STAT_COMPARE, statStarted)
                 if (!changed) {
                     batch += ScannedFile(path, null)
                     processed += 1
@@ -181,7 +191,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 var failed = false
                 val startedAt = System.nanoTime()
                 try {
-                    draft = metadataReader.read(root, file, fileSize, modifiedAt)
+                    draft = metadataReader.read(root, file, fileSize, modifiedAt, profiler)
                 } catch (_: Exception) {
                     // Same reasoning as an unreadable file: one bad decode says
                     // nothing about whether the walk covered the volume.
@@ -189,16 +199,18 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                     failed = true
                 }
                 // Counted whether or not it succeeded: a file that took time and
-                // then threw still spent that time inside the media server.
+                // then threw still spent that time inside FFmpeg.
                 val elapsed = System.nanoTime() - startedAt
                 groupNanos += elapsed
                 groupFiles += 1
                 costFilesRead += 1
-                costBytesRead += fileSize
+                costBytesRead += draft?.metadataBytesRead ?: 0L
                 costMetadataMs += elapsed / NANOS_PER_MS
                 if (groupFiles >= YIELD_FILE_INTERVAL) {
+                    val yieldStarted = profiler.start()
                     val yieldedMs = yieldToPlayback(cancellation, playbackActive, groupNanos)
                     if (yieldedMs >= 0L) {
+                        profiler.stop(ScanPhase.PLAYBACK_YIELD, yieldStarted)
                         costYieldMs += yieldedMs
                         costYields += 1
                     }
@@ -217,19 +229,23 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
 
         while (stack.isNotEmpty() && !cancellation.isCancelled() && !limitReached) {
             val directory = stack.removeLast()
+            val canonicalStarted = profiler.start()
             val canonical = try {
                 directory.canonicalPath
             } catch (error: IOException) {
+                profiler.stop(ScanPhase.DIRECTORY_CANONICAL, canonicalStarted)
                 if (cancellation.isCancelled()) break
                 coverageGap = CoverageGap.DIRECTORY_UNREADABLE
                 recoverableErrors += 1
                 continue
             } catch (error: SecurityException) {
+                profiler.stop(ScanPhase.DIRECTORY_CANONICAL, canonicalStarted)
                 if (cancellation.isCancelled()) break
                 coverageGap = CoverageGap.DIRECTORY_UNREADABLE
                 recoverableErrors += 1
                 continue
             }
+            profiler.stop(ScanPhase.DIRECTORY_CANONICAL, canonicalStarted)
             // File.isDirectory follows symlinks. Canonical visited paths stop
             // loops, and this boundary additionally prevents a card symlink
             // from walking the internal filesystem as if it belonged to the
@@ -245,8 +261,12 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 continue
             }
             if (!visited.add(canonical)) continue
+            val progressStarted = profiler.start()
             onProgress(canonical, processed)
+            profiler.stop(ScanPhase.PROGRESS_CALLBACK, progressStarted)
+            val listStarted = profiler.start()
             val children = directory.listFiles()
+            profiler.stop(ScanPhase.DIRECTORY_LIST, listStarted)
             if (children == null) {
                 // A directory that cannot be listed is a real gap: its tracks
                 // would be wrongly marked unavailable by finishScan.
@@ -255,6 +275,7 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                 recoverableErrors += 1
                 continue
             }
+            var discoveryStarted = profiler.start()
             for (child in children) {
                 if (cancellation.isCancelled()) break
                 if (child.isDirectory) {
@@ -282,11 +303,20 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
                             break
                         }
                         audioBuffer += child
-                        if (audioBuffer.size >= BATCH_SIZE) flush()
-                        if ((processed + audioBuffer.size) % 25 == 0) onProgress(child.absolutePath, processed + audioBuffer.size)
+                        if (audioBuffer.size >= BATCH_SIZE) {
+                            profiler.stop(ScanPhase.DISCOVERY_FILTER, discoveryStarted)
+                            flush()
+                            discoveryStarted = profiler.start()
+                        }
+                        if ((processed + audioBuffer.size) % 25 == 0) {
+                            val itemProgressStarted = profiler.start()
+                            onProgress(child.absolutePath, processed + audioBuffer.size)
+                            profiler.stop(ScanPhase.PROGRESS_CALLBACK, itemProgressStarted)
+                        }
                     }
                 }
             }
+            profiler.stop(ScanPhase.DISCOVERY_FILTER, discoveryStarted)
         }
         flush()
         val cancelled = cancellation.isCancelled()
@@ -310,9 +340,9 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
      * Leaves a gap in the scan's I/O while audio is playing.
      *
      * Background thread priority caps the scan's *CPU* share, but the contention
-     * that produces audible stutter is elsewhere: metadata extraction runs inside
-     * the media server that is decoding the audio, and reads from the same card
-     * the native playback decoder is streaming from. A short pause hands both back.
+     * that produces audible stutter is shared storage bandwidth: metadata reads
+     * come from the same card the native playback decoder is streaming from. A
+     * short pause also yields the weak CPU cores used by both FFmpeg operations.
      *
      * Two things about the shape of this matter more than the length of the pause:
      *
@@ -389,7 +419,14 @@ class LibraryScanner(private val metadataReader: MetadataReader = MetadataReader
         root.directory.absolutePath.trimEnd(File.separatorChar).length + 1
 
     companion object {
-        const val BATCH_SIZE = 64
+        /**
+         * Measured on the Y2 with 9,178 indexed tracks. At 64, an unchanged scan
+         * compiled/executed 144 fingerprint queries and committed 144 seen-token
+         * transactions: 16.7 s + 15.5 s. Four hundred keeps both statements under
+         * SQLite's API-19 999-variable limit (401 and 402 bindings) while reducing
+         * that fixed query/transaction overhead to 23 batches.
+         */
+        const val BATCH_SIZE = 400
 
         private const val NANOS_PER_MS = 1_000_000L
         private const val NO_YIELD = -1L

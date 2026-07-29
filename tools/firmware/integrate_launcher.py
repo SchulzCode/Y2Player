@@ -31,11 +31,13 @@ import tempfile
 import zipfile
 
 import sparse
+import patch_primary_audio_hal as hal_patch
 
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
 TARGET_APK = "/priv-app/Y2Player.apk"
 TARGET_NATIVE_LIBRARY = "/lib/liby2audio.so"
+TARGET_PRIMARY_AUDIO_HAL = hal_patch.HAL_SYSTEM_PATH
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 # Matches stock files in both /system/priv-app and /system/lib.
 SELINUX_CONTEXT = b"u:object_r:system_file:s0\x00"
@@ -188,7 +190,7 @@ def main():
     written, block_size, blocks = sparse.unpack(args.system, raw)
     log(f"      {written} bytes ({blocks} blocks x {block_size})")
 
-    log("\n[2/6] verifying stock contents")
+    log("\n[2/6] verifying stock contents and preparing guarded HAL patch")
     stock_stat = query(raw, f"stat {STOCK_LAUNCHER}")
     if "Inode" not in stock_stat:
         raise SystemExit(f"{STOCK_LAUNCHER} not found — is this the stock Y2 system image?")
@@ -197,9 +199,28 @@ def main():
     if "Inode" in query(raw, f"stat {TARGET_NATIVE_LIBRARY}"):
         raise SystemExit(f"stock image unexpectedly already contains {TARGET_NATIVE_LIBRARY}")
     log(f"      found {STOCK_LAUNCHER}")
+    stock_hal = raw + ".stock-primary-hal.so"
+    patched_hal = raw + ".patched-primary-hal.so"
+    if not dump(raw, TARGET_PRIMARY_AUDIO_HAL, stock_hal):
+        raise SystemExit(f"could not read stock {TARGET_PRIMARY_AUDIO_HAL}")
+    try:
+        with open(stock_hal, "rb") as handle:
+            patched_hal_bytes = hal_patch.patch_hal(handle.read())
+        hal_patch.write_atomic(patched_hal, patched_hal_bytes)
+    except hal_patch.PatchError as error:
+        raise SystemExit(f"stock primary-audio HAL rejected: {error}") from error
+    log(
+        f"      stock HAL: {hal_patch.STOCK_SIZE} bytes, "
+        f"SHA-256 {hal_patch.STOCK_SHA256}"
+    )
+    log(
+        f"      patched HAL: {len(patched_hal_bytes)} bytes, "
+        f"SHA-256 {hal_patch.PATCHED_SHA256}"
+    )
+    log("      DAC frequency hook: guarded numeric 44100/48000-Hz ioctl")
     log(f"      free space before: {free_bytes(raw)} bytes")
 
-    log("\n[3/6] removing stock launcher and installing Y2Player runtime")
+    log("\n[3/6] installing Y2Player runtime and patched primary-audio HAL")
     context_file = raw + ".selinux"
     with open(context_file, "wb") as handle:
         handle.write(SELINUX_CONTEXT)
@@ -217,19 +238,32 @@ def main():
         "sif liby2audio.so uid 0",
         "sif liby2audio.so gid 0",
         f"ea_set -f {context_file} liby2audio.so security.selinux",
+        f"rm {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)}",
+        f"write {os.path.abspath(patched_hal)} {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)}",
+        f"sif {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)} mode {NATIVE_LIBRARY_MODE}",
+        f"sif {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)} uid 0",
+        f"sif {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)} gid 0",
+        (
+            f"ea_set -f {context_file} {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)} "
+            "security.selinux"
+        ),
     ]
     if "Inode" in query(raw, f"stat {STOCK_LAUNCHER_ODEX}"):
         commands.insert(1, f"rm {STOCK_LAUNCHER_ODEX}")
         log(f"      removing stale {STOCK_LAUNCHER_ODEX}")
     result = debugfs(raw, commands, write=True)
     if result.returncode != 0:
-        os.unlink(context_file)
+        for temporary in (context_file, stock_hal, patched_hal):
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         raise SystemExit(f"debugfs failed:\n{result.stdout}\n{result.stderr}")
     for noise in ("File not found", "Invalid", "error"):
         if noise.lower() in result.stdout.lower():
             log(f"      debugfs output: {result.stdout.strip()}")
 
     os.unlink(context_file)
+    os.unlink(stock_hal)
+    os.unlink(patched_hal)
 
     log("\n[4/6] reconciling filesystem (e2fsck)")
     check = run(["e2fsck", "-fy", raw])
@@ -285,6 +319,35 @@ def main():
         problems.append("native-library SELinux context missing or wrong")
     else:
         log(f"      native selinux: {native_context.strip().splitlines()[-1]}")
+    hal_stat = query(raw, f"stat {TARGET_PRIMARY_AUDIO_HAL}")
+    if "Inode" not in hal_stat:
+        problems.append("patched primary-audio HAL was not installed")
+    else:
+        mode_line = next((line for line in hal_stat.splitlines() if "Mode:" in line), "")
+        if "0644" not in mode_line:
+            problems.append(f"unexpected primary-audio HAL mode: {mode_line.strip()}")
+        if "User:     0" not in hal_stat or "Group:     0" not in hal_stat:
+            problems.append("unexpected primary-audio HAL ownership (expected root:root)")
+        installed_hal = raw + ".installed-primary-hal.so"
+        if not dump(raw, TARGET_PRIMARY_AUDIO_HAL, installed_hal):
+            problems.append("installed primary-audio HAL could not be read back")
+        else:
+            try:
+                with open(installed_hal, "rb") as handle:
+                    installed_hal_sha = hal_patch.verify_patched_hal(handle.read())
+                log(
+                    f"      {TARGET_PRIMARY_AUDIO_HAL}: {mode_line.strip()} "
+                    f"Size: {os.path.getsize(installed_hal)} SHA-256: {installed_hal_sha}"
+                )
+            except hal_patch.PatchError as error:
+                problems.append(f"installed primary-audio HAL is invalid: {error}")
+            finally:
+                os.unlink(installed_hal)
+    hal_context = query(raw, f"ea_get {TARGET_PRIMARY_AUDIO_HAL} security.selinux")
+    if "system_file" not in hal_context:
+        problems.append("primary-audio HAL SELinux context missing or wrong")
+    else:
+        log(f"      HAL selinux: {hal_context.strip().splitlines()[-1]}")
     # Nothing else in priv-app may have changed.
     listing = query(raw, "ls /priv-app")
     if "MyLauncher" in listing:

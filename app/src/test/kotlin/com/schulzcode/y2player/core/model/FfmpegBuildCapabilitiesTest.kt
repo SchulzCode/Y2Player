@@ -35,6 +35,10 @@ class FfmpegBuildCapabilitiesTest {
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/aiff", "aiff"))
     }
 
+    @Test fun metadataBackendCanInspectWmaContainers() {
+        assertTrue("asf demuxer", "asf" in AudioCodecSupport.DEMUXERS)
+    }
+
     /** Every codec the app claims is playable must have a container to arrive in. */
     @Test fun everyEnabledDecoderIsReachableThroughSomeEnabledDemuxer() {
         assertTrue(AudioCodecSupport.DEMUXERS.isNotEmpty())

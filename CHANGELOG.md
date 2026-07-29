@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1 — scanner and media-engine improvements
+
+- Added the collation-correct `(volume_id, relative_path COLLATE NOCASE)` covering index, reducing the measured large-library fallback lookup from 258.160 seconds to 4.124 seconds.
+- Increased scanner and unchanged-file database batches to 400, reducing fingerprint queries and transactions from 144 to 23 in the 9,178-file benchmark.
+- Reduced an unchanged 9,178-file scan from 42.106 seconds to 19.070 seconds while retaining one-file metadata work for add, modify, rename, and delete cases.
+- Reduced metadata probing to a 32 KiB probe and 100 ms analysis limit after validating 76 fixtures and 1,394 metadata assertions on physical hardware.
+- Added scan progress feedback and a dedicated partial wake lock held only for active library work.
+- Completed metadata propagation for comments and track/disc totals; improved ReplayGain, ADTS AAC, FLAC bit-depth, malformed-file, and partial-playback handling.
+- Kept artwork payloads out of scan-time indexing and moved compressed artwork extraction to the bounded on-demand loader and shared cache.
+- Added portable Windows, macOS, and Linux absolute-path relocation for imported playlists.
+- Refactored decoded audio, ReplayGain, balance, fades, and crossfades to float32 with one final PCM16 conversion at the API-19 AudioTrack boundary.
+- Fixed decoder abort ordering, exact short-FLAC seek fallback, bounded invalid-packet recovery, gapless/crossfade wake-lock continuity, and duplicate playback notification work.
+- Added a deterministic media corpus, physical-device regression runner, resource checks, native phase profiling, and a secure non-root ADB boot-image pipeline.
+- Added guarded and independently verified primary-audio HAL DAC-frequency-hook groundwork without changing the advertised 44.1 kHz PCM16 playback output.
+
 ## 2.0 — unified FFmpeg engine
 
 - Replaced playback and format diagnostics with one FFmpeg 8.1.2 engine for MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
@@ -7,6 +22,8 @@
 - Installed that runtime at `/system/lib/liby2audio.so` in generated firmware, with byte-for-byte APK/image verification and stock Android 4.4 file metadata.
 - Added persistent AudioTrack PCM output, native seek/abort handling, playback-head position accounting, PCM gapless promotion, and PCM crossfade mixing.
 - Added album, track, and shuffle-aware ReplayGain using embedded gain/peak metadata with peak-based clipping prevention.
+- Unified library metadata under FFmpeg: tags, technical fields, ReplayGain, and lazy embedded artwork now use the same backend as playback, including Opus on Android 4.4.
+- Hardened metadata scans with local-file/demuxer allowlists, a wall-clock deadline, no decoder opening, scan-time artwork-payload skipping, lazy artwork size limits, and real probe-I/O diagnostics.
 - Fixed Shuffle All to begin at the first entry of a complete library permutation and generate a fresh permutation after every full pass.
 - Simplified Home to Music, Shuffle All, Audio, and Settings. Audio groups Playback and Sound, while Bluetooth sits under Settings alongside focused Interface and Library submenus; detailed track, queue, and output actions moved out of contextual landing screens.
 - Added explicit application wake-lock ownership and retained queue, focus, Bluetooth, media-control, storage, persistence, sleep-timer, and effects policies.

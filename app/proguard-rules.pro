@@ -13,3 +13,7 @@
 
 # JNI_OnLoad registers the minimal native boundary by this exact class name.
 -keep class com.schulzcode.y2player.playback.NativeAudio { *; }
+# Constructed directly from the registered native metadata method.
+-keep class com.schulzcode.y2player.library.FfmpegMetadata {
+    <init>(...);
+}

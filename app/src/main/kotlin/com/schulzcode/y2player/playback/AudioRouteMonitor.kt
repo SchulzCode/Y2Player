@@ -86,8 +86,8 @@ class AudioRouteMonitor(
      * receives all of them — so the remembered value is exact, not a cache with a
      * staleness window. It is read on every playback progress tick, and querying
      * there put two native AudioPolicyService calls per second on the thread that
-     * has to fire crossfade transitions punctually. During a library scan those
-     * calls contend with the scanner's own use of the media server.
+     * has to fire crossfade transitions punctually, especially while a library
+     * scan is already consuming CPU and storage bandwidth.
      */
     @Volatile private var latest = PrivateRouteSnapshot()
 

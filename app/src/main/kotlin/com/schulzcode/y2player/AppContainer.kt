@@ -57,7 +57,9 @@ class AppContainer(context: Context) {
         )
     }
     val database: LibraryDatabase by lazy { LibraryDatabase(appContext) }
-    val libraryRepository: LibraryRepository by lazy { LibraryRepository(database, logger = logger, eventLog = eventLog) }
+    val libraryRepository: LibraryRepository by lazy {
+        LibraryRepository(appContext, database, logger = logger, eventLog = eventLog)
+    }
     /** Read-only USB gadget reporting. Cannot and does not switch USB modes. */
     val usbStateMonitor: UsbStateMonitor by lazy { UsbStateMonitor(appContext, eventLog) }
     val diagnosticsRepository: DiagnosticsRepository by lazy { DiagnosticsRepository(logger, eventLog) }
@@ -82,7 +84,7 @@ class AppContainer(context: Context) {
     /**
      * Process-wide artwork loader shared by the Now Playing view and the
      * RemoteControlClient adapter. Both request the same 256 px decode, so one cache
-     * entry and one MediaMetadataRetriever pass serve both per track change.
+     * entry and one lazy FFmpeg artwork extraction serve both per track change.
      * Never shut down: it lives for the process.
      */
     private val artworkLoaderLazy = lazy { AlbumArtworkLoader() }

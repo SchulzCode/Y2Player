@@ -1,6 +1,6 @@
 # Y2Player
 
-**Y2Player 2.0 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
+**Y2Player 2.1 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
@@ -19,7 +19,7 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 ## Highlights
 
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
-- Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, and Ogg Vorbis.
+- Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, AIFF/PCM, Ogg Vorbis, and Opus.
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
@@ -29,32 +29,37 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
 
-## Version 2.0
+## Version 2.1
 
-Version 2.0 replaces Android's firmware-dependent playback path with a pinned FFmpeg 8.1.2 engine built specifically for API 19 and the Y2's 32-bit ARM processor. Every supported format now uses the same decoder, seek, gapless, crossfade, error-handling, and AudioTrack output path.
+Version 2.1 improves the library scanner and refines the FFmpeg media engine using measurements collected directly on physical Y2 hardware.
 
 The release includes:
 
-- **built-in ALAC playback**, so lossless `.m4a` files no longer depend on a decoder that stock Android 4.4 does not provide;
-- **one reproducible native runtime** with pinned FFmpeg and Android NDK sources, verified hashes, and an explicit codec allowlist;
-- **persistent PCM output** with native seek and cancellation, playback-head position tracking, gapless promotion, and crossfade mixing;
-- **fixed format capabilities**, reported directly from the build instead of inferred from filenames or discovered with muted test playback;
-- **honest Direct DAC reporting**, which explains the audited stock-HAL limitation and uses standard AudioTrack without guessed hardware access.
+- a collation-correct SQLite index that makes the largest measured scanner lookup 98.4% faster on a synthetic 9,178-file library;
+- larger, safe database batches and faster unchanged-library and incremental scans;
+- a 32 KiB/100 ms FFmpeg metadata probe policy validated against 76 fixtures and 1,394 metadata assertions;
+- visible scan progress and a scan-only wake lock that is released as soon as indexing finishes;
+- improved metadata correctness, lazy artwork handling, and portable desktop-playlist path resolution;
+- float32 application DSP with one final PCM16 conversion at the Android 4.4 AudioTrack boundary;
+- decoder cancellation, malformed-packet, short-FLAC seek, notification, and diagnostic fixes;
+- an automated physical-device media regression suite and reproducible secure ADB development image.
 
-The goal of Y2Player is not feature bloat. New features should be added deliberately, implemented well, tested on real hardware, and refined before the next major feature is introduced.
+The complete technical release write-up is available in [`docs/Y2PLAYER_V2_1_RELEASE_POST.md`](docs/Y2PLAYER_V2_1_RELEASE_POST.md).
 
-The long-term goal is to build a strong, dependable foundation for a modern iPod-like device: focused, responsive, offline-first, and enjoyable to use every day.
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history. The short [Reddit release post](docs/Y2PLAYER_V2_1_REDDIT_POST.md) is also kept in the repository.
 
 ## Music library and playback
 
-The library is built from audio files on the Y2's internal music storage and removable SD card. Metadata is stored locally in SQLite, and incremental rescans update changed files without loading the complete library into the UI at once.
+The library is built from audio files on the Y2's internal music storage and removable SD card. FFmpeg is the sole metadata backend as well as the playback engine; metadata is stored locally in SQLite, and incremental rescans extract metadata only for new or changed files. Scans inspect bounded container data without opening a decoder, while embedded artwork is extracted and downsampled only when requested.
+
+Scanning runs on a dedicated background worker, reports visible progress, and holds a scan-only partial wake lock so a long index is not interrupted when the screen turns off. The lock is released when scanning completes. The 2.1 database index and larger bounded batches reduce the dominant large-library lookup by 98.4%; an unchanged synthetic 9,178-file library measured 19.070 seconds instead of 42.106 seconds on the physical device.
 
 Library views include:
 
 - all songs, albums, artists, and folders;
 - Favorites and Recently Played smart lists;
 - user-created playlists;
-- M3U and M3U8 playlist import/export;
+- M3U and M3U8 playlist import/export, including relocation of portable Windows, macOS, and Linux paths;
 - configurable title, artist, album, recently-added, or file-modified sorting where applicable.
 
 Playback includes a persistent queue, shuffle, repeat one/all, previous/next behavior, short and held seeking, saved resume position, audio-focus handling, and safe pause when storage or a protected audio route disappears. Shuffle All plays one complete randomized pass of the library, then automatically creates a fresh pass. Gapless playback preloads the next track; configurable crossfade takes priority when enabled.
@@ -111,16 +116,16 @@ ReplayGain is available under Playback in three modes:
 - **Track Gain** normalizes each track independently;
 - **Track Gain while shuffling** uses Album Gain in normal queue order and Track Gain while shuffle is active.
 
-Y2Player reads the standard track/album gain and peak tags exported by FFmpeg. If the selected gain is missing, it falls back to the other tagged gain; if neither is present, that track plays unchanged. Peak tags cap positive gain where possible, and the PCM mixer saturates safely as a final guard. Y2Player does not calculate ReplayGain itself, so untagged files must be analyzed and tagged by another tool. Files without peak tags cannot receive metadata-based clipping prevention.
+Y2Player reads the standard track/album gain and peak tags exported by FFmpeg. If the selected gain is missing, it falls back to the other tagged gain; if neither is present, that track plays unchanged. Matching peak tags cap positive gain where possible. Audio remains float32 through ReplayGain, balance, fades, ducking, and crossfade, then clips and quantizes once at the final PCM16 AudioTrack boundary. Y2Player does not calculate ReplayGain itself, so untagged files must be analyzed and tagged by another tool. Files without peak tags cannot receive metadata-based clipping prevention.
 
-Two audio-quality modes are available:
+Two output preferences are available:
 
 - **Balanced** uses the normal Android audio path and can enable supported app-session effects.
-- **Direct DAC (experimental)** is retained as an explicit output mode, but the audited stock HAL exposes no verified direct PCM interface. Selecting it preserves the preference, disables the Direct-profile DSP features, and clearly falls back to standard AudioTrack output. No raw device writes or guessed ioctls are used.
+- **Direct DAC (experimental)** records the requested profile but currently falls back explicitly to the same standard AudioTrack output. It is not a mixer-bypass or direct PCM path.
 
 Equalizer presets, custom equalizer bands, bass boost, and loudness appear only when Android reports compatible effects for the playback session. Availability and behavior therefore depend on the installed firmware.
 
-Direct DAC is currently unavailable on the audited stock firmware. It is not proof that audio bypasses Android's mixer and is not a bit-perfect, hi-res, or native-DSD guarantee. Standard playback remains FFmpeg PCM through AudioTrack, AudioFlinger, the MediaTek audio HAL, and the kernel driver.
+The generated 2.1 firmware contains an audited, guarded primary-audio HAL hook for the recovered 44.1/48 kHz CS43131 frequency command. This is controlled groundwork only: Y2Player still renders 44.1 kHz stereo PCM16 through AudioTrack, AudioFlinger, the MediaTek audio HAL, and the kernel driver. Direct DAC is not a bit-perfect, high-resolution, native-DSD, or Android-mixer-bypass guarantee.
 
 ## Storage, diagnostics, and recovery
 
@@ -145,7 +150,22 @@ Y2Player has no `INTERNET` permission. Music, metadata, preferences, playlists, 
 | Storage | Internal music storage and removable SD card |
 | Network | Not required; the app has no internet permission |
 
-Every playable format uses the same pinned FFmpeg engine. The maintained allowlist is MP3, AAC, M4A/AAC, M4A/ALAC, FLAC, WAV/PCM, and Ogg Vorbis. The scanner and playback-capabilities screen use that same support contract; formats outside the allowlist are not advertised as playable.
+Every playable format uses the same pinned FFmpeg engine. The scanner, playback engine, and capabilities screen share one support contract:
+
+| Extensions | Container / codec | Status |
+| --- | --- | --- |
+| `.mp3` | MP3 | Playable |
+| `.aac` | ADTS AAC-LC | Playable |
+| `.m4a`, `.m4r` | AAC-LC or ALAC in MOV/MP4 | Playable |
+| `.flac` | FLAC | Playable |
+| `.wav`, `.wave` | Allowlisted integer/float PCM | Playable |
+| `.ogg`, `.oga` | Vorbis or Opus | Playable |
+| `.opus` | Opus | Playable |
+| `.aif`, `.aiff`, `.aifc` | Allowlisted AIFF PCM | Playable |
+| A-law WAV | G.711 A-law | Indexed, decoder not included |
+| WMA, APE, MP2, AMR, WavPack, AC-3, MKA | Various | Not enabled |
+
+The precise codec and container policy is maintained in [docs/FORMAT_SUPPORT_MATRIX.md](docs/FORMAT_SUPPORT_MATRIX.md). A recognized extension alone does not make a malformed or unsupported variant playable.
 
 ## Build the app
 
@@ -183,6 +203,16 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-release-apk.ps1
 ```
 
 The verified APK and build report are staged under `dist\firmware\`. Signing material and generated release artifacts are intentionally ignored by Git.
+
+### Build the secure ADB development image
+
+The optional ADB pipeline is separate from the release `system.img` pipeline. It builds a static API-19 ARM `adbd` from pinned official Android 4.4.2 sources and inserts it into a verified copy of the stock MediaTek boot image. The result keeps USB mass storage, RSA authorization, a non-root shell, and the production security properties.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-adb-boot.ps1
+```
+
+Outputs and verification reports are written to `out\boot-adb\`. This image is for development and requires its own BOOTIMG-only flashing procedure; it is not generated or flashed by the normal firmware build. Read [docs/ADB_BOOT_IMAGE.md](docs/ADB_BOOT_IMAGE.md) before using it.
 
 ## Install on a device
 
@@ -280,7 +310,7 @@ Do not restore additional partitions unless a verified device-specific recovery 
 
 ### Build the system image yourself
 
-The repository can also build a system-partition-only image from your own matching stock firmware. It installs the signed APK at `/system/priv-app/Y2Player.apk`, installs the byte-identical Android 4.4 runtime at `/system/lib/liby2audio.so`, and removes the stock launcher from the copied system image.
+The repository can also build a system-partition-only image from your own matching stock firmware. It replaces the stock launcher with the signed APK at `/system/priv-app/Y2Player.apk`, installs the byte-identical Android 4.4 runtime at `/system/lib/liby2audio.so`, and applies the exact-hash-guarded primary-audio HAL frequency-hook patch described above.
 
 Provide:
 
@@ -301,21 +331,20 @@ Build and verify the release APK and replacement system image:
 powershell -ExecutionPolicy Bypass -File .\tools\build-firmware.ps1
 ```
 
-This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report.
+This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report. The verifier reopens the sparse image and checks the embedded APK, native runtime, patched HAL, ext4 structure, partition size, ownership, modes, SELinux labels, uniqueness, and SHA-256 readback.
 
-The build script only creates files. It never flashes, pushes, reboots, or modifies the original firmware inputs.
+The build script only creates files. It never flashes, pushes, reboots, emits a boot image, or modifies the original firmware inputs.
 
 ## Known limitations
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
-- This is my first Android app and undiscovered bugs are expected. Bug reports that include an exported diagnostics log are especially helpful.
 - Decoder and container support is the pinned FFmpeg allowlist above; malformed or unsupported content can still fail despite a recognized extension.
+- An unchanged-library scan still traverses directories, stats files, updates scan-generation state, and reloads the index. Avoiding that work safely requires a larger change-detection design.
 - Bluetooth on stock KitKat is limited by the firmware stack: typically SBC A2DP, one sink at a time, no BLE Audio, and no synchronized absolute volume. Some connection-management operations depend on hidden OEM APIs and may require Android Settings.
 - Bluetooth discovery can briefly degrade active A2DP audio on older hardware.
-- **Direct DAC hardware access is unavailable on the audited stock HAL.** The setting falls back explicitly to AudioTrack. Native DSD, bit-perfect output, and high-rate PCM are not promised.
+- The Direct DAC preference still uses standard 44.1 kHz stereo PCM16 AudioTrack output. The guarded HAL frequency hook is groundwork and does not enable bit-perfect playback, native DSD, high-rate PCM, or an Android-mixer bypass.
 - Equalizer, bass boost, loudness, haptics, storage aliases, route reporting, and final audio-output behavior are hardware/firmware dependent.
 - The firmware pipeline requires the correct stock Y2 `system.img` and scatter file; these proprietary inputs are not generated by the project.
-- Current checked-in screenshots are emulator references, not up-to-date photographs of the 480 × 360 hardware UI.
 - Prebuilt system images are firmware-specific and must only be flashed on the supported Innioasis Y2 firmware base identified by the release.
 
 ## Contributing

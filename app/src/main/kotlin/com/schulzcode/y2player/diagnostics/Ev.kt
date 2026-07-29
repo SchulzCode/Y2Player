@@ -68,6 +68,7 @@ enum class Ev(val code: String) {
     USB_FUNCTIONS("usb_functions"),
     SCAN_START("scan_start"),
     SCAN_COMPLETE("scan_complete"),
+    SCAN_PROFILE("scan_profile"),
     SCAN_CANCELLED("scan_cancelled"),
     SCAN_ERROR("scan_error"),
     RESCAN_REQUESTED("rescan_requested"),

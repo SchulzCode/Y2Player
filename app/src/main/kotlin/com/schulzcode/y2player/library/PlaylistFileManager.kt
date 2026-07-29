@@ -92,6 +92,7 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
     private fun forEachResolvedBatch(file: File, consume: (List<String>) -> Unit): Int {
         val charset = PlaylistTextReader.charsetFor(file, forceUtf8 = file.extension.equals("m3u8", true))
         val base = file.parentFile ?: File("/")
+        val pathResolver = PlaylistPathResolver(base)
         val batch = ArrayList<String>(PATH_LOOKUP_BATCH)
         var resolvedCount = 0
 
@@ -104,7 +105,7 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
         }
 
         PlaylistTextReader.forEachLine(file, charset, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_LINE_CHARS) { raw ->
-            PlaylistPathResolver.resolve(base, raw)?.let { path ->
+            pathResolver.resolve(raw)?.let { path ->
                 batch += path
                 resolvedCount += 1
                 if (batch.size >= PATH_LOOKUP_BATCH) flush()

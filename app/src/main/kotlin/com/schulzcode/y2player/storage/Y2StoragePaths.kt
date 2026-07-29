@@ -6,6 +6,21 @@ import java.io.File
 
 data class StorageRoot(val id: String, val directory: File)
 
+/**
+ * Whether a reading taken from the monotonic uptime clock is still usable.
+ *
+ * Cache timestamps use [UNREAD_UPTIME_MS] until their first real read. Keeping
+ * that state out of elapsed-time arithmetic is important: subtracting
+ * `Long.MIN_VALUE` overflowed to a negative duration and made the first mount
+ * verdict live for the rest of the process.
+ */
+internal fun isFreshUptimeReading(nowMs: Long, readAtMs: Long, maxAgeMs: Long): Boolean =
+    readAtMs >= 0L &&
+        nowMs >= readAtMs &&
+        nowMs - readAtMs <= maxAgeMs
+
+private const val UNREAD_UPTIME_MS = -1L
+
 object Y2StoragePaths {
     private val candidates = mapOf(
         "internal" to listOf("/storage/sdcard0", "/mnt/sdcard", "/storage/emulated/0"),
@@ -26,10 +41,10 @@ object Y2StoragePaths {
         get() {
             val now = SystemClock.uptimeMillis()
             val cached = cachedRoots
-            if (cached != null && now - rootsReadAt <= ROOT_CACHE_MS) return cached
+            if (cached != null && isFreshUptimeReading(now, rootsReadAt, ROOT_CACHE_MS)) return cached
             return synchronized(this) {
                 val current = cachedRoots
-                if (current != null && now - rootsReadAt <= ROOT_CACHE_MS) current
+                if (current != null && isFreshUptimeReading(now, rootsReadAt, ROOT_CACHE_MS)) current
                 else listOf(selectRoot("internal"), selectRoot("sdcard")).also {
                     cachedRoots = it
                     rootsReadAt = now
@@ -37,11 +52,11 @@ object Y2StoragePaths {
             }
         }
 
-    @Volatile private var mountsReadAt = Long.MIN_VALUE
+    @Volatile private var mountsReadAt = UNREAD_UPTIME_MS
     @Volatile private var mountedPaths: Set<String> = emptySet()
-    @Volatile private var rootsReadAt = Long.MIN_VALUE
+    @Volatile private var rootsReadAt = UNREAD_UPTIME_MS
     @Volatile private var cachedRoots: List<StorageRoot>? = null
-    private var mountedVolumesReadAt = Long.MIN_VALUE
+    private var mountedVolumesReadAt = UNREAD_UPTIME_MS
     private val mountedVolumes = HashMap<String, Boolean>()
 
     fun availableRoots(): List<StorageRoot> = roots.filter(::isAvailable)
@@ -62,7 +77,7 @@ object Y2StoragePaths {
     @Synchronized
     fun isVolumeMounted(volumeId: String): Boolean {
         val now = SystemClock.uptimeMillis()
-        if (now - mountedVolumesReadAt > ROOT_CACHE_MS) {
+        if (!isFreshUptimeReading(now, mountedVolumesReadAt, ROOT_CACHE_MS)) {
             mountedVolumes.clear()
             mountedVolumesReadAt = now
         }
@@ -71,6 +86,22 @@ object Y2StoragePaths {
         val mounted = roots.firstOrNull { it.id == volumeId }?.let(::isAvailable) == true
         mountedVolumes[volumeId] = mounted
         return mounted
+    }
+
+    /**
+     * Drops every answer derived from the platform mount table or storage-root
+     * aliases. Called synchronously for mount broadcasts so playback sees the
+     * transition immediately rather than inheriting the verdict from just
+     * before the broadcast.
+     */
+    @Synchronized
+    fun invalidateMountCaches() {
+        cachedRoots = null
+        rootsReadAt = UNREAD_UPTIME_MS
+        mountedPaths = emptySet()
+        mountsReadAt = UNREAD_UPTIME_MS
+        mountedVolumes.clear()
+        mountedVolumesReadAt = UNREAD_UPTIME_MS
     }
 
     fun isAvailable(root: StorageRoot): Boolean {
@@ -108,9 +139,9 @@ object Y2StoragePaths {
 
     private fun currentMounts(): Set<String> {
         val now = SystemClock.uptimeMillis()
-        if (now - mountsReadAt <= MOUNT_CACHE_MS) return mountedPaths
+        if (isFreshUptimeReading(now, mountsReadAt, MOUNT_CACHE_MS)) return mountedPaths
         synchronized(this) {
-            if (now - mountsReadAt <= MOUNT_CACHE_MS) return mountedPaths
+            if (isFreshUptimeReading(now, mountsReadAt, MOUNT_CACHE_MS)) return mountedPaths
             mountedPaths = runCatching {
                 File("/proc/mounts").useLines { lines ->
                     lines.mapNotNull { line ->

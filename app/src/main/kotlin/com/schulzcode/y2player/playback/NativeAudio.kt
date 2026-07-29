@@ -1,5 +1,6 @@
 package com.schulzcode.y2player.playback
 
+import com.schulzcode.y2player.library.FfmpegMetadata
 import java.nio.ByteBuffer
 
 /** Minimal JNI surface. FFmpeg types and low-level operations stay in C. */
@@ -8,6 +9,7 @@ internal object NativeAudio {
         System.loadLibrary("y2audio")
     }
 
+    external fun nativeConfigureCrashReporter(path: String): Boolean
     external fun nativeCreate(): Long
     external fun nativeOpen(handle: Long, path: String, outputRate: Int, outputChannels: Int): Int
     external fun nativeDecode(handle: Long, output: ByteBuffer, capacityFrames: Int): Int
@@ -16,6 +18,7 @@ internal object NativeAudio {
     external fun nativeDurationMs(handle: Long): Long
     external fun nativeSourceSampleRate(handle: Long): Int
     external fun nativeSourceChannels(handle: Long): Int
+    external fun nativeDecodeWarningCount(handle: Long): Int
     external fun nativeCodecName(handle: Long): String
     external fun nativeReplayGainTrackGain(handle: Long): Int
     external fun nativeReplayGainTrackPeak(handle: Long): Long
@@ -25,6 +28,11 @@ internal object NativeAudio {
     external fun nativeErrorDetail(handle: Long): String
     external fun nativeClose(handle: Long)
     external fun nativeBuildInformation(): String
+    external fun nativeConfigureMetadataProbeLimits(probeBytes: Int, analyzeUs: Int): Boolean
+    external fun nativeResetMetadataProfile()
+    external fun nativeMetadataProfile(): LongArray
+    external fun nativeReadMetadata(path: String): FfmpegMetadata
+    external fun nativeReadArtwork(path: String, maximumBytes: Int): ByteArray?
 }
 
 internal enum class NativeErrorCategory(val wireValue: Int) {
@@ -85,7 +93,10 @@ internal class NativeDecoder : AutoCloseable {
         )
     }
 
-    /** Returns decoded stereo frame count, or zero at EOF; never bytes or shorts. */
+    /**
+     * Writes packed 44.1 kHz stereo float32 to [output]. Returns its frame
+     * count, or zero at EOF; never bytes or sample values.
+     */
     fun decode(output: ByteBuffer, frameCapacity: Int): Int {
         require(output.isDirect) { "Native decode requires a direct ByteBuffer" }
         require(frameCapacity > 0) { "frameCapacity must be positive" }
@@ -101,6 +112,9 @@ internal class NativeDecoder : AutoCloseable {
             throw failure(current)
         }
     }
+
+    /** Number of damaged packets skipped during the current decode pass. */
+    fun warningCount(): Int = NativeAudio.nativeDecodeWarningCount(requireHandle()).coerceAtLeast(0)
 
     fun requestAbort() {
         synchronized(lifecycleLock) {

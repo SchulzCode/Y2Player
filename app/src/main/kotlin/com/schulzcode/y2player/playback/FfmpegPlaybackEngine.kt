@@ -10,7 +10,7 @@ import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.ShortBuffer
+import java.nio.FloatBuffer
 import java.util.ArrayDeque
 import kotlin.math.min
 
@@ -104,12 +104,11 @@ internal sealed interface EngineCommand {
 }
 
 /**
- * Gain, balance and crossfade mixing over decoded PCM16.
+ * Gain, balance and crossfade mixing over normalized float PCM.
  *
- * Everything here works on `ShortArray`. The previous implementation walked a
- * `ByteBufferAsShortBuffer` with absolute `get(index)`/`put(index)`, which on
- * Dalvik is a bounds check, an index scale and a two-byte little-endian
- * assembly per sample — 88,200 times per second of audio.
+ * Everything here works on each block's reusable `FloatArray`. Samples retain
+ * headroom throughout application DSP and are clipped only at the AudioTrack
+ * PCM16 boundary.
  */
 internal object PcmGain {
 
@@ -119,40 +118,40 @@ internal object PcmGain {
     const val MAX_LEVEL = 16f
 
     /**
-     * Scales [decodedShortCount] interleaved stereo shorts in place.
+     * Scales [sampleCount] interleaved stereo float samples in place.
      *
      * Returns immediately at unity gain with centred balance, which is the
      * shipping default and would otherwise rewrite every sample with its own
      * value.
      */
     fun apply(
-        pcm: ShortArray,
-        offsetShorts: Int,
-        decodedShortCount: Int,
+        pcm: FloatArray,
+        offsetSamples: Int,
+        sampleCount: Int,
         level: Float,
         balance: Int
     ) {
-        require(offsetShorts >= 0) { "offsetShorts must not be negative" }
-        require(decodedShortCount >= 0) { "decodedShortCount must not be negative" }
-        require(offsetShorts + decodedShortCount <= pcm.size) {
+        require(offsetSamples >= 0) { "offsetSamples must not be negative" }
+        require(sampleCount >= 0) { "sampleCount must not be negative" }
+        require(offsetSamples + sampleCount <= pcm.size) {
             "gain range exceeds the PCM array"
         }
-        require(offsetShorts % PcmFormat.CHANNELS == 0) {
-            "offsetShorts must start on a PCM frame boundary"
+        require(offsetSamples % PcmFormat.CHANNELS == 0) {
+            "offsetSamples must start on a PCM frame boundary"
         }
-        require(decodedShortCount % PcmFormat.CHANNELS == 0) {
-            "decodedShortCount must contain complete PCM frames"
+        require(sampleCount % PcmFormat.CHANNELS == 0) {
+            "sampleCount must contain complete PCM frames"
         }
         if (level == UNITY && AudioBalance.isCentred(balance)) return
 
         val safeLevel = level.coerceIn(0f, MAX_LEVEL)
         val left = safeLevel * AudioBalance.leftGain(balance)
         val right = safeLevel * AudioBalance.rightGain(balance)
-        val end = offsetShorts + decodedShortCount
-        var index = offsetShorts
+        val end = offsetSamples + sampleCount
+        var index = offsetSamples
         while (index < end) {
-            pcm[index] = saturate(pcm[index] * left)
-            pcm[index + 1] = saturate(pcm[index + 1] * right)
+            pcm[index] *= left
+            pcm[index + 1] *= right
             index += PcmFormat.CHANNELS
         }
     }
@@ -176,15 +175,15 @@ internal object PcmGain {
      *
      * The fade law is linear amplitude, deliberately: its two coefficients sum
      * to exactly one. ReplayGain is then composed independently on each side;
-     * matching peak tags cap those gains, and saturation remains the final guard
-     * when a file has gain metadata but no peak. An equal-power fade would add
-     * about +3 dB at the midpoint and require headroom even for unity-gain files.
+     * matching peak tags cap those gains. Remaining over-range values retain
+     * float headroom here and are clipped only by the final PCM16 quantizer. An
+     * equal-power fade would add about +3 dB at the midpoint.
      */
     fun crossfadeInto(
-        current: ShortArray,
-        currentOffsetShorts: Int,
-        next: ShortArray,
-        nextOffsetShorts: Int,
+        current: FloatArray,
+        currentOffsetSamples: Int,
+        next: FloatArray,
+        nextOffsetSamples: Int,
         frameCount: Int,
         transitionFrame: Long,
         transitionFrames: Long,
@@ -193,35 +192,36 @@ internal object PcmGain {
         balance: Int
     ) {
         require(frameCount >= 0)
-        require(currentOffsetShorts >= 0 && nextOffsetShorts >= 0)
-        require(currentOffsetShorts % PcmFormat.CHANNELS == 0)
-        require(nextOffsetShorts % PcmFormat.CHANNELS == 0)
-        require(currentOffsetShorts + frameCount * PcmFormat.CHANNELS <= current.size)
-        require(nextOffsetShorts + frameCount * PcmFormat.CHANNELS <= next.size)
+        require(currentOffsetSamples >= 0 && nextOffsetSamples >= 0)
+        require(currentOffsetSamples % PcmFormat.CHANNELS == 0)
+        require(nextOffsetSamples % PcmFormat.CHANNELS == 0)
+        require(currentOffsetSamples + frameCount * PcmFormat.CHANNELS <= current.size)
+        require(nextOffsetSamples + frameCount * PcmFormat.CHANNELS <= next.size)
 
         val leftBalance = AudioBalance.leftGain(balance)
         val rightBalance = AudioBalance.rightGain(balance)
         val span = transitionFrames.coerceAtLeast(1L).toFloat()
-        for (decodedFrameIndex in 0 until frameCount) {
+        val currentLevel = level.coerceIn(0f, MAX_LEVEL)
+        val followingLevel = nextLevel.coerceIn(0f, MAX_LEVEL)
+        var decodedFrameIndex = 0
+        while (decodedFrameIndex < frameCount) {
             val fraction = ((transitionFrame + decodedFrameIndex).toFloat() / span)
                 .coerceIn(0f, 1f)
-            val currentGain = level.coerceIn(0f, MAX_LEVEL) * (1f - fraction)
-            val nextGain = nextLevel.coerceIn(0f, MAX_LEVEL) * fraction
-            val currentIndex = currentOffsetShorts + decodedFrameIndex * PcmFormat.CHANNELS
-            val nextIndex = nextOffsetShorts + decodedFrameIndex * PcmFormat.CHANNELS
-            val currentLeft = current[currentIndex].toInt()
-            val currentRight = current[currentIndex + 1].toInt()
-            val nextLeft = next[nextIndex].toInt()
-            val nextRight = next[nextIndex + 1].toInt()
+            val currentGain = currentLevel * (1f - fraction)
+            val nextGain = followingLevel * fraction
+            val currentIndex = currentOffsetSamples + decodedFrameIndex * PcmFormat.CHANNELS
+            val nextIndex = nextOffsetSamples + decodedFrameIndex * PcmFormat.CHANNELS
+            val currentLeft = current[currentIndex]
+            val currentRight = current[currentIndex + 1]
+            val nextLeft = next[nextIndex]
+            val nextRight = next[nextIndex + 1]
             current[currentIndex] =
-                saturate((currentLeft * currentGain + nextLeft * nextGain) * leftBalance)
+                (currentLeft * currentGain + nextLeft * nextGain) * leftBalance
             current[currentIndex + 1] =
-                saturate((currentRight * currentGain + nextRight * nextGain) * rightBalance)
+                (currentRight * currentGain + nextRight * nextGain) * rightBalance
+            decodedFrameIndex += 1
         }
     }
-
-    private fun saturate(value: Float): Short =
-        value.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
 }
 
 /**
@@ -239,17 +239,6 @@ internal class FfmpegPlaybackEngine(
 ) : PlaybackEngine {
 
     /**
-     * One reusable decode destination.
-     *
-     * Two of these exist for the life of the engine. Previously a fresh 16 KB
-     * direct buffer was allocated per `Slot`, so every prepare and every preload
-     * orphaned one for the finalizer to reclaim.
-     *
-     * [decodedFrameCount] doubles as a hold: frames that have left the decoder
-     * but that the current pump turn could not consume stay staged here until
-     * the next turn takes them, instead of being deleted.
-     */
-    /**
      * One reusable decode destination, consumable in parts.
      *
      * Two of these exist for the life of the engine. A staged block is not
@@ -263,18 +252,18 @@ internal class FfmpegPlaybackEngine(
      */
     internal class PcmBlock {
         val bytes: ByteBuffer = ByteBuffer
-            .allocateDirect(PcmFormat.BLOCK_BYTES)
+            .allocateDirect(PcmFormat.FLOAT_BLOCK_BYTES)
             .order(ByteOrder.LITTLE_ENDIAN)
 
         /**
-         * The only use of a ShortBuffer view anywhere in the pipeline: one bulk
+         * The only use of a FloatBuffer view anywhere in the pipeline: one bulk
          * copy per staged block. Its limit is never narrowed, because on API 19
-         * a narrowed `ByteBufferAsShortBuffer` can leave the backing ByteBuffer's
+         * a narrowed typed view can leave the backing ByteBuffer's
          * limit reduced even after `clear()`.
          */
-        private val shortView: ShortBuffer = bytes.asShortBuffer()
+        private val floatView: FloatBuffer = bytes.asFloatBuffer()
 
-        val pcm = ShortArray(PcmFormat.BLOCK_SHORTS)
+        val pcm = FloatArray(PcmFormat.BLOCK_SAMPLES)
 
         var decodedFrameCount = NO_STAGED_BLOCK
             private set
@@ -287,8 +276,8 @@ internal class FfmpegPlaybackEngine(
         val remainingFrameCount: Int
             get() = if (hasStagedBlock) decodedFrameCount - consumedFrameCount else 0
 
-        /** Where the unconsumed remainder starts, in PCM16 shorts. */
-        val consumedShortOffset: Int get() = consumedFrameCount * PcmFormat.CHANNELS
+        /** Where the unconsumed remainder starts, in interleaved float samples. */
+        val consumedSampleOffset: Int get() = consumedFrameCount * PcmFormat.CHANNELS
 
         /** A staged block of zero frames: the decoder reported end of stream. */
         val atEndOfStream: Boolean get() = decodedFrameCount == 0
@@ -297,9 +286,9 @@ internal class FfmpegPlaybackEngine(
             require(frameCount in 0..PcmFormat.BLOCK_FRAMES) {
                 "decoded frame count out of range: $frameCount"
             }
-            shortView.clear()
-            shortView.get(pcm, 0, frameCount * PcmFormat.CHANNELS)
-            shortView.clear()
+            floatView.clear()
+            floatView.get(pcm, 0, frameCount * PcmFormat.CHANNELS)
+            floatView.clear()
             decodedFrameCount = frameCount
             consumedFrameCount = 0
         }
@@ -440,9 +429,7 @@ internal class FfmpegPlaybackEngine(
 
     override fun prepare(track: Track, requestId: Long) {
         if (releaseRequested) return
-        enqueue(EngineCommand.Prepare(track, requestId))
-        currentDecoder?.requestAbort()
-        nextDecoder?.requestAbort()
+        enqueue(EngineCommand.Prepare(track, requestId), abortCurrent = true, abortNext = true)
     }
 
     override fun configureTransition(gaplessEnabled: Boolean, crossfadeMs: Long) {
@@ -452,14 +439,12 @@ internal class FfmpegPlaybackEngine(
 
     override fun prepareNext(track: Track, requestId: Long) {
         if (releaseRequested) return
-        enqueue(EngineCommand.PrepareNext(track, requestId))
-        nextDecoder?.requestAbort()
+        enqueue(EngineCommand.PrepareNext(track, requestId), abortNext = true)
     }
 
     override fun clearNext() {
         if (releaseRequested) return
-        enqueue(EngineCommand.ClearNext)
-        nextDecoder?.requestAbort()
+        enqueue(EngineCommand.ClearNext, abortNext = true)
     }
 
     override fun skipToPreparedNext(): Boolean {
@@ -470,9 +455,7 @@ internal class FfmpegPlaybackEngine(
 
     override fun cancel() {
         if (releaseRequested) return
-        enqueue(EngineCommand.Cancel)
-        currentDecoder?.requestAbort()
-        nextDecoder?.requestAbort()
+        enqueue(EngineCommand.Cancel, abortCurrent = true, abortNext = true)
     }
 
     override fun start() {
@@ -487,8 +470,7 @@ internal class FfmpegPlaybackEngine(
 
     override fun seekTo(positionMs: Long) {
         if (releaseRequested) return
-        enqueue(EngineCommand.Seek(positionMs.coerceAtLeast(0L)))
-        currentDecoder?.requestAbort()
+        enqueue(EngineCommand.Seek(positionMs.coerceAtLeast(0L)), abortCurrent = true)
     }
 
     override fun setVolume(volume: Float) {
@@ -520,12 +502,14 @@ internal class FfmpegPlaybackEngine(
     override fun release() {
         if (releaseRequested) return
         releaseRequested = true
-        enqueue(EngineCommand.Release)
-        currentDecoder?.requestAbort()
-        nextDecoder?.requestAbort()
+        enqueue(EngineCommand.Release, abortCurrent = true, abortNext = true)
     }
 
-    private fun enqueue(command: EngineCommand) {
+    private fun enqueue(
+        command: EngineCommand,
+        abortCurrent: Boolean = false,
+        abortNext: Boolean = false
+    ) {
         var scheduleDrain = false
         synchronized(commandLock) {
             if (command.clearsPending) commands.clear()
@@ -538,6 +522,20 @@ internal class FfmpegPlaybackEngine(
                 commands.removeFirst()
             }
             commands.addLast(command)
+
+            /*
+             * Publish the superseding command and signal its old JNI work in
+             * one critical section. commandDrain cannot remove the command
+             * until this block exits, so an abort can never arrive after the
+             * engine has already begun the new prepare/seek and poison that
+             * new operation instead. Device logs showed both forms of the old
+             * race: a freshly prepared decoder immediately returned
+             * AVERROR_EXIT, and avformat_seek_file returned EPERM while a late
+             * abort crossed the seek.
+             */
+            if (abortCurrent) currentDecoder?.requestAbort()
+            if (abortNext) nextDecoder?.requestAbort()
+
             if (!commandDrainScheduled) {
                 commandDrainScheduled = true
                 scheduleDrain = true
@@ -1116,16 +1114,16 @@ internal class FfmpegPlaybackEngine(
             return
         }
 
-        val offsetShorts = currentBlock.consumedShortOffset
-        val decodedShortCount = frameCount * PcmFormat.CHANNELS
+        val offsetSamples = currentBlock.consumedSampleOffset
+        val sampleCount = frameCount * PcmFormat.CHANNELS
         PcmGain.apply(
             currentBlock.pcm,
-            offsetShorts,
-            decodedShortCount,
+            offsetSamples,
+            sampleCount,
             masterVolume * slot.replayGain.linearGain,
             balance
         )
-        output.write(currentBlock.pcm, offsetShorts, decodedShortCount)
+        output.write(currentBlock.pcm, offsetSamples, sampleCount)
         currentBlock.consume(frameCount)
         updatePublishedPosition()
         confirmStartedIfPending()
@@ -1179,12 +1177,12 @@ internal class FfmpegPlaybackEngine(
         // 1152 for MP3, 1024 for AAC, commonly 4096 for FLAC. The longer block
         // keeps its remainder for the next turn.
         val mixFrameCount = min(currentRemaining, nextRemaining)
-        val currentOffsetShorts = currentBlock.consumedShortOffset
+        val currentOffsetSamples = currentBlock.consumedSampleOffset
         PcmGain.crossfadeInto(
             currentBlock.pcm,
-            currentOffsetShorts,
+            currentOffsetSamples,
             nextBlock.pcm,
-            nextBlock.consumedShortOffset,
+            nextBlock.consumedSampleOffset,
             mixFrameCount,
             transitionedFrames,
             transitionFrames,
@@ -1194,7 +1192,7 @@ internal class FfmpegPlaybackEngine(
         )
         output.write(
             currentBlock.pcm,
-            currentOffsetShorts,
+            currentOffsetSamples,
             mixFrameCount * PcmFormat.CHANNELS
         )
         currentBlock.consume(mixFrameCount)

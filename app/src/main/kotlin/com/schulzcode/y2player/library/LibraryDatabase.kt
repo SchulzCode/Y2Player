@@ -35,8 +35,39 @@ internal object DecoderBackendMigration {
 
 /** Current schema. See [DecoderBackendMigration] for why 9 is still referenced. */
 internal object LibrarySchema {
-    /** 10 drops `format_probe`: what this build can decode is now a build property. */
-    const val VERSION = 10
+    /** 13 persists comment and complete track/disc numbering. */
+    const val VERSION = 13
+}
+
+internal object FfmpegMetadataMigration {
+    const val VERSION = 11
+    val STATEMENTS = listOf(
+        "ALTER TABLE tracks ADD COLUMN composer TEXT",
+        "ALTER TABLE tracks ADD COLUMN genre TEXT",
+        "ALTER TABLE tracks ADD COLUMN date TEXT",
+        "ALTER TABLE tracks ADD COLUMN year INTEGER",
+        "ALTER TABLE tracks ADD COLUMN bitrate INTEGER",
+        "ALTER TABLE tracks ADD COLUMN container TEXT",
+        "ALTER TABLE tracks ADD COLUMN has_artwork INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracks ADD COLUMN replaygain_track_db REAL",
+        "ALTER TABLE tracks ADD COLUMN replaygain_track_peak REAL",
+        "ALTER TABLE tracks ADD COLUMN replaygain_album_db REAL",
+        "ALTER TABLE tracks ADD COLUMN replaygain_album_peak REAL",
+        // Fingerprints otherwise make an unchanged library skip the new
+        // FFmpeg extractor forever. A successful read restores the real mtime.
+        "UPDATE tracks SET modified_at = -1"
+    )
+}
+
+internal object MetadataCompletenessMigration {
+    const val VERSION = 13
+    val STATEMENTS = listOf(
+        "ALTER TABLE tracks ADD COLUMN track_total INTEGER",
+        "ALTER TABLE tracks ADD COLUMN disc_total INTEGER",
+        "ALTER TABLE tracks ADD COLUMN comment TEXT",
+        // Existing fingerprints would otherwise suppress the newly complete read.
+        "UPDATE tracks SET modified_at = -1"
+    )
 }
 
 class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
@@ -48,6 +79,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 ) {
     private var cachedPlayOrderSource: List<Int>? = null
     private var cachedPlayOrderText: String? = null
+    private var writeAheadLoggingRequested = false
 
     init {
         // WAL gives readers a snapshot without blocking the writer and enables the
@@ -55,7 +87,13 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         // playback thread for the next transition can stall behind a scan-batch
         // commit or the post-scan full reload on the single rollback-journal
         // connection — an audible gap on slow eMMC.
-        setWriteAheadLoggingEnabled(true)
+        // MediaTek's API-19 SQLite pool reproducibly handed the first reader an
+        // empty schema when WAL was enabled before a brand-new database's
+        // onCreate transaction. Existing databases can use WAL immediately. A
+        // new one enables it from ensureOpen(), after schema creation commits.
+        if (appContext.getDatabasePath(DATABASE_NAME).isFile) {
+            requestWriteAheadLogging()
+        }
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -68,6 +106,25 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         createPlayback(db)
         createDiagnostics(db)
         createUserLibrary(db)
+    }
+
+    /**
+     * Opens or migrates the schema without running a query.
+     *
+     * Android 4.4's WAL connection pool can give the first reader a stale empty
+     * schema when WAL was active during database creation. This background-only
+     * open commits onCreate first, then enables WAL before cached queries run.
+     */
+    fun ensureOpen() {
+        writableDatabase
+        requestWriteAheadLogging()
+    }
+
+    @Synchronized
+    private fun requestWriteAheadLogging() {
+        if (writeAheadLoggingRequested) return
+        setWriteAheadLoggingEnabled(true)
+        writeAheadLoggingRequested = true
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -133,7 +190,19 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 // The format probe is gone: codec support is fixed by the FFmpeg
                 // configure line, so there is nothing left to record per device.
                 execSQL("DROP TABLE IF EXISTS format_probe")
-                version = LibrarySchema.VERSION
+                version = 10
+            }
+            if (version < 11) {
+                FfmpegMetadataMigration.STATEMENTS.forEach(::execSQL)
+                version = FfmpegMetadataMigration.VERSION
+            }
+            if (version < 12) {
+                createVolumeRelativePathIndex(this)
+                version = 12
+            }
+            if (version < 13) {
+                MetadataCompletenessMigration.STATEMENTS.forEach(::execSQL)
+                version = MetadataCompletenessMigration.VERSION
             }
             if (version != newVersion) error("No migration exists from $oldVersion to $newVersion")
         }
@@ -183,9 +252,18 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         }
     }
 
-    fun applyScanBatch(volumeId: String, scanToken: Long, files: List<ScannedFile>) {
+    fun applyScanBatch(
+        volumeId: String,
+        scanToken: Long,
+        files: List<ScannedFile>,
+        profiler: ScanProfiler? = null
+    ) {
         if (files.isEmpty()) return
-        writableDatabase.transaction {
+        val database = writableDatabase
+        val beginStarted = profiler?.start() ?: 0L
+        database.beginTransaction()
+        profiler?.stop(ScanPhase.DATABASE_BEGIN, beginStarted)
+        try {
             // Unchanged files only need their seen-token refreshed; one statement per
             // chunk instead of one UPDATE per file removes ~30k statement executions
             // from every rescan. Chunk size stays far below SQLite's 999-variable cap.
@@ -195,16 +273,24 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 if (draft == null) {
                     unchanged += scanned.absolutePath
                 } else {
-                    var updated = update("tracks", draft.toValues(scanToken, includeAddedAt = false), "absolute_path = ?", arrayOf(draft.absolutePath))
+                    var statementStarted = profiler?.start() ?: 0L
+                    var updated = database.update("tracks", draft.toValues(scanToken, includeAddedAt = false), "absolute_path = ?", arrayOf(draft.absolutePath))
+                    profiler?.stop(ScanPhase.DATABASE_ABSOLUTE_UPDATE, statementStarted)
                     if (updated == 0) {
-                        updated = update(
+                        statementStarted = profiler?.start() ?: 0L
+                        updated = database.update(
                             "tracks",
                             draft.toValues(scanToken, includeAddedAt = false),
                             "volume_id = ? AND relative_path = ? COLLATE NOCASE",
                             arrayOf(draft.volumeId, draft.relativePath)
                         )
+                        profiler?.stop(ScanPhase.DATABASE_RELATIVE_UPDATE, statementStarted)
                     }
-                    if (updated == 0) insertOrThrow("tracks", null, draft.toValues(scanToken, includeAddedAt = true))
+                    if (updated == 0) {
+                        statementStarted = profiler?.start() ?: 0L
+                        database.insertOrThrow("tracks", null, draft.toValues(scanToken, includeAddedAt = true))
+                        profiler?.stop(ScanPhase.DATABASE_INSERT, statementStarted)
+                    }
                 }
             }
             unchanged.chunked(SEEN_UPDATE_CHUNK).forEach { chunk ->
@@ -213,11 +299,18 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 args[0] = scanToken
                 args[1] = volumeId
                 chunk.forEachIndexed { index, path -> args[index + 2] = path }
-                execSQL(
+                val statementStarted = profiler?.start() ?: 0L
+                database.execSQL(
                     "UPDATE tracks SET last_seen_scan = ?, available = 1 WHERE volume_id = ? AND absolute_path IN ($placeholders)",
                     args
                 )
+                profiler?.stop(ScanPhase.DATABASE_UNCHANGED_UPDATE, statementStarted)
             }
+            database.setTransactionSuccessful()
+        } finally {
+            val commitStarted = profiler?.start() ?: 0L
+            database.endTransaction()
+            profiler?.stop(ScanPhase.DATABASE_COMMIT, commitStarted)
         }
     }
 
@@ -551,7 +644,9 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         putNullable("album", album)
         putNullable("album_artist", albumArtist)
         putNullable("track_number", trackNumber)
+        putNullable("track_total", trackTotal)
         putNullable("disc_number", discNumber)
+        putNullable("disc_total", discTotal)
         put("duration_ms", durationMs)
         put("file_size", fileSize)
         put("modified_at", modifiedAt)
@@ -563,9 +658,21 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         // container the scan could prove is invalid — there is nothing to retry.
         putNullable("playback_error", playbackError)
         putNullable("codec", codec)
+        putNullable("container", container)
         putNullable("sample_rate", sampleRate)
         putNullable("bit_depth", bitDepth)
         putNullable("channels", channels)
+        putNullable("comment", comment)
+        putNullable("composer", composer)
+        putNullable("genre", genre)
+        putNullable("date", date)
+        putNullable("year", year)
+        putNullable("bitrate", bitrate)
+        put("has_artwork", if (hasArtwork) 1 else 0)
+        putNullable("replaygain_track_db", replayGainTrackDb)
+        putNullable("replaygain_track_peak", replayGainTrackPeak)
+        putNullable("replaygain_album_db", replayGainAlbumDb)
+        putNullable("replaygain_album_peak", replayGainAlbumPeak)
         if (includeAddedAt) {
             put("added_at", System.currentTimeMillis())
             put("favorite", 0)
@@ -590,16 +697,30 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         val album = cursor.getColumnIndexOrThrow("album")
         val albumArtist = cursor.getColumnIndexOrThrow("album_artist")
         val trackNumber = cursor.getColumnIndexOrThrow("track_number")
+        val trackTotal = cursor.getColumnIndexOrThrow("track_total")
         val discNumber = cursor.getColumnIndexOrThrow("disc_number")
+        val discTotal = cursor.getColumnIndexOrThrow("disc_total")
         val durationMs = cursor.getColumnIndexOrThrow("duration_ms")
         val fileSize = cursor.getColumnIndexOrThrow("file_size")
         val modifiedAt = cursor.getColumnIndexOrThrow("modified_at")
         val available = cursor.getColumnIndexOrThrow("available")
         val scanError = cursor.getColumnIndexOrThrow("scan_error")
         val codec = cursor.getColumnIndexOrThrow("codec")
+        val container = cursor.getColumnIndexOrThrow("container")
         val sampleRate = cursor.getColumnIndexOrThrow("sample_rate")
         val bitDepth = cursor.getColumnIndexOrThrow("bit_depth")
         val channels = cursor.getColumnIndexOrThrow("channels")
+        val comment = cursor.getColumnIndexOrThrow("comment")
+        val composer = cursor.getColumnIndexOrThrow("composer")
+        val genre = cursor.getColumnIndexOrThrow("genre")
+        val date = cursor.getColumnIndexOrThrow("date")
+        val year = cursor.getColumnIndexOrThrow("year")
+        val bitrate = cursor.getColumnIndexOrThrow("bitrate")
+        val hasArtwork = cursor.getColumnIndexOrThrow("has_artwork")
+        val replayGainTrackDb = cursor.getColumnIndexOrThrow("replaygain_track_db")
+        val replayGainTrackPeak = cursor.getColumnIndexOrThrow("replaygain_track_peak")
+        val replayGainAlbumDb = cursor.getColumnIndexOrThrow("replaygain_album_db")
+        val replayGainAlbumPeak = cursor.getColumnIndexOrThrow("replaygain_album_peak")
         val addedAt = cursor.getColumnIndexOrThrow("added_at")
         val favorite = cursor.getColumnIndexOrThrow("favorite")
         val playbackError = cursor.getColumnIndexOrThrow("playback_error")
@@ -621,16 +742,30 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         album = nullableString(columns.album)?.pooled(stringPool),
         albumArtist = nullableString(columns.albumArtist)?.pooled(stringPool),
         trackNumber = nullableInt(columns.trackNumber),
+        trackTotal = nullableInt(columns.trackTotal),
         discNumber = nullableInt(columns.discNumber),
+        discTotal = nullableInt(columns.discTotal),
         durationMs = getLong(columns.durationMs).coerceAtLeast(0),
         fileSize = getLong(columns.fileSize).coerceAtLeast(0),
         modifiedAt = getLong(columns.modifiedAt).coerceAtLeast(0),
         available = getInt(columns.available) != 0,
         scanError = nullableString(columns.scanError),
         codec = nullableString(columns.codec),
+        container = nullableString(columns.container),
         sampleRate = nullableInt(columns.sampleRate),
         bitDepth = nullableInt(columns.bitDepth),
         channels = nullableInt(columns.channels),
+        comment = nullableString(columns.comment),
+        composer = nullableString(columns.composer)?.pooled(stringPool),
+        genre = nullableString(columns.genre)?.pooled(stringPool),
+        date = nullableString(columns.date)?.pooled(stringPool),
+        year = nullableInt(columns.year),
+        bitrate = nullableLong(columns.bitrate),
+        hasArtwork = getInt(columns.hasArtwork) != 0,
+        replayGainTrackDb = nullableFloat(columns.replayGainTrackDb),
+        replayGainTrackPeak = nullableFloat(columns.replayGainTrackPeak),
+        replayGainAlbumDb = nullableFloat(columns.replayGainAlbumDb),
+        replayGainAlbumPeak = nullableFloat(columns.replayGainAlbumPeak),
         addedAt = getLong(columns.addedAt).coerceAtLeast(0),
         favorite = getInt(columns.favorite) != 0,
         playbackError = nullableString(columns.playbackError)
@@ -645,6 +780,12 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     private fun Cursor.nullableInt(index: Int): Int? =
         if (isNull(index)) null else getInt(index)
+
+    private fun Cursor.nullableLong(index: Int): Long? =
+        if (isNull(index)) null else getLong(index)
+
+    private fun Cursor.nullableFloat(index: Int): Float? =
+        if (isNull(index)) null else getFloat(index)
 
     private fun encodePlayOrder(order: List<Int>): String {
         if (cachedPlayOrderSource === order) return cachedPlayOrderText.orEmpty()
@@ -666,6 +807,8 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     private fun ContentValues.putNullable(key: String, value: String?) { if (value == null) putNull(key) else put(key, value) }
     private fun ContentValues.putNullable(key: String, value: Int?) { if (value == null) putNull(key) else put(key, value) }
+    private fun ContentValues.putNullable(key: String, value: Long?) { if (value == null) putNull(key) else put(key, value) }
+    private fun ContentValues.putNullable(key: String, value: Float?) { if (value == null) putNull(key) else put(key, value) }
 
     private inline fun SQLiteDatabase.transaction(block: SQLiteDatabase.() -> Unit) {
         beginTransaction()
@@ -716,7 +859,9 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 album TEXT,
                 album_artist TEXT,
                 track_number INTEGER,
+                track_total INTEGER,
                 disc_number INTEGER,
+                disc_total INTEGER,
                 duration_ms INTEGER NOT NULL,
                 file_size INTEGER NOT NULL,
                 modified_at INTEGER NOT NULL,
@@ -725,9 +870,21 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 available INTEGER NOT NULL DEFAULT 1,
                 scan_error TEXT,
                 codec TEXT,
+                container TEXT,
                 sample_rate INTEGER,
                 bit_depth INTEGER,
                 channels INTEGER,
+                comment TEXT,
+                composer TEXT,
+                genre TEXT,
+                date TEXT,
+                year INTEGER,
+                bitrate INTEGER,
+                has_artwork INTEGER NOT NULL DEFAULT 0,
+                replaygain_track_db REAL,
+                replaygain_track_peak REAL,
+                replaygain_album_db REAL,
+                replaygain_album_peak REAL,
                 added_at INTEGER NOT NULL,
                 favorite INTEGER NOT NULL DEFAULT 0
             )
@@ -744,6 +901,15 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE INDEX IF NOT EXISTS tracks_available_title_idx ON tracks(available, title COLLATE NOCASE)")
         db.execSQL("CREATE INDEX IF NOT EXISTS tracks_favorite_title_idx ON tracks(favorite, title COLLATE NOCASE)")
         db.execSQL("CREATE INDEX IF NOT EXISTS tracks_seen_idx ON tracks(volume_id, last_seen_scan)")
+        createVolumeRelativePathIndex(db)
+    }
+
+    /** Matches the remount/absolute-root-change fallback in [applyScanBatch]. */
+    private fun createVolumeRelativePathIndex(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS tracks_volume_relative_nocase_idx " +
+                "ON tracks(volume_id, relative_path COLLATE NOCASE)"
+        )
     }
 
     private fun createPlayback(db: SQLiteDatabase) {
@@ -773,11 +939,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         private const val MAX_PLAY_ORDER_ITEMS = 50_000
         private const val MAX_PLAY_ORDER_CHARS = 300_000
         private const val QUERY_ID_BATCH = 192
-        private const val SEEN_UPDATE_CHUNK = 192
+        /** 400 paths + scan token + volume = 402, below SQLite's 999-variable cap. */
+        private const val SEEN_UPDATE_CHUNK = 400
         private val TRACK_COLUMNS = arrayOf(
             "id", "volume_id", "absolute_path", "relative_path", "title", "artist", "album", "album_artist",
-            "track_number", "disc_number", "duration_ms", "file_size", "modified_at", "available", "scan_error",
-            "codec", "sample_rate", "bit_depth", "channels", "added_at", "favorite", "playback_error"
+            "track_number", "track_total", "disc_number", "disc_total", "duration_ms", "file_size", "modified_at", "available", "scan_error",
+            "codec", "container", "sample_rate", "bit_depth", "channels", "comment", "composer", "genre", "date", "year", "bitrate",
+            "has_artwork", "replaygain_track_db", "replaygain_track_peak", "replaygain_album_db",
+            "replaygain_album_peak", "added_at", "favorite", "playback_error"
         )
 
         private fun backupDatabase(context: Context, path: String?, reason: String): java.io.File? = runCatching {

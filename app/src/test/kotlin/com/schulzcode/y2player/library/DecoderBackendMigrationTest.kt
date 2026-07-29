@@ -19,4 +19,39 @@ class DecoderBackendMigrationTest {
             }
         )
     }
+
+    @Test fun metadataMigrationSchedulesExactlyOneFingerprintRefresh() {
+        assertEquals(11, FfmpegMetadataMigration.VERSION)
+        assertEquals(13, LibrarySchema.VERSION)
+        assertEquals(
+            1,
+            FfmpegMetadataMigration.STATEMENTS.count {
+                it == "UPDATE tracks SET modified_at = -1"
+            }
+        )
+        assertEquals(11, FfmpegMetadataMigration.STATEMENTS.count { it.startsWith("ALTER TABLE") })
+    }
+
+    @Test fun completenessMigrationPersistsCommentsAndNumberingTotals() {
+        assertEquals(13, MetadataCompletenessMigration.VERSION)
+        assertEquals(3, MetadataCompletenessMigration.STATEMENTS.count { it.startsWith("ALTER TABLE") })
+        assertEquals(1, MetadataCompletenessMigration.STATEMENTS.count { it == "UPDATE tracks SET modified_at = -1" })
+    }
+
+    @Test fun scanSchemaCreatesTheMeasuredRelativePathLookupIndex() {
+        val source = java.io.File(repositoryRoot(), "app/src/main/kotlin/com/schulzcode/y2player/library/LibraryDatabase.kt")
+            .readText()
+        assertTrue(source.contains("tracks_volume_relative_nocase_idx"))
+        assertTrue(source.contains("ON tracks(volume_id, relative_path COLLATE NOCASE)"))
+        assertTrue(source.contains("if (version < 12)"))
+    }
+
+    private fun repositoryRoot(): java.io.File {
+        var directory: java.io.File? = java.io.File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (directory != null) {
+            if (java.io.File(directory, "app/src/main").isDirectory) return directory
+            directory = directory.parentFile
+        }
+        throw AssertionError("repository root not found")
+    }
 }

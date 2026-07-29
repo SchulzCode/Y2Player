@@ -61,7 +61,7 @@ class ReplayGainTest {
         assertTrue(adjustment.clippingPrevented)
     }
 
-    @Test fun positiveGainWithoutPeakIsAppliedButPcmStillSaturatesSafely() {
+    @Test fun positiveGainWithoutPeakKeepsHeadroomUntilFinalQuantization() {
         val adjustment = ReplayGain.resolve(
             ReplayGainMode.TRACK,
             false,
@@ -70,10 +70,14 @@ class ReplayGainTest {
         assertTrue(adjustment.linearGain > 1f)
         assertFalse(adjustment.clippingPrevented)
 
-        val pcm = shortArrayOf(20_000, -20_000)
+        val pcm = floatArrayOf(0.75f, -0.75f)
         PcmGain.apply(pcm, 0, pcm.size, adjustment.linearGain, AudioBalance.CENTRE)
-        assertEquals(Short.MAX_VALUE, pcm[0])
-        assertEquals(Short.MIN_VALUE, pcm[1])
+        assertTrue(pcm[0] > 1f)
+        assertTrue(pcm[1] < -1f)
+
+        val output = Pcm16StagingBuffer(2).stage(pcm, 0, 2)
+        assertEquals(Short.MAX_VALUE, output[0])
+        assertEquals(Short.MIN_VALUE, output[1])
     }
 
     @Test fun storageValuesRoundTripAndUnknownValuesDisableReplayGain() {

@@ -559,13 +559,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (fadeMs > 0) fadeOutputGain(1f, fadeMs)
         else setTransientOutputGain(1f)
         recordCurrentPlaybackStart()
-        enterForeground()
         snapshot = buildSnapshot(
             PlaybackStatus.PLAYING,
             engine.currentPositionMs(),
             currentDuration(),
             PauseReason.NONE
         )
+        enterForeground()
         eventLog.info(
             Sub.PLAYBACK, Ev.PLAYBACK_START,
             "request" to requestId,
@@ -689,6 +689,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         lastPromotedRequestId = 0L
         val audibleTrack = currentTrack ?: return
         recordCurrentPlaybackStart()
+        snapshot = buildSnapshot(
+            status = PlaybackStatus.PLAYING,
+            positionMs = engine.currentPositionMs(),
+            durationMs = durationMs,
+            pauseReason = PauseReason.NONE
+        )
         enterForeground()
         eventLog.info(
             Sub.PLAYBACK, Ev.PLAYBACK_START,
@@ -697,12 +703,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "codec" to audibleTrack.codec,
             "sampleRate" to audibleTrack.sampleRate,
             "reason" to if (currentPreferences.crossfadeMs > 0) "crossfade" else "gapless"
-        )
-        snapshot = buildSnapshot(
-            status = PlaybackStatus.PLAYING,
-            positionMs = engine.currentPositionMs(),
-            durationMs = durationMs,
-            pauseReason = PauseReason.NONE
         )
         persistSession(positionOverride = snapshot.positionMs)
         revalidatePreload()
@@ -2108,9 +2108,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
      * progress tick, because every path that *does* change queue, route, effects
      * or track already publishes through the full path itself.
      *
-     * This matters most when the library scanner is running: those calls reach the
-     * same media server the scanner is loading, on the one thread that has to
-     * start a crossfade on schedule.
+     * This matters most when the library scanner is running: extra native calls
+     * would land on the one thread that has to start a crossfade on schedule.
      */
     private fun updateInternalProgress(position: Long, duration: Long) {
         snapshot = snapshot.copy(

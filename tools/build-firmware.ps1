@@ -79,7 +79,7 @@ if ($Clean) {
 if (-not $ValidateOnly) {
     New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
     $knownOutputs = @(
-        "Y2Player.apk", "system.img", "boot.img", "boot-stock.img", "y2bridged",
+        "Y2Player.apk", "system.img", "system.zip", "boot.img", "boot-stock.img", "y2bridged",
         "build-manifest.txt", "checksums.txt", "verification-report.txt", "build.log"
     )
     foreach ($name in $knownOutputs) {
@@ -194,7 +194,8 @@ try {
         Write-Detail ("{0,-25} {1,12:N0} bytes" -f $name, (Get-Item $path).Length)
     }
     $forbidden = Get-ChildItem -LiteralPath $outputPath -File | Where-Object {
-        $_.Name -in @("boot.img", "boot-stock.img", "y2bridged") -or $_.Name -like "bridge*"
+        $_.Name -in @("system.zip", "boot.img", "boot-stock.img", "y2bridged") -or
+            $_.Name -like "bridge*"
     }
     if ($forbidden) { throw "Forbidden stale artifacts remain: $($forbidden.Name -join ', ')" }
 
@@ -207,7 +208,7 @@ try {
     Write-Host "  error : $($_.Exception.Message)" -ForegroundColor Red
     if (-not $ValidateOnly -and (Test-Path -LiteralPath $outputPath)) {
         foreach ($name in @(
-            "Y2Player.apk", "system.img", "boot.img", "boot-stock.img", "y2bridged",
+            "Y2Player.apk", "system.img", "system.zip", "boot.img", "boot-stock.img", "y2bridged",
             "build-manifest.txt", "checksums.txt", "verification-report.txt"
         )) {
             $path = Join-Path $outputPath $name

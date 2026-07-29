@@ -14,7 +14,50 @@ class PlaylistPathResolverTest {
             val playlistDirectory = File(root, "Lists").apply { mkdirs() }
             val expected = File(root, "Music/song.flac").canonicalPath
 
-            assertEquals(expected, PlaylistPathResolver.resolve(playlistDirectory, "..\\Music\\song.flac"))
+            assertEquals(expected, PlaylistPathResolver(playlistDirectory).resolve("..\\Music\\song.flac"))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun relocatesAbsoluteWindowsPathsByTheirLongestExistingTail() {
+        val root = Files.createTempDirectory("y2-playlist-windows-").toFile()
+        try {
+            val playlistDirectory = File(root, "Playlists").apply { mkdirs() }
+            val track = File(root, "Music/GAY PRIESTS/song.mp3").apply {
+                requireNotNull(parentFile).mkdirs()
+                writeText("audio")
+            }
+            // A same-named file beside the playlist must not beat the more specific
+            // Music/album suffix from the exported desktop path.
+            File(playlistDirectory, track.name).writeText("wrong audio")
+
+            val resolved = PlaylistPathResolver(playlistDirectory).resolve(
+                "C:\\Users\\PC-R\\Music\\GAY PRIESTS\\song.mp3"
+            )
+
+            assertEquals(track.canonicalPath, resolved)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun relocatesMacLinuxAndForeignFileUriPaths() {
+        val root = Files.createTempDirectory("y2-playlist-unix-").toFile()
+        try {
+            val playlistDirectory = File(root, "Playlists").apply { mkdirs() }
+            val album = File(root, "Music/Album").apply { mkdirs() }
+            val macTrack = File(album, "mac song.mp3").apply { writeText("audio") }
+            val linuxTrack = File(album, "linux song.flac").apply { writeText("audio") }
+            val resolver = PlaylistPathResolver(playlistDirectory)
+
+            assertEquals(
+                macTrack.canonicalPath,
+                resolver.resolve("/Users/listener/Music/Album/mac song.mp3")
+            )
+            assertEquals(
+                linuxTrack.canonicalPath,
+                resolver.resolve("file:///home/listener/Music/Album/linux%20song.flac")
+            )
+            assertEquals(macTrack.canonicalPath, resolver.resolve(macTrack.absolutePath))
         } finally { root.deleteRecursively() }
     }
 
@@ -23,14 +66,15 @@ class PlaylistPathResolverTest {
         val root = Files.createTempDirectory("y2-playlist-uri-").toFile()
         try {
             val track = File(root, "Music/A song.flac")
-            assertEquals(track.canonicalPath, PlaylistPathResolver.resolve(root, track.toURI().toASCIIString()))
+            assertEquals(track.canonicalPath, PlaylistPathResolver(root).resolve(track.toURI().toASCIIString()))
         } finally { root.deleteRecursively() }
     }
 
     @Test
     fun ignoresCommentsAndNonFileUris() {
         val base = File(System.getProperty("java.io.tmpdir") ?: ".")
-        assertNull(PlaylistPathResolver.resolve(base, "#EXTINF:123,Artist - Title"))
-        assertNull(PlaylistPathResolver.resolve(base, "https://example.invalid/song.mp3"))
+        val resolver = PlaylistPathResolver(base)
+        assertNull(resolver.resolve("#EXTINF:123,Artist - Title"))
+        assertNull(resolver.resolve("https://example.invalid/song.mp3"))
     }
 }

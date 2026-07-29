@@ -12,7 +12,10 @@ object AudioOutputRouteResolver {
         status: PlaybackStatus,
         pauseReason: PauseReason
     ): AudioOutputRoute = when {
-        wired && bluetooth -> AudioOutputRoute.UNKNOWN
+        // API 19's legacy wired flag can remain true on the Y2 while AudioPolicy
+        // has moved the music stream to A2DP. A connected A2DP route therefore
+        // takes presentation precedence; the safety policy still consumes both
+        // raw booleans so this does not weaken disconnect handling.
         bluetooth -> AudioOutputRoute.BLUETOOTH
         wired -> AudioOutputRoute.WIRED
         pauseReason == PauseReason.OUTPUT_DISCONNECTED -> AudioOutputRoute.NONE

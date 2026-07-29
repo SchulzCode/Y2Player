@@ -5,7 +5,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 
 /**
- * The one description of Y2Player's PCM geometry.
+ * The one description of Y2Player's fixed PCM geometry.
  *
  * Every buffer size, frame count and byte count in the playback path derives
  * from these five values. They were previously restated in three places
@@ -13,17 +13,30 @@ import android.media.AudioTrack
  * to the block size had to be made correctly in all of them.
  *
  * These are compile-time constants rather than a negotiated format because the
- * engine resamples everything to 44.1 kHz stereo PCM16 in native code. Nothing
- * downstream is ever asked to handle another layout, so there is no format to
- * configure and no configuration that can fail.
+ * engine resamples everything to 44.1 kHz stereo packed float32 in native code,
+ * then quantizes once to the PCM16 required by the API-19 AudioTrack sink.
  */
 internal object PcmFormat {
     const val SAMPLE_RATE = 44_100
     const val CHANNELS = 2
-    const val BYTES_PER_SAMPLE = 2
     const val BLOCK_FRAMES = 4_096
-    const val BLOCK_SHORTS = BLOCK_FRAMES * CHANNELS
-    const val BLOCK_BYTES = BLOCK_SHORTS * BYTES_PER_SAMPLE
+    const val BLOCK_SAMPLES = BLOCK_FRAMES * CHANNELS
+
+    const val FLOAT_BYTES_PER_SAMPLE = 4
+    const val FLOAT_BYTES_PER_FRAME = CHANNELS * FLOAT_BYTES_PER_SAMPLE
+    const val FLOAT_BLOCK_BYTES = BLOCK_FRAMES * FLOAT_BYTES_PER_FRAME
+
+    const val PCM16_BYTES_PER_SAMPLE = 2
+    const val PCM16_BYTES_PER_FRAME = CHANNELS * PCM16_BYTES_PER_SAMPLE
+    const val PCM16_BLOCK_BYTES = BLOCK_FRAMES * PCM16_BYTES_PER_FRAME
+
+    fun floatBytesForFrames(frameCount: Int): Int {
+        require(frameCount >= 0) { "frameCount must not be negative" }
+        require(frameCount <= Int.MAX_VALUE / FLOAT_BYTES_PER_FRAME) {
+            "float PCM byte count overflows Int"
+        }
+        return frameCount * FLOAT_BYTES_PER_FRAME
+    }
 }
 
 /** Strict PCM boundary shared by standard and future verified hardware output. */
@@ -36,14 +49,14 @@ internal interface AudioOutput {
     val configuration: String
 
     /**
-     * Copies [decodedShortCount] PCM16 shorts starting at [offsetShorts] and
-     * returns the submitted frame count.
+     * Quantizes [sampleCount] normalized float samples starting at
+     * [offsetSamples] and returns the submitted frame count.
      *
      * The offset exists because a decoded block is not always consumed in one
      * write: a crossfade mixes only as many frames as both sides can supply, so
      * the longer block is written from where the previous turn stopped.
      */
-    fun write(pcm: ShortArray, offsetShorts: Int, decodedShortCount: Int): Int
+    fun write(pcm: FloatArray, offsetSamples: Int, sampleCount: Int): Int
     /** Live post-buffer gain, applied equally to both output channels. */
     fun setOutputGain(gain: Float)
     fun pause()
@@ -118,6 +131,77 @@ internal object PcmWriteLoop {
     private const val MAX_ZERO_PROGRESS_WRITES = 3
 }
 
+/**
+ * The one precision-reduction boundary in the playback pipeline.
+ *
+ * [samples] is allocated once with the AudioTrack and reused for every write.
+ * Conversion retains the caller's offset so the existing partial-write loop
+ * keeps exactly the same offset/count contract. Values outside the requested
+ * range are not touched.
+ *
+ * No dither is applied. PCM16-origin values represented as `short / 32768f`
+ * round-trip exactly, while higher-precision values use deterministic nearest
+ * integer conversion. Non-finite input becomes silence rather than full-scale
+ * noise.
+ */
+internal class Pcm16StagingBuffer(sampleCapacity: Int) {
+    val samples = ShortArray(sampleCapacity)
+    var clippedSampleCount = 0L
+        private set
+    var invalidSampleCount = 0L
+        private set
+
+    fun stage(source: FloatArray, offsetSamples: Int, sampleCount: Int): ShortArray {
+        require(offsetSamples >= 0) { "offsetSamples must not be negative" }
+        require(sampleCount >= 0) { "sampleCount must not be negative" }
+        require(offsetSamples + sampleCount <= source.size) {
+            "source range exceeds the float PCM array"
+        }
+        require(offsetSamples + sampleCount <= samples.size) {
+            "source range exceeds the PCM16 staging array"
+        }
+
+        val end = offsetSamples + sampleCount
+        var clippedThisWrite = 0
+        var invalidThisWrite = 0
+        var index = offsetSamples
+        while (index < end) {
+            val sample = source[index]
+            samples[index] = when {
+                !sample.isFinite() -> {
+                    invalidThisWrite += 1
+                    0
+                }
+                sample > 1f -> {
+                    clippedThisWrite += 1
+                    Short.MAX_VALUE
+                }
+                sample < -1f -> {
+                    clippedThisWrite += 1
+                    Short.MIN_VALUE
+                }
+                else -> quantizeFinite(sample)
+            }
+            index += 1
+        }
+        clippedSampleCount += clippedThisWrite
+        invalidSampleCount += invalidThisWrite
+        return samples
+    }
+
+    private fun quantizeFinite(sample: Float): Short = when {
+        sample >= 1f -> Short.MAX_VALUE
+        sample <= -1f -> Short.MIN_VALUE
+        else -> Math.round(sample * PCM16_SCALE)
+            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            .toShort()
+    }
+
+    companion object {
+        private const val PCM16_SCALE = 32_768f
+    }
+}
+
 /** Converts AudioTrack's wrapping unsigned 32-bit head into a monotonic count. */
 internal class PlaybackHeadAccumulator {
     private var initialized = false
@@ -165,6 +249,7 @@ internal class PlaybackHeadAccumulator {
 internal class AudioTrackOutput : AudioOutput, PcmSink {
     private var track: AudioTrack?
     private val head = PlaybackHeadAccumulator()
+    private val pcm16Staging = Pcm16StagingBuffer(PcmFormat.BLOCK_SAMPLES)
     private var writtenFrames = 0L
 
     override val configuration: String
@@ -181,8 +266,8 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
             )
         }
 
-        val frameBytes = PcmFormat.CHANNELS * PcmFormat.BYTES_PER_SAMPLE
-        val bufferBytes = maxOf(minimumBytes * 2, PcmFormat.BLOCK_BYTES * 2)
+        val frameBytes = PcmFormat.PCM16_BYTES_PER_FRAME
+        val bufferBytes = maxOf(minimumBytes * 2, PcmFormat.PCM16_BLOCK_BYTES * 2)
             .coerceAtMost(MAX_AUDIO_TRACK_BUFFER_BYTES)
             .let { it - (it % frameBytes) }
 
@@ -220,22 +305,23 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
     override fun writeSome(pcm: ShortArray, offsetShorts: Int, shortCount: Int): Int =
         requireTrack().write(pcm, offsetShorts, shortCount)
 
-    override fun write(pcm: ShortArray, offsetShorts: Int, decodedShortCount: Int): Int {
-        require(offsetShorts >= 0) { "offsetShorts must not be negative" }
-        require(decodedShortCount >= 0) { "decodedShortCount must not be negative" }
-        require(offsetShorts + decodedShortCount <= pcm.size) {
-            "write range exceeds the PCM array"
+    override fun write(pcm: FloatArray, offsetSamples: Int, sampleCount: Int): Int {
+        require(offsetSamples >= 0) { "offsetSamples must not be negative" }
+        require(sampleCount >= 0) { "sampleCount must not be negative" }
+        require(offsetSamples + sampleCount <= pcm.size) {
+            "write range exceeds the float PCM array"
         }
-        require(offsetShorts % PcmFormat.CHANNELS == 0) {
-            "offsetShorts must start on a PCM frame boundary"
+        require(offsetSamples % PcmFormat.CHANNELS == 0) {
+            "offsetSamples must start on a PCM frame boundary"
         }
-        require(decodedShortCount % PcmFormat.CHANNELS == 0) {
-            "decodedShortCount must contain complete PCM frames"
+        require(sampleCount % PcmFormat.CHANNELS == 0) {
+            "sampleCount must contain complete PCM frames"
         }
+        val staged = pcm16Staging.stage(pcm, offsetSamples, sampleCount)
         // `this` rather than a lambda: the previous indirection captured a local
         // and so allocated one object per decoded block, ~11 per second.
-        PcmWriteLoop.writeFully(pcm, offsetShorts, decodedShortCount, this)
-        val decodedFrameCount = decodedShortCount / PcmFormat.CHANNELS
+        PcmWriteLoop.writeFully(staged, offsetSamples, sampleCount, this)
+        val decodedFrameCount = sampleCount / PcmFormat.CHANNELS
         writtenFrames += decodedFrameCount
         return decodedFrameCount
     }

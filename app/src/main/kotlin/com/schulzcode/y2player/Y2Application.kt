@@ -15,10 +15,12 @@ import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.library.ScanReason
 import com.schulzcode.y2player.playback.MediaButtonReceiver
+import com.schulzcode.y2player.playback.NativeAudio
 import com.schulzcode.y2player.storage.StorageMonitor
 import com.schulzcode.y2player.storage.RemountScanGate
 import com.schulzcode.y2player.storage.StorageTransitionPolicy
 import com.schulzcode.y2player.storage.UsbStateMonitor
+import java.io.File
 
 class Y2Application : Application() {
     lateinit var container: AppContainer
@@ -139,6 +141,16 @@ class Y2Application : Application() {
         container = AppContainer(this)
         val safeMode = container.safeModeManager.initializeProcess()
         container.logger.info("Application", "Y2 Player starting safeMode=$safeMode")
+
+        runCatching {
+            val crashFile = File(filesDir, "diagnostics/y2-native-crash.log")
+            crashFile.parentFile?.mkdirs()
+            check(NativeAudio.nativeConfigureCrashReporter(crashFile.absolutePath)) {
+                "native crash reporter rejected ${crashFile.absolutePath}"
+            }
+        }.onFailure {
+            container.logger.warn("Crash", "native crash reporter unavailable: ${it.message}")
+        }
 
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->

@@ -10,7 +10,7 @@ package com.schulzcode.y2player.playback
  * added to the decode path, and it keeps working on firmware whose effect
  * framework is missing entirely.
  *
- * **It attenuates, never boosts.** PCM output saturates at full scale, so
+ * **It attenuates, never boosts.** The final PCM16 output clips at full scale, so
  * leaning left lowers the right channel rather than raising the left. Total
  * loudness therefore drops as balance moves off centre, which is the honest
  * behaviour: the alternative would be to pre-attenuate both channels at centre

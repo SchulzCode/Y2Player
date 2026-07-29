@@ -9,10 +9,20 @@ import org.junit.Test
 import java.io.File
 
 class LibraryScannerTest {
+    private fun scanner() = LibraryScanner(MetadataReader {
+        FfmpegMetadata(errorCategory = 3, errorDetail = "invalid test fixture", bytesRead = 512)
+    })
+
+    @Test fun scanBatchStaysBelowApi19SqliteVariableLimit() {
+        // Fingerprint SELECT binds volume + paths; seen-token UPDATE binds token,
+        // volume + paths. The latter is the limiting statement.
+        assertTrue(LibraryScanner.BATCH_SIZE + 2 < 999)
+    }
+
     @Test
     fun missingRootDoesNotCompleteAsASuccessfulScan() {
         val missing = File(System.getProperty("java.io.tmpdir"), "y2-missing-${System.nanoTime()}")
-        val outcome = LibraryScanner().scan(
+        val outcome = scanner().scan(
             root = StorageRoot("sdcard", missing),
             fingerprintLookup = { emptyMap() },
             cancellation = ScanCancellation(),
@@ -29,7 +39,7 @@ class LibraryScannerTest {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-cancel-${System.nanoTime()}").apply { mkdirs() }
         try {
             val cancellation = ScanCancellation().apply { cancel() }
-            val outcome = LibraryScanner().scan(
+            val outcome = scanner().scan(
                 StorageRoot("sdcard", root), { emptyMap() }, cancellation, {}, { _, _ -> }
             )
             assertTrue(outcome.cancelled)
@@ -53,7 +63,7 @@ class LibraryScannerTest {
         try {
             File(music, "truncated.mp3").createNewFile()
             val batches = ArrayList<ScannedFile>()
-            val outcome = LibraryScanner().scan(
+            val outcome = scanner().scan(
                 StorageRoot("sdcard", root), { emptyMap() }, ScanCancellation(), { batches += it }, { _, _ -> }
             )
 
@@ -83,7 +93,7 @@ class LibraryScannerTest {
             File(album, ".DS_Store").writeBytes(ByteArray(64))
             File(album, "._cover.m3u").writeBytes(ByteArray(32))
             val batches = ArrayList<ScannedFile>()
-            val outcome = LibraryScanner().scan(
+            val outcome = scanner().scan(
                 StorageRoot("internal", root), { emptyMap() }, ScanCancellation(), { batches += it }, { _, _ -> }
             )
 
@@ -109,7 +119,7 @@ class LibraryScannerTest {
         return root
     }
 
-    private fun scan(root: File, playing: Boolean) = LibraryScanner().scan(
+    private fun scan(root: File, playing: Boolean) = scanner().scan(
         StorageRoot("internal", root), { emptyMap() }, ScanCancellation(), {}, { _, _ -> },
         playbackActive = { playing }
     )
@@ -158,7 +168,7 @@ class LibraryScannerTest {
         try {
             val cost = scan(root, playing = false).cost
             assertEquals(4, cost.filesRead)
-            assertEquals(4L * 2_048, cost.bytesRead)
+            assertEquals("count actual probe I/O, not source file sizes", 4L * 512, cost.bytesRead)
         } finally { root.deleteRecursively() }
     }
 
@@ -169,7 +179,7 @@ class LibraryScannerTest {
             val fingerprints = File(root, "Music").listFiles()!!.associate {
                 it.absolutePath to TrackFingerprint(it.length(), it.lastModified())
             }
-            val outcome = LibraryScanner().scan(
+            val outcome = scanner().scan(
                 StorageRoot("internal", root), { fingerprints }, ScanCancellation(), {}, { _, _ -> },
                 playbackActive = { true }
             )
@@ -182,7 +192,7 @@ class LibraryScannerTest {
     @Test fun emptyVolumeIsACompleteScan() {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-empty-${System.nanoTime()}").apply { mkdirs() }
         try {
-            val outcome = LibraryScanner().scan(
+            val outcome = scanner().scan(
                 StorageRoot("sdcard", root), { emptyMap() }, ScanCancellation(), {}, { _, _ -> }
             )
             assertTrue(outcome.complete)

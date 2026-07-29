@@ -154,7 +154,7 @@ configure_flags=(
     "--enable-avutil"
     "--enable-swresample"
     "--enable-protocol=file"
-    "--enable-demuxer=aac,aiff,flac,mov,mp3,ogg,wav"
+    "--enable-demuxer=aac,aiff,asf,flac,mov,mp3,ogg,wav"
     "--enable-decoder=aac,alac,flac,mp3,opus,vorbis,pcm_f32le,pcm_f64le,pcm_s8,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8"
     "--enable-parser=aac,flac,mpegaudio,opus,vorbis"
     "--extra-cflags=-Os"
@@ -205,6 +205,9 @@ mkdir -p "$native_out" "$package_out"
     -llog -ldl -lm -latomic -pthread \
     -o "$native_out/liby2audio.so.tmp"
 
+# Keep the exact unstripped sidecar locally so a crash pc_offset can be resolved
+# after the field unit returns its diagnostics. Only the stripped .so is packaged.
+install -m 0644 "$native_out/liby2audio.so.tmp" "$native_out/liby2audio.so.debug"
 "$toolchain/bin/llvm-strip" --strip-unneeded "$native_out/liby2audio.so.tmp"
 mv "$native_out/liby2audio.so.tmp" "$native_out/liby2audio.so"
 install -m 0644 "$native_out/liby2audio.so" "$package_out/liby2audio.so"

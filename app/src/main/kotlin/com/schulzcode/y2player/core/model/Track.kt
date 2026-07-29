@@ -17,9 +17,23 @@ data class Track(
     val available: Boolean = true,
     val scanError: String? = null,
     val codec: String? = null,
+    val container: String? = null,
     val sampleRate: Int? = null,
     val bitDepth: Int? = null,
     val channels: Int? = null,
+    val trackTotal: Int? = null,
+    val discTotal: Int? = null,
+    val comment: String? = null,
+    val composer: String? = null,
+    val genre: String? = null,
+    val date: String? = null,
+    val year: Int? = null,
+    val bitrate: Long? = null,
+    val hasArtwork: Boolean = false,
+    val replayGainTrackDb: Float? = null,
+    val replayGainTrackPeak: Float? = null,
+    val replayGainAlbumDb: Float? = null,
+    val replayGainAlbumPeak: Float? = null,
     val addedAt: Long = modifiedAt,
     val favorite: Boolean = false,
     /**
@@ -69,9 +83,25 @@ data class TrackDraft(
     val modifiedAt: Long,
     val scanError: String? = null,
     val codec: String? = null,
+    val container: String? = null,
     val sampleRate: Int? = null,
     val bitDepth: Int? = null,
     val channels: Int? = null,
+    val trackTotal: Int? = null,
+    val discTotal: Int? = null,
+    val comment: String? = null,
+    val composer: String? = null,
+    val genre: String? = null,
+    val date: String? = null,
+    val year: Int? = null,
+    val bitrate: Long? = null,
+    val hasArtwork: Boolean = false,
+    val replayGainTrackDb: Float? = null,
+    val replayGainTrackPeak: Float? = null,
+    val replayGainAlbumDb: Float? = null,
+    val replayGainAlbumPeak: Float? = null,
+    /** Transient scan diagnostic; never written to the tracks table. */
+    val metadataBytesRead: Long = 0,
     /**
      * Set when the scan could prove the file is not the format its name claims,
      * so the row is labelled unplayable without waiting for a failed press.
@@ -86,8 +116,7 @@ data class PlaylistSummary(
 )
 
 /**
- * Turns stored codec identifiers (raw MIME types like "audio/mpeg" from
- * MediaMetadataRetriever or "audio/flac" from the header parser) into the names
+ * Turns stored FFmpeg codec identifiers into the names
  * a listener actually recognizes. Falls back to the uppercased file extension.
  */
 object AudioCodecLabels {
@@ -126,7 +155,7 @@ object AudioCodecLabels {
  *
  * The verdict is taken from the **codec**, not the file extension, because the
  * two disagree in the case that matters: an ALAC and an AAC file are both
- * `.m4a`. `AudioHeaderParser` reads the real codec out of the container, so this
+ * `.m4a`. FFmpeg reads the real codec out of the container, so this
  * can answer honestly where an extension list could not.
  *
  * ### What changed with the FFmpeg migration
@@ -167,7 +196,7 @@ object AudioCodecSupport {
      * A decoder is only reachable through a demuxer, so this is half of the
      * capability answer and was previously not modelled at all.
      */
-    val DEMUXERS: Set<String> = setOf("aac", "aiff", "flac", "mov", "mp3", "ogg", "wav")
+    val DEMUXERS: Set<String> = setOf("aac", "aiff", "asf", "flac", "mov", "mp3", "ogg", "wav")
 
     /** Stored codec identifiers that map onto an enabled decoder. */
     private val SUPPORTED_CODECS = setOf(

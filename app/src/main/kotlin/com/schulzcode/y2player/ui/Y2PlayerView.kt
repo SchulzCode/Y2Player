@@ -148,6 +148,8 @@ class Y2PlayerView(
     private var cachedPaneArtist = ""
     private var cachedHomeStats = ""
     private var cachedHomeHint = ""
+    private var cachedScanProgressFraction: Float? = null
+    private var cachedScanProgressPhase = 0f
     private var cachedDetailTitle = ""
     private var cachedDetailTitle2 = ""
     private var cachedDetailSubtitle = ""
@@ -900,6 +902,14 @@ class Y2PlayerView(
             paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
             paint.color = palette.mutedText
             canvas.drawText(cachedHomeHint, centerX, centerY + 24f * density, paint)
+            if (state.library.isScanning) {
+                drawScanProgressBar(
+                    canvas,
+                    paneLeft + 16f * density,
+                    paneRight - 16f * density,
+                    centerY + 36f * density
+                )
+            }
         }
         paint.textAlign = Paint.Align.LEFT
         boldPaint.textAlign = Paint.Align.LEFT
@@ -1035,6 +1045,30 @@ class Y2PlayerView(
             val knobX = progressRight.coerceIn(left + knobRadius, right - knobRadius)
             canvas.drawCircle(knobX, top + barHeight * .5f, knobRadius, paint)
         }
+    }
+
+    private fun drawScanProgressBar(canvas: Canvas, left: Float, right: Float, top: Float) {
+        val barHeight = Y2UiTheme.PROGRESS_HEIGHT_DP * density
+        paint.style = Paint.Style.FILL
+        reusableRectF.set(left, top, right, top + barHeight)
+        paint.color = palette.divider
+        canvas.drawRoundRect(reusableRectF, barHeight * .5f, barHeight * .5f, paint)
+
+        val width = right - left
+        val fraction = cachedScanProgressFraction
+        val fillLeft: Float
+        val fillRight: Float
+        if (fraction != null) {
+            fillLeft = left
+            fillRight = left + width * fraction
+        } else {
+            val segmentWidth = width * .28f
+            fillLeft = left + (width - segmentWidth) * cachedScanProgressPhase
+            fillRight = fillLeft + segmentWidth
+        }
+        reusableRectF.set(fillLeft, top, fillRight.coerceAtLeast(fillLeft), top + barHeight)
+        paint.color = palette.accent
+        canvas.drawRoundRect(reusableRectF, barHeight * .5f, barHeight * .5f, paint)
     }
 
     // ------------------------------------------------------------------ footer
@@ -1200,7 +1234,17 @@ class Y2PlayerView(
         // Idle-pane strings: computed and ellipsized here (never in onDraw) so they can
         // never cross the pane boundary, matching every other cached string.
         val count = state.library.availableTracks.size
-        val stats = when (count) {
+        val processed = state.library.scanProgress.processedFiles.coerceAtLeast(0)
+        cachedScanProgressFraction = Y2UiLogic.scanProgressFraction(processed, count)
+        cachedScanProgressPhase =
+            (processed % SCAN_PROGRESS_PHASE_STEPS).toFloat() / SCAN_PROGRESS_PHASE_STEPS
+        val stats = if (state.library.isScanning) {
+            if (cachedScanProgressFraction != null) {
+                String.format(java.util.Locale.US, "%,d / %,d", processed, count)
+            } else {
+                String.format(java.util.Locale.US, "%,d processed", processed)
+            }
+        } else when (count) {
             0 -> "No music yet"
             1 -> "1 song"
             else -> String.format(java.util.Locale.US, "%,d songs", count)
@@ -1665,6 +1709,7 @@ class Y2PlayerView(
 
     companion object {
         private const val MAX_VISIBLE_ROWS = 12
+        private const val SCAN_PROGRESS_PHASE_STEPS = 200
 
         /** Widest battery reading, so the header reserves a constant width for it. */
         private const val BATTERY_TEXT_REFERENCE = "100%"

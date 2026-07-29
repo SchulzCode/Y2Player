@@ -1,9 +1,13 @@
 package com.schulzcode.y2player.library
 
+import android.annotation.SuppressLint
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
+import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.core.model.LibraryIndex
 import com.schulzcode.y2player.core.model.LibraryScanProgress
 import com.schulzcode.y2player.core.model.LibraryState
@@ -13,12 +17,14 @@ import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
 import com.schulzcode.y2player.diagnostics.Sub
+import com.schulzcode.y2player.playback.NativeAudio
 import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LibraryRepository(
+    appContext: Context,
     private val database: LibraryDatabase,
     private val scanner: LibraryScanner = LibraryScanner(),
     private val logger: DiagnosticLogger,
@@ -50,10 +56,9 @@ class LibraryRepository(
      * It was the only thread in the app doing sustained work at default
      * priority, competing with playback on four weak cores. Two things make that
      * worse than it sounds on this device: the scan reads audio headers from the
-     * same card the native decoder is streaming from, and `MediaMetadataRetriever`
-     * executes inside `mediaserver` — the process decoding the audio. Binder
-     * propagates the caller's nice value to the servicing thread, so lowering it
-     * here also lowers the extractor work it triggers over there.
+     * same card the native decoder is streaming from. The FFmpeg metadata probe
+     * now runs directly on this thread, so its background priority also constrains
+     * the extractor CPU work rather than depending on a remote media service.
      *
      * [Process.setThreadPriority] rather than `Thread.setPriority`: only the
      * former moves the thread into the background cgroup, which is the part that
@@ -75,6 +80,10 @@ class LibraryRepository(
         }, "y2-scan").apply { isDaemon = true }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scanWakeLock =
+        (appContext.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Y2Player:LibraryScan")
+            .apply { setReferenceCounted(true) }
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val scanning = AtomicBoolean(false)
     private val initialScanRequested = AtomicBoolean(false)
@@ -103,7 +112,10 @@ class LibraryRepository(
     fun loadCached() {
         if (!cachedLoadRequested.compareAndSet(false, true)) return
         stateExecutor.execute {
-            runCatching { loadState(isScanning = current.isScanning, lastScanAt = current.lastScanAt) }
+            runCatching {
+                database.ensureOpen()
+                loadState(isScanning = current.isScanning, lastScanAt = current.lastScanAt)
+            }
                 .onSuccess(::publish)
                 .onFailure { error ->
                     cachedLoadRequested.set(false)
@@ -141,13 +153,16 @@ class LibraryRepository(
         }
         activeReason = reason
         scanStartedAtMs = SystemClock.elapsedRealtime()
+        val localScanStartedAtMs = scanStartedAtMs
+        val profiler = ScanProfiler(enabled = BuildConfig.DEBUG)
+        if (profiler.enabled) NativeAudio.nativeResetMetadataProfile()
         eventLog?.info(Sub.SCANNER, Ev.SCAN_START, "reason" to reason.code)
         val localCancellation = ScanCancellation()
         cancellation = localCancellation
         stateExecutor.execute {
             publish(current.copy(isScanning = true, scanProgress = LibraryScanProgress(), errorMessage = null))
         }
-        scanExecutor.execute {
+        executeScan {
             var failure: Throwable? = null
             var allVolumesComplete = false
             // First gap encountered, so the message can name what actually went
@@ -162,28 +177,42 @@ class LibraryRepository(
             var totalCost = ScanCost()
             val discoveredPlaylists = ArrayList<java.io.File>()
             try {
+                val rootsStarted = profiler.start()
                 val roots = Y2StoragePaths.availableRoots()
+                profiler.stop(ScanPhase.ROOT_DISCOVERY, rootsStarted)
                 logger.info("Library", "scan started roots=${roots.joinToString { it.id }}")
                 allVolumesComplete = roots.isNotEmpty()
                 roots.forEach { root ->
                     if (localCancellation.isCancelled()) return@forEach
+                    var scanRecordStarted = profiler.start()
                     val scanId = database.recordScanStart(root.id)
+                    profiler.stop(ScanPhase.SCAN_RECORD, scanRecordStarted)
                     try {
                         val outcome = scanner.scan(
                             root = root,
                             fingerprintLookup = { paths -> database.loadTrackFingerprints(root.id, paths) },
                             cancellation = localCancellation,
-                            onBatch = { files -> database.applyScanBatch(root.id, scanId, files) },
-                            onProgress = { path, count -> publishProgress(root.id, path, count) },
-                            playbackActive = { playbackActive }
+                            onBatch = { files -> database.applyScanBatch(root.id, scanId, files, profiler) },
+                            onProgress = { path, count ->
+                                publishProgress(
+                                    root.id,
+                                    path,
+                                    (totalProcessed + count).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                                )
+                            },
+                            playbackActive = { playbackActive },
+                            profiler = profiler
                         )
                         if (outcome.complete) {
+                            val finishStarted = profiler.start()
                             database.finishScan(root.id, scanId)
+                            profiler.stop(ScanPhase.FINISH_SCAN, finishStarted)
                             discoveredPlaylists += outcome.playlistFiles
                         } else {
                             allVolumesComplete = false
                             if (coverageGap == null) coverageGap = outcome.coverageGap
                         }
+                        scanRecordStarted = profiler.start()
                         database.recordScanEnd(
                             scanId,
                             when {
@@ -194,6 +223,7 @@ class LibraryRepository(
                             outcome.processedFiles,
                             scanNote(outcome)
                         )
+                        profiler.stop(ScanPhase.SCAN_RECORD, scanRecordStarted)
                         totalProcessed += outcome.processedFiles.toLong()
                         totalErrors += outcome.recoverableErrors.toLong()
                         totalCost += outcome.cost
@@ -222,36 +252,39 @@ class LibraryRepository(
                             "yields" to outcome.cost.yields
                         )
                     } catch (error: Throwable) {
+                        val failedRecordStarted = profiler.start()
                         database.recordScanEnd(scanId, "ERROR", 0, error.message)
+                        profiler.stop(ScanPhase.SCAN_RECORD, failedRecordStarted)
                         logger.error("Library", "scan failed for ${root.id}", error)
                         throw error
                     }
                 }
                 if (!localCancellation.isCancelled() && discoveredPlaylists.isNotEmpty()) {
+                    val playlistStarted = profiler.start()
                     val result = playlistFiles.importFiles(discoveredPlaylists)
+                    profiler.stop(ScanPhase.PLAYLIST_IMPORT, playlistStarted)
                     logger.info("Playlist", "automatic M3U import files=${result.imported} tracks=${result.matchedTracks}")
                 }
             } catch (error: Throwable) {
                 failure = error
-            } finally {
-                // The retriever holds a native service connection; free it between scans.
-                scanner.releaseMetadata()
             }
             val cancelled = localCancellation.isCancelled()
             val complete = allVolumesComplete
             val localGap = coverageGap
             val localFailure = failure
+            val nativeProfile = if (profiler.enabled) NativeAudio.nativeMetadataProfile() else LongArray(0)
             stateExecutor.execute {
-                if (localFailure != null) {
-                    publish(current.copy(
+                val settledState = if (localFailure != null) {
+                    current.copy(
                         isScanning = false,
                         scanProgress = LibraryScanProgress(),
                         errorMessage = localFailure.message ?: localFailure.javaClass.simpleName
-                    ))
+                    )
                 } else {
-                    publish(loadState(
+                    loadState(
                         isScanning = false,
-                        lastScanAt = if (complete && !cancelled) System.currentTimeMillis() else current.lastScanAt
+                        lastScanAt = if (complete && !cancelled) System.currentTimeMillis() else current.lastScanAt,
+                        profiler = profiler
                     ).let { state ->
                         // Only a genuine coverage gap raises the alert. Cancelling is
                         // not a fault — nothing was lost and the next scan picks it
@@ -259,10 +292,21 @@ class LibraryRepository(
                         // warning the user has no way to clear.
                         val gap = if (complete || cancelled) null else coverageGapMessage(localGap)
                         if (gap == null) state else state.copy(errorMessage = gap)
-                    })
+                    }
+                }
+                val publishStarted = profiler.start()
+                publish(settledState)
+                profiler.stop(ScanPhase.STATE_PUBLISH, publishStarted)
+                if (profiler.enabled) mainHandler.post {
+                    emitScanProfile(
+                        profiler = profiler,
+                        nativeProfile = nativeProfile,
+                        wallMs = SystemClock.elapsedRealtime() - localScanStartedAtMs,
+                        files = totalProcessed
+                    )
                 }
             }
-            val elapsedMs = SystemClock.elapsedRealtime() - scanStartedAtMs
+            val elapsedMs = SystemClock.elapsedRealtime() - localScanStartedAtMs
             eventLog?.info(
                 Sub.SCANNER,
                 if (cancelled) Ev.SCAN_CANCELLED else if (localFailure != null) Ev.SCAN_ERROR else Ev.SCAN_COMPLETE,
@@ -288,6 +332,45 @@ class LibraryRepository(
             val queued = pendingReason
             pendingReason = null
             if (queued != null && !cancelled) scan(queued)
+        }
+    }
+
+    private fun executeScan(task: () -> Unit) {
+        val wakeLockAcquired = acquireScanWakeLock()
+        try {
+            scanExecutor.execute {
+                try {
+                    task()
+                } finally {
+                    releaseScanWakeLock(wakeLockAcquired)
+                }
+            }
+        } catch (error: RuntimeException) {
+            releaseScanWakeLock(wakeLockAcquired)
+            throw error
+        }
+    }
+
+    /**
+     * A scan must keep the CPU running after the display sleeps. A fixed timeout
+     * would recreate the bug for sufficiently large or slow cards, so ownership
+     * is bounded by the scan task's `finally` block instead.
+     */
+    @SuppressLint("WakelockTimeout")
+    private fun acquireScanWakeLock(): Boolean = try {
+        scanWakeLock.acquire()
+        true
+    } catch (error: RuntimeException) {
+        runCatching { logger.warn("Library", "scan wake lock unavailable: ${error.message}") }
+        false
+    }
+
+    private fun releaseScanWakeLock(acquired: Boolean) {
+        if (!acquired) return
+        try {
+            scanWakeLock.release()
+        } catch (error: RuntimeException) {
+            runCatching { logger.warn("Library", "scan wake lock release failed: ${error.message}") }
         }
     }
 
@@ -497,29 +580,42 @@ class LibraryRepository(
     fun findTrack(id: Long): Track? = current.byId[id] ?: database.findTrack(id)
     fun snapshot(): LibraryState = current
 
-    private fun loadState(isScanning: Boolean, lastScanAt: Long?): LibraryState {
+    private fun loadState(
+        isScanning: Boolean,
+        lastScanAt: Long?,
+        profiler: ScanProfiler? = null
+    ): LibraryState {
         val previousAvailability = current.availableTrackIds
+        val tracksStarted = profiler?.start() ?: 0L
         val tracks = database.loadTracks()
+        profiler?.stop(ScanPhase.STATE_LOAD_TRACKS, tracksStarted)
+        val indexStarted = profiler?.start() ?: 0L
         val index = LibraryIndex.of(tracks)
+        profiler?.stop(ScanPhase.STATE_BUILD_INDEX, indexStarted)
         revision += 1
         tracksRevision += 1
         if (index.availableTrackIds != previousAvailability) availabilityRevision += 1
+        val queriesStarted = profiler?.start() ?: 0L
         val playlists = database.loadPlaylists()
         val allPlaylistTracks = database.loadAllPlaylistTrackIds()
-        return LibraryState(
+        val totalIndexedTracks = database.countTracks()
+        val recentlyPlayedIds = database.loadRecentlyPlayedIds()
+        val state = LibraryState(
             revision = revision,
             tracksRevision = tracksRevision,
             availabilityRevision = availabilityRevision,
             index = index,
-            totalIndexedTracks = database.countTracks(),
+            totalIndexedTracks = totalIndexedTracks,
             playlists = playlists,
             playlistTrackIds = playlists.associate { it.id to allPlaylistTracks[it.id].orEmpty() },
-            recentlyPlayedIds = database.loadRecentlyPlayedIds(),
+            recentlyPlayedIds = recentlyPlayedIds,
             isScanning = isScanning,
             scanProgress = if (isScanning) current.scanProgress else LibraryScanProgress(),
             lastScanAt = lastScanAt,
             errorMessage = null
         )
+        profiler?.stop(ScanPhase.STATE_OTHER_QUERIES, queriesStarted)
+        return state
     }
 
     /**
@@ -544,7 +640,7 @@ class LibraryRepository(
      *
      * Per-file milliseconds and per-file kilobytes together answer the question a
      * stutter report cannot: extraction is meant to read a bounded header, so if
-     * cost tracks bytes rather than file count, the platform extractor is reading
+     * cost tracks bytes rather than file count, the FFmpeg probe is reading
      * file bodies and that is what to fix next.
      */
     private fun costSummary(cost: ScanCost): String {
@@ -553,6 +649,78 @@ class LibraryRepository(
             "perFile=${cost.metadataMs / cost.filesRead}ms/${cost.bytesRead / cost.filesRead / 1024}kb " +
             "yieldMs=${cost.yieldMs} yields=${cost.yields}"
     }
+
+    /** Emits bounded end-of-scan aggregates: one event per phase, never per file. */
+    private fun emitScanProfile(
+        profiler: ScanProfiler,
+        nativeProfile: LongArray,
+        wallMs: Long,
+        files: Long
+    ) {
+        val totalUs = (wallMs.coerceAtLeast(1L) * 1_000L)
+        val phases = profiler.snapshot()
+        val accountedUs = phases.sumOf(ScanPhaseTiming::totalUs)
+        eventLog?.info(
+            Sub.SCANNER, Ev.SCAN_PROFILE,
+            "kind" to "summary",
+            "wallMs" to wallMs,
+            "files" to files,
+            "accountedUs" to accountedUs,
+            "residualUs" to (totalUs - accountedUs).coerceAtLeast(0L),
+            "phaseCount" to phases.size
+        )
+        phases.forEach { timing ->
+            eventLog?.info(
+                Sub.SCANNER, Ev.SCAN_PROFILE,
+                "kind" to "exclusive",
+                "phase" to timing.phase.code,
+                "count" to timing.count,
+                "totalUs" to timing.totalUs,
+                "avgUs" to timing.averageUs,
+                "maxUs" to timing.maximumUs,
+                "wallPctBp" to percentageBasisPoints(timing.totalUs, totalUs)
+            )
+        }
+        if (nativeProfile.size < NATIVE_PROFILE_SIZE) return
+        val nativeCalls = nativeProfile[0]
+        eventLog?.info(
+            Sub.SCANNER, Ev.SCAN_PROFILE,
+            "kind" to "native_summary",
+            "calls" to nativeCalls,
+            "success" to nativeProfile[1],
+            "failure" to nativeProfile[2],
+            "totalUs" to nativeProfile[3],
+            "avgUs" to if (nativeCalls == 0L) 0L else nativeProfile[3] / nativeCalls,
+            "maxUs" to nativeProfile[4],
+            "bytes" to nativeProfile[5],
+            "maxBytes" to nativeProfile[6],
+            "wallPctBp" to percentageBasisPoints(nativeProfile[3], totalUs)
+        )
+        NATIVE_PHASE_NAMES.forEachIndexed { index, name ->
+            val base = NATIVE_PHASE_BASE + index * NATIVE_PHASE_WIDTH
+            val count = nativeProfile[base]
+            val phaseTotalUs = nativeProfile[base + 1]
+            eventLog?.info(
+                Sub.SCANNER, Ev.SCAN_PROFILE,
+                "kind" to "native_child",
+                "phase" to name,
+                "count" to count,
+                "totalUs" to phaseTotalUs,
+                "avgUs" to if (count == 0L) 0L else phaseTotalUs / count,
+                "maxUs" to nativeProfile[base + 2],
+                "wallPctBp" to percentageBasisPoints(phaseTotalUs, totalUs),
+                "nativePctBp" to percentageBasisPoints(phaseTotalUs, nativeProfile[3])
+            )
+        }
+        logger.info(
+            "LibraryProfile",
+            "wallMs=$wallMs files=$files accountedUs=$accountedUs " +
+                "nativeUs=${nativeProfile[3]} residualUs=${(totalUs - accountedUs).coerceAtLeast(0L)}"
+        )
+    }
+
+    private fun percentageBasisPoints(part: Long, whole: Long): Long =
+        if (whole <= 0L) 0L else ((part.coerceAtLeast(0L) * 10_000L) / whole).coerceAtMost(10_000L)
 
     /** Scan-history note. Recoverable errors are worth recording even on success. */
     private fun scanNote(outcome: ScanOutcome): String? {
@@ -592,5 +760,12 @@ class LibraryRepository(
 
     companion object {
         private const val PROGRESS_INTERVAL_MS = 250L
+        private const val NATIVE_PROFILE_SIZE = 37
+        private const val NATIVE_PHASE_BASE = 7
+        private const val NATIVE_PHASE_WIDTH = 3
+        private val NATIVE_PHASE_NAMES = arrayOf(
+            "jni_path", "setup", "open_input", "stream_info", "select_stream",
+            "dictionary", "replaygain", "artwork", "java_result", "close"
+        )
     }
 }

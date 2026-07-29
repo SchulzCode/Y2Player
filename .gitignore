@@ -124,6 +124,14 @@ y2-events-*
 *.ndjson
 *.pcap
 *.pcapng
+*.perfetto-trace
+*.systrace
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # Firmware inputs, extracted trees, and repacked images
 /OriginalFirmware/
@@ -190,19 +198,22 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
-# Minimal public repository allowlist
-# Keep the first commit limited to application source, maintained tooling,
-# Gradle build essentials, project rules, and sanitized setup templates.
+# Public repository allowlist
+# Keep GitHub limited to application source, maintained tooling, deterministic
+# tests/fixtures, the root README, Gradle essentials, and sanitized setup
+# templates.
 /*
 !/.gitignore
 !/.gitattributes
-!/AGENTS.md
 !/CHANGELOG.md
 !/LICENSE
 !/README.md
 !/SOURCE_SHA256SUMS.txt
 !/app/
+# Maintained build, firmware, ADB, and regression tooling is source. Downloads,
+# generated corpora, and other outputs stay under ignored build/out/dist paths.
 !/tools/
+/tools/media/corpus/
 !/third_party/
 /third_party/*
 !/third_party/android-ndk-r25c.properties
@@ -210,15 +221,6 @@ $RECYCLE.BIN/
 /third_party/ffmpeg/*
 !/third_party/ffmpeg/README.md
 !/third_party/ffmpeg/source.properties
-!/docs/
-/docs/*
-!/docs/ARCHITECTURE.md
-!/docs/PLAYBACK_ENGINE.md
-!/docs/FORMAT_SUPPORT_MATRIX.md
-!/docs/CS43131_AND_AUDIO_PATH.md
-!/docs/BUILD_PIPELINE.md
-!/docs/FIRMWARE_INTEGRATION.md
-!/docs/device-diagnostics.md
 !/gradle/
 !/gradlew
 !/gradlew.bat

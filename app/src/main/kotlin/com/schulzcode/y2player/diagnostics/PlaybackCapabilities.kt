@@ -29,7 +29,8 @@ object PlaybackCapabilities {
         Line("Engine", runtimeInformation()),
         Line(
             "Output",
-            "${PcmFormat.SAMPLE_RATE} Hz · ${PcmFormat.CHANNELS} ch · PCM16 · " +
+            "${PcmFormat.SAMPLE_RATE} Hz · ${PcmFormat.CHANNELS} ch · " +
+                "float32 DSP -> PCM16 output · " +
                 "${PcmFormat.BLOCK_FRAMES}-frame blocks"
         ),
         Line("Containers", AudioCodecSupport.DEMUXERS.sorted().joinToString(", ")),

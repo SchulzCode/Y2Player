@@ -8,6 +8,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.ScreenContent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,6 +84,13 @@ class Y2UiLogicTest {
         assertEquals(0f, Y2UiLogic.progressFraction(10, 0), 0f)
     }
 
+    @Test fun scanProgressUsesAnExistingIndexOnlyWhileItIsATrustworthyBaseline() {
+        assertEquals(.25f, Y2UiLogic.scanProgressFraction(1_000, 4_000)!!, 0f)
+        assertEquals(0f, Y2UiLogic.scanProgressFraction(-1, 4_000)!!, 0f)
+        assertNull(Y2UiLogic.scanProgressFraction(1, 0))
+        assertNull(Y2UiLogic.scanProgressFraction(4_001, 4_000))
+    }
+
     @Test fun y2LandscapeViewportKeepsFourReadableRowsAndTracksSelection() {
         // 360 px tall landscape panel minus 44/30 dp chrome leaves four 58 dp rows.
         val available = Y2UiTheme.TARGET_HEIGHT_PX - Y2UiTheme.HEADER_HEIGHT_DP - Y2UiTheme.COMPACT_FOOTER_HEIGHT_DP
@@ -103,9 +111,9 @@ class Y2UiLogicTest {
         assertEquals("Output idle", Y2UiLogic.routePresentation(AudioOutputRoute.UNKNOWN).label)
     }
 
-    @Test fun outputResolverNeverClaimsOneOfTwoSimultaneousPrivateRoutes() {
+    @Test fun outputResolverPrefersA2dpWhenLegacyWiredFlagAlsoRemainsSet() {
         assertEquals(
-            AudioOutputRoute.UNKNOWN,
+            AudioOutputRoute.BLUETOOTH,
             AudioOutputRouteResolver.resolve(true, true, PlaybackStatus.PLAYING, PauseReason.NONE)
         )
         assertEquals(

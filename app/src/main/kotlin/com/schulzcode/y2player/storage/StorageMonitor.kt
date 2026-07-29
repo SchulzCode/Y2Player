@@ -67,6 +67,11 @@ class StorageMonitor(
 
     private val storageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            // Playback and the snapshot path share short-lived mount caches.
+            // A broadcast is an authoritative transition, so make the next
+            // reader probe the new state instead of retaining the pre-event
+            // verdict until its ordinary expiry.
+            Y2StoragePaths.invalidateMountCaches()
             // Recorded before debouncing: correlating a stock-UMS remount needs
             // the raw broadcast order, which the coalesced snapshot loses.
             eventLog?.info(

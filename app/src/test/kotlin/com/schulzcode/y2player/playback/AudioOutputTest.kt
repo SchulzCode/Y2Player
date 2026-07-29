@@ -2,18 +2,18 @@ package com.schulzcode.y2player.playback
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Covers the PCM boundary: the partial-write loop, the playback-head
- * accumulator, and the gain/crossfade maths that now runs on ShortArray.
- */
+/** PCM staging, output accounting, gain, balance and crossfade regression tests. */
 class AudioOutputTest {
 
     private class FakeSink(private val chunk: (Int) -> Int) : PcmSink {
         val offsets = mutableListOf<Int>()
         val requests = mutableListOf<Int>()
+
         override fun writeSome(pcm: ShortArray, offsetShorts: Int, shortCount: Int): Int {
             offsets += offsetShorts
             requests += shortCount
@@ -21,15 +21,103 @@ class AudioOutputTest {
         }
     }
 
-    // ---- partial writes -----------------------------------------------------
+    // ---- fixed format and native-buffer geometry --------------------------
 
-    @Test fun partialWritesAreRetriedWithoutRepeatingSamples() {
-        val pcm = ShortArray(10) { it.toShort() }
+    @Test fun floatAndPcm16GeometryUseExplicitDifferentByteCounts() {
+        assertEquals(8, PcmFormat.FLOAT_BYTES_PER_FRAME)
+        assertEquals(4, PcmFormat.PCM16_BYTES_PER_FRAME)
+        assertEquals(PcmFormat.BLOCK_SAMPLES * 4, PcmFormat.FLOAT_BLOCK_BYTES)
+        assertEquals(PcmFormat.BLOCK_SAMPLES * 2, PcmFormat.PCM16_BLOCK_BYTES)
+        assertEquals(8_000, PcmFormat.floatBytesForFrames(1_000))
+    }
+
+    @Test fun invalidFloatCapacityCalculationsAreRejected() {
+        assertThrows(IllegalArgumentException::class.java) {
+            PcmFormat.floatBytesForFrames(-1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PcmFormat.floatBytesForFrames(Int.MAX_VALUE)
+        }
+    }
+
+    // ---- deterministic float-to-PCM16 boundary ----------------------------
+
+    @Test fun normalizedValuesAndFullScaleQuantizeDeterministically() {
+        val staging = Pcm16StagingBuffer(9)
+        val result = staging.stage(
+            floatArrayOf(-1f, -0.5f, -1f / 32_768f, 0f, 1f / 32_768f, 0.5f, 1f, 2f, -2f),
+            0,
+            9
+        )
+
+        assertArrayEquals(
+            shortArrayOf(-32_768, -16_384, -1, 0, 1, 16_384, 32_767, 32_767, -32_768),
+            result
+        )
+    }
+
+    @Test fun nonFiniteValuesBecomeSilenceRatherThanFullScaleNoise() {
+        val staging = Pcm16StagingBuffer(5)
+        val result = staging.stage(
+            floatArrayOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 1.5f, -1.5f),
+            0,
+            5
+        )
+
+        assertArrayEquals(shortArrayOf(0, 0, 0, 32_767, -32_768), result)
+        assertEquals(3L, staging.invalidSampleCount)
+        assertEquals(2L, staging.clippedSampleCount)
+    }
+
+    @Test fun stagingConvertsOnlyTheRequestedSubrangeAndKeepsChannelOrder() {
+        val staging = Pcm16StagingBuffer(6)
+        staging.samples.fill(1_234)
+        val source = floatArrayOf(9f, 9f, 0.25f, -0.5f, 9f, 9f)
+        val originalSource = source.copyOf()
+
+        val result = staging.stage(source, offsetSamples = 2, sampleCount = 2)
+
+        assertArrayEquals(shortArrayOf(1_234, 1_234, 8_192, -16_384, 1_234, 1_234), result)
+        assertArrayEquals(originalSource, source, 0f)
+    }
+
+    @Test fun stagingArrayIsReusedAcrossWrites() {
+        val staging = Pcm16StagingBuffer(4)
+        val first = staging.stage(floatArrayOf(0f, 0f, 0f, 0f), 0, 4)
+        val second = staging.stage(floatArrayOf(0.5f, -0.5f, 0f, 0f), 0, 4)
+
+        assertSame(first, second)
+    }
+
+    @Test fun everyPcm16OriginValueRoundTripsExactlyThroughFloat() {
+        val staging = Pcm16StagingBuffer(1)
+        val source = FloatArray(1)
+        for (value in Short.MIN_VALUE.toInt()..Short.MAX_VALUE.toInt()) {
+            source[0] = value / 32_768f
+            assertEquals(value.toShort(), staging.stage(source, 0, 1)[0])
+        }
+    }
+
+    @Test fun highPrecisionSurvivesDspUntilTheFinalBoundary() {
+        val source = floatArrayOf(0.123_456_7f, -0.234_567_8f)
+        PcmGain.apply(source, 0, source.size, 0.5f, AudioBalance.CENTRE)
+
+        assertEquals(0.061_728_35f, source[0], 0.000_000_01f)
+        assertEquals(-0.117_283_9f, source[1], 0.000_000_01f)
+        val output = Pcm16StagingBuffer(2).stage(source, 0, 2)
+        assertEquals(Math.round(source[0] * 32_768f).toShort(), output[0])
+        assertEquals(Math.round(source[1] * 32_768f).toShort(), output[1])
+    }
+
+    // ---- partial writes ----------------------------------------------------
+
+    @Test fun partialWritesRetainTheRequestedOffsetWithoutRepeatingSamples() {
+        val pcm = ShortArray(12) { it.toShort() }
         val sink = FakeSink { remaining -> minOf(3, remaining) }
 
-        assertEquals(10, PcmWriteLoop.writeFully(pcm, 0, pcm.size, sink))
-        assertEquals(listOf(0, 3, 6, 9), sink.offsets)
-        assertEquals(listOf(10, 7, 4, 1), sink.requests)
+        assertEquals(8, PcmWriteLoop.writeFully(pcm, 2, 8, sink))
+        assertEquals(listOf(2, 5, 8), sink.offsets)
+        assertEquals(listOf(8, 5, 2), sink.requests)
     }
 
     @Test fun aSingleZeroProgressWriteIsToleratedAndThenRecovers() {
@@ -41,23 +129,18 @@ class AudioOutputTest {
 
     @Test fun repeatedZeroProgressFailsInsteadOfBusySpinning() {
         val sink = FakeSink { 0 }
-
         assertThrows(AudioOutputException::class.java) {
             PcmWriteLoop.writeFully(ShortArray(4), 0, 4, sink)
         }
-        // Bounded: it must not have spun.
         assertEquals(3, sink.requests.size)
     }
 
-    @Test fun negativeAudioTrackResultIsAnOutputFailure() {
+    @Test fun invalidAudioTrackResultsAreOutputFailures() {
         assertThrows(AudioOutputException::class.java) {
             PcmWriteLoop.writeFully(ShortArray(4), 0, 4, FakeSink { -3 })
         }
-    }
-
-    @Test fun aWriteClaimingMoreThanItWasAskedForIsRejected() {
         assertThrows(AudioOutputException::class.java) {
-            PcmWriteLoop.writeFully(ShortArray(4), 0, 4, FakeSink { remaining -> remaining + 1 })
+            PcmWriteLoop.writeFully(ShortArray(4), 0, 4, FakeSink { it + 1 })
         }
     }
 
@@ -67,18 +150,16 @@ class AudioOutputTest {
         assertEquals(0, sink.requests.size)
     }
 
-    // ---- playback head ------------------------------------------------------
+    // ---- playback head -----------------------------------------------------
 
     @Test fun playbackHeadAccumulatesAcrossUnsignedWrap() {
         val accumulator = PlaybackHeadAccumulator()
-
         assertEquals(0xffff_fff0L, accumulator.update(0xffff_fff0L.toInt()))
         assertEquals(0x1_0000_0010L, accumulator.update(0x10))
     }
 
     @Test fun backwardsResetDoesNotInventBillionsOfFrames() {
         val accumulator = PlaybackHeadAccumulator()
-
         assertEquals(50_000L, accumulator.update(50_000))
         assertEquals(50_000L, accumulator.update(0))
     }
@@ -88,167 +169,182 @@ class AudioOutputTest {
         assertEquals(NativeErrorCategory.INTERNAL, NativeErrorCategory.fromWireValue(999))
     }
 
-    // ---- gain ---------------------------------------------------------------
+    // ---- gain, ReplayGain, ducking, fades and balance ----------------------
 
     @Test fun unityGainAtCentreBalanceLeavesEverySampleUntouched() {
-        val pcm = shortArrayOf(1, -1, Short.MAX_VALUE, Short.MIN_VALUE)
+        val pcm = floatArrayOf(0.1f, -0.1f, 1.25f, -1.25f)
         val expected = pcm.copyOf()
 
         PcmGain.apply(pcm, 0, pcm.size, PcmGain.UNITY, AudioBalance.CENTRE)
 
-        assertArrayEquals(expected, pcm)
+        assertArrayEquals(expected, pcm, 0f)
     }
 
-    @Test fun gainNeverExceedsSigned16BitRange() {
-        val pcm = shortArrayOf(Short.MAX_VALUE, Short.MIN_VALUE)
+    @Test fun reducedAndIncreasedGainRetainFloatPrecisionAndHeadroom() {
+        val reduced = floatArrayOf(0.75f, -0.75f)
+        PcmGain.apply(reduced, 0, 2, 0.5f, AudioBalance.CENTRE)
+        assertArrayEquals(floatArrayOf(0.375f, -0.375f), reduced, 0f)
 
-        PcmGain.apply(pcm, 0, 2, PcmGain.UNITY, AudioBalance.CENTRE)
-
-        assertEquals(Short.MAX_VALUE, pcm[0])
-        assertEquals(Short.MIN_VALUE, pcm[1])
+        val increased = floatArrayOf(0.75f, -0.75f)
+        PcmGain.apply(increased, 0, 2, 2f, AudioBalance.CENTRE)
+        assertArrayEquals(floatArrayOf(1.5f, -1.5f), increased, 0f)
     }
 
-    @Test fun gainProcessesOnlyTheDecodedShortCount() {
-        val pcm = ShortArray(8) { 1_000 }
-        pcm[6] = 12_345
-        pcm[7] = 12_345
+    @Test fun composedApplicationReplayGainDuckAndFadeUseOneGainPass() {
+        val pcm = floatArrayOf(1f, -1f)
+        val applicationGain = 0.8f
+        val replayGain = 1.25f
+        val duckGain = 0.5f
+        val fadeCoefficient = 0.25f
 
-        PcmGain.apply(pcm, 0, 6, level = 0.5f, balance = AudioBalance.CENTRE)
+        PcmGain.apply(
+            pcm,
+            0,
+            pcm.size,
+            applicationGain * replayGain * duckGain * fadeCoefficient,
+            AudioBalance.CENTRE
+        )
 
-        assertEquals(500, pcm[0].toInt())
-        assertEquals(500, pcm[5].toInt())
-        assertEquals(12_345, pcm[6].toInt())
-        assertEquals(12_345, pcm[7].toInt())
+        assertArrayEquals(floatArrayOf(0.125f, -0.125f), pcm, 0.000_001f)
     }
 
-    @Test fun balanceAttenuatesTheFarChannelByChannelNotByRawIndex() {
-        val leaningLeft = shortArrayOf(10_000, 10_000, 10_000, 10_000)
+    @Test fun gainProcessesOnlyTheRequestedSampleRange() {
+        val pcm = FloatArray(8) { 0.5f }
+        pcm[0] = 0.75f
+        pcm[1] = 0.75f
+        pcm[6] = 0.75f
+        pcm[7] = 0.75f
+
+        PcmGain.apply(pcm, 2, 4, level = 0.5f, balance = AudioBalance.CENTRE)
+
+        assertEquals(0.75f, pcm[0], 0f)
+        assertEquals(0.25f, pcm[2], 0f)
+        assertEquals(0.25f, pcm[5], 0f)
+        assertEquals(0.75f, pcm[6], 0f)
+    }
+
+    @Test fun balanceAttenuatesTheFarChannelWithoutReversingChannels() {
+        val leaningLeft = floatArrayOf(0.5f, 0.5f, 0.5f, 0.5f)
         PcmGain.apply(leaningLeft, 0, 4, PcmGain.UNITY, balance = -100)
-        assertEquals(10_000, leaningLeft[0].toInt())
-        assertEquals(0, leaningLeft[1].toInt())
-        assertEquals(10_000, leaningLeft[2].toInt())
-        assertEquals(0, leaningLeft[3].toInt())
+        assertArrayEquals(floatArrayOf(0.5f, 0f, 0.5f, 0f), leaningLeft, 0f)
 
-        val leaningRight = shortArrayOf(10_000, 10_000)
+        val leaningRight = floatArrayOf(0.5f, 0.5f)
         PcmGain.apply(leaningRight, 0, 2, PcmGain.UNITY, balance = 100)
-        assertEquals(0, leaningRight[0].toInt())
-        assertEquals(10_000, leaningRight[1].toInt())
+        assertArrayEquals(floatArrayOf(0f, 0.5f), leaningRight, 0f)
     }
 
     @Test fun anIncompleteFrameIsRejected() {
         assertThrows(IllegalArgumentException::class.java) {
-            PcmGain.apply(ShortArray(4), 0, 3, 0.5f, AudioBalance.CENTRE)
+            PcmGain.apply(FloatArray(4), 0, 3, 0.5f, AudioBalance.CENTRE)
         }
     }
 
-    // ---- crossfade ----------------------------------------------------------
+    // ---- crossfade ---------------------------------------------------------
 
-    @Test fun crossfadeProgressesLinearlyFromCurrentToNext() {
-        assertEquals(listOf(20_000, -20_000), mixOneFrame(transitionFrame = 0))
-        assertEquals(listOf(5_000, -5_000), mixOneFrame(transitionFrame = 50))
-        assertEquals(listOf(-10_000, 10_000), mixOneFrame(transitionFrame = 100))
+    @Test fun equalSizeCrossfadeProgressesLinearlyFromCurrentToNext() {
+        assertFloatListEquals(listOf(0.8f, -0.8f), mixOneFrame(transitionFrame = 0))
+        assertFloatListEquals(listOf(0.2f, -0.2f), mixOneFrame(transitionFrame = 50))
+        assertFloatListEquals(listOf(-0.4f, 0.4f), mixOneFrame(transitionFrame = 100))
     }
 
-    /**
-     * The regression this replaced: the mixer used to run to
-     * `max(current, next)` and pad the shorter side with silence, then consume
-     * both blocks. One native decode returns one converted AVFrame, so the two
-     * counts differ per codec — 1152 for MP3, 1024 for AAC, commonly 4096 for
-     * FLAC — and the shorter track was stretched to `short/long` of real speed.
-     * The mixer now takes an explicit frame count and never fabricates silence.
-     */
-    @Test fun crossfadeMixesOnlyTheFramesBothSidesSupply() {
-        val current = shortArrayOf(10_000, 10_000, 1_111, 1_111)
-        val next = shortArrayOf(20_000, 20_000, 30_000, 30_000)
-
-        // Both decoders supplied one frame; the caller passes min(1, 2) = 1.
-        PcmGain.crossfadeInto(
-            current, currentOffsetShorts = 0,
-            next, nextOffsetShorts = 0,
-            frameCount = 1,
-            transitionFrame = 0, transitionFrames = 2,
-            level = PcmGain.UNITY, balance = AudioBalance.CENTRE
-        )
-
-        // Frame 0 mixed at fraction 0 -> current only.
-        assertEquals(10_000, current[0].toInt())
-        // Frame 1 untouched: it is the unconsumed remainder, not silence.
-        assertEquals(1_111, current[2].toInt())
-    }
-
-    /** The longer block's remainder is read from its own offset next turn. */
-    @Test fun crossfadeReadsEachSideFromItsOwnOffset() {
-        val current = shortArrayOf(0, 0, 10_000, 10_000)
-        val next = shortArrayOf(0, 0, 0, 0, 20_000, 20_000)
-
-        PcmGain.crossfadeInto(
-            current, currentOffsetShorts = 2,
-            next, nextOffsetShorts = 4,
-            frameCount = 1,
-            transitionFrame = 2, transitionFrames = 2,
-            level = PcmGain.UNITY, balance = AudioBalance.CENTRE
-        )
-
-        // fraction 1.0 -> next only, written at the current block's offset.
-        assertEquals(20_000, current[2].toInt())
-        assertEquals(20_000, current[3].toInt())
-        // Nothing before the offset was touched.
-        assertEquals(0, current[0].toInt())
-    }
-
-    @Test fun crossfadeSaturatesRatherThanWrappingAround() {
-        val current = shortArrayOf(Short.MAX_VALUE, Short.MIN_VALUE)
-        val next = shortArrayOf(Short.MAX_VALUE, Short.MIN_VALUE)
+    @Test fun unequalCrossfadeMixesOnlyTheCommonFramesAndPreservesRemainder() {
+        val current = floatArrayOf(0.25f, 0.25f, 0.123_456f, -0.123_456f)
+        val next = floatArrayOf(0.5f, 0.5f, 0.75f, 0.75f)
 
         PcmGain.crossfadeInto(
             current, 0, next, 0,
             frameCount = 1,
-            transitionFrame = 1, transitionFrames = 2,
-            level = PcmGain.UNITY, balance = AudioBalance.CENTRE
+            transitionFrame = 0,
+            transitionFrames = 2,
+            level = PcmGain.UNITY,
+            balance = AudioBalance.CENTRE
         )
 
-        assertEquals(Short.MAX_VALUE.toInt(), current[0].toInt())
-        assertEquals(Short.MIN_VALUE.toInt(), current[1].toInt())
+        assertEquals(0.25f, current[0], 0f)
+        assertEquals(0.123_456f, current[2], 0f)
+        assertEquals(-0.123_456f, current[3], 0f)
+    }
+
+    @Test fun crossfadeReadsEachSideFromItsOwnOffset() {
+        val current = floatArrayOf(0f, 0f, 0.25f, -0.25f)
+        val next = floatArrayOf(0f, 0f, 0f, 0f, 0.75f, -0.75f)
+
+        PcmGain.crossfadeInto(
+            current, 2, next, 4,
+            frameCount = 1,
+            transitionFrame = 2,
+            transitionFrames = 2,
+            level = PcmGain.UNITY,
+            balance = AudioBalance.CENTRE
+        )
+
+        assertArrayEquals(floatArrayOf(0f, 0f, 0.75f, -0.75f), current, 0f)
+    }
+
+    @Test fun crossfadeDoesNotClipTemporaryHeadroom() {
+        val current = floatArrayOf(0.9f, -0.9f)
+        val next = floatArrayOf(0.9f, -0.9f)
+
+        PcmGain.crossfadeInto(
+            current, 0, next, 0,
+            frameCount = 1,
+            transitionFrame = 1,
+            transitionFrames = 2,
+            level = 2f,
+            balance = AudioBalance.CENTRE
+        )
+
+        assertArrayEquals(floatArrayOf(1.8f, -1.8f), current, 0.000_001f)
     }
 
     @Test fun crossfadeAppliesEachTracksReplayGainIndependently() {
-        val current = shortArrayOf(10_000, 10_000)
-        val next = shortArrayOf(10_000, 10_000)
+        val current = floatArrayOf(0.5f, 0.5f)
+        val next = floatArrayOf(0.5f, 0.5f)
 
         PcmGain.crossfadeInto(
             current, 0, next, 0,
             frameCount = 1,
-            transitionFrame = 1, transitionFrames = 2,
+            transitionFrame = 1,
+            transitionFrames = 2,
             level = 0.5f,
             nextLevel = 1f,
             balance = AudioBalance.CENTRE
         )
 
-        // Midpoint: 10,000 * (0.5 ReplayGain * 0.5 fade + 1.0 * 0.5 fade).
-        assertEquals(7_500, current[0].toInt())
-        assertEquals(7_500, current[1].toInt())
+        assertArrayEquals(floatArrayOf(0.375f, 0.375f), current, 0.000_001f)
     }
 
     @Test fun crossfadeOfZeroFramesTouchesNothing() {
-        val current = shortArrayOf(7, 7, 7, 7)
+        val current = floatArrayOf(0.25f, 0.25f, 0.25f, 0.25f)
         PcmGain.crossfadeInto(
-            current, 0, ShortArray(4), 0,
+            current, 0, FloatArray(4), 0,
             frameCount = 0,
-            transitionFrame = 0, transitionFrames = 10,
-            level = PcmGain.UNITY, balance = AudioBalance.CENTRE
+            transitionFrame = 0,
+            transitionFrames = 10,
+            level = PcmGain.UNITY,
+            balance = AudioBalance.CENTRE
         )
-        assertEquals(7, current[0].toInt())
+        assertArrayEquals(floatArrayOf(0.25f, 0.25f, 0.25f, 0.25f), current, 0f)
     }
 
-    private fun mixOneFrame(transitionFrame: Long): List<Int> {
-        val current = shortArrayOf(20_000, -20_000)
-        val next = shortArrayOf(-10_000, 10_000)
+    private fun mixOneFrame(transitionFrame: Long): List<Float> {
+        val current = floatArrayOf(0.8f, -0.8f)
+        val next = floatArrayOf(-0.4f, 0.4f)
         PcmGain.crossfadeInto(
             current, 0, next, 0,
             frameCount = 1,
-            transitionFrame, transitionFrames = 100,
-            level = PcmGain.UNITY, balance = AudioBalance.CENTRE
+            transitionFrame = transitionFrame,
+            transitionFrames = 100,
+            level = PcmGain.UNITY,
+            balance = AudioBalance.CENTRE
         )
-        return listOf(current[0].toInt(), current[1].toInt())
+        return current.toList()
+    }
+
+    private fun assertFloatListEquals(expected: List<Float>, actual: List<Float>) {
+        assertEquals(expected.size, actual.size)
+        expected.indices.forEach { index ->
+            assertEquals(expected[index], actual[index], 0.000_001f)
+        }
     }
 }

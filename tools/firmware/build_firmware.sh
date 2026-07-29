@@ -61,6 +61,7 @@ PY
 log "base system.img: $(stat -c%s "$STOCK_SYSTEM") bytes"
 log "APK install path: /system/priv-app/Y2Player.apk"
 log "native install path: /system/lib/liby2audio.so"
+log "patched HAL path: /system/lib/libaudio.primary.default.so"
 log "boot.img: not used and not emitted"
 
 if [ -n "$APK" ]; then
@@ -86,6 +87,7 @@ mkdir -p "$WORK/system" "$OUTDIR"
 # Remove current artifacts plus stale bridge/boot outputs before building. The
 # explicit output directory is the only location touched.
 rm -f "$OUTDIR/Y2Player.apk" "$OUTDIR/system.img" \
+      "$OUTDIR/system.zip" \
       "$OUTDIR/boot.img" "$OUTDIR/boot-stock.img" "$OUTDIR/y2bridged" \
       "$OUTDIR/build-manifest.txt" "$OUTDIR/checksums.txt" \
       "$OUTDIR/verification-report.txt" "$OUTDIR"/bridge*
@@ -144,6 +146,10 @@ fi
   echo "Format               : Android sparse (ext4 payload)"
   echo "APK install path     : /system/priv-app/Y2Player.apk"
   echo "Native install path  : /system/lib/liby2audio.so"
+  echo "Primary HAL path     : /system/lib/libaudio.primary.default.so"
+  echo "Stock HAL SHA-256    : 5c5162f6a68f7db57febd050ee88cc886779dcce5948937149d6cd211eb0e6de"
+  echo "Patched HAL SHA-256  : c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
+  echo "DAC rate hook        : guarded 44100/48000 Hz, ioctl 0x40044305 by value"
   echo "Verification         : passed"
   echo
   echo "Tool versions"
@@ -167,7 +173,7 @@ fi
 ( cd "$OUTDIR" && sha256sum Y2Player.apk system.img build-manifest.txt verification-report.txt > checksums.txt )
 
 # A stale privileged/boot artifact must make the build visibly fail.
-for forbidden in boot.img boot-stock.img y2bridged; do
+for forbidden in system.zip boot.img boot-stock.img y2bridged; do
   [ ! -e "$OUTDIR/$forbidden" ] || fail "forbidden stale output: $forbidden"
 done
 if compgen -G "$OUTDIR/bridge*" >/dev/null; then fail "forbidden bridge output remains"; fi

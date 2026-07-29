@@ -16,7 +16,7 @@ class AudioBalanceTest {
 
     /**
      * Balance attenuates the far channel and never boosts the near one, because
-     * PCM gain saturates at 1.0. Leaning left must lower the right rather
+     * Final PCM16 output clips at 1.0. Leaning left must lower the right rather
      * than raise the left.
      */
     @Test fun leaningAttenuatesTheOppositeChannelOnly() {
