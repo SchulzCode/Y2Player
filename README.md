@@ -226,6 +226,7 @@ Outputs and verification reports are written to `out\boot-adb\`. This image is f
 #### Downloads
 
 - [SP Flash Tool](https://spflashtool.com/)
+- [MediaTek Driver]([https://spflashtool.com](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe)/) 
 - [Original Y2 stock firmware 3.1.7](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7)
 
 #### Requirements
@@ -251,23 +252,24 @@ If `userdata` was recently reset or flashed, first boot the original firmware an
 #### Flashing steps
 
 1. Extract the Y2Player release ZIP.
-2. Open [SP Flash Tool](https://spflashtool.com/).
-3. Load the matching original `MT6582_Android_scatter.txt` file.
-4. Select **Download Only** from the flashing-mode menu.
-5. Remove every partition checkmark.
-6. Enable **only** the `ANDROID` partition.
-7. In the `ANDROID` row, select the modified Y2Player `system.img`.
-8. Carefully verify the configuration before continuing:
+2. Install the MediaTek Driver [MediaTek Driver]([https://spflashtool.com](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe)/) 
+3. Open [SP Flash Tool](https://spflashtool.com/).
+4. Load the matching original `MT6582_Android_scatter.txt` file.
+5. Select **Download Only** from the flashing-mode menu.
+6. Remove every partition checkmark.
+7. Enable **only** the `ANDROID` partition.
+8. In the `ANDROID` row, select the modified Y2Player `system.img`.
+9. Carefully verify the configuration before continuing:
    - mode is **Download Only**;
    - only `ANDROID` is checked;
    - `ANDROID` points to the modified Y2Player `system.img`;
    - no other partition is selected.
-9. Turn the Y2 completely off.
-10. Click **Download** in SP Flash Tool.
-11. Connect the powered-off Y2 to the computer with a reliable USB data cable.
-12. Wait until SP Flash Tool displays the green success indicator.
-13. Disconnect the USB cable and start the Y2.
-14. Allow extra time for the first boot.
+10. Turn the Y2 completely off.
+11. Click **Download** in SP Flash Tool.
+12. Connect the powered-off Y2 to the computer with a reliable USB data cable.
+13. Wait until SP Flash Tool displays the green success indicator.
+14. Disconnect the USB cable and start the Y2.
+15. Allow extra time for the first boot.
 
 #### Never select these partitions
 
