@@ -226,7 +226,7 @@ Outputs and verification reports are written to `out\boot-adb\`. This image is f
 #### Downloads
 
 - [SP Flash Tool](https://spflashtool.com/)
-- [MediaTek Driver]([https://spflashtool.com](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe)/) 
+- [MediaTek Driver](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe) 
 - [Original Y2 stock firmware 3.1.7](https://github.com/y1-community/y1-stock-rom/releases/tag/3.1.7)
 
 #### Requirements
@@ -252,7 +252,7 @@ If `userdata` was recently reset or flashed, first boot the original firmware an
 #### Flashing steps
 
 1. Extract the Y2Player release ZIP.
-2. Install the MediaTek Driver [MediaTek Driver]([https://spflashtool.com](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe)/) 
+2. Install the MediaTek Driver [MediaTek Driver](https://github.com/y1-community/supplemental-apks/releases/download/1.0/DriverInstall.exe)
 3. Open [SP Flash Tool](https://spflashtool.com/).
 4. Load the matching original `MT6582_Android_scatter.txt` file.
 5. Select **Download Only** from the flashing-mode menu.
