@@ -4,6 +4,7 @@ import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
+import com.schulzcode.y2player.fm.FmState
 
 sealed interface AppAction {
     data object WheelClockwise : AppAction
@@ -30,12 +31,21 @@ sealed interface AppAction {
     data class DisplayChanged(val display: DisplayState) : AppAction
     data class PreferencesChanged(val preferences: PlayerPreferencesState) : AppAction
     data class DiagnosticsChanged(val diagnostics: DiagnosticsState) : AppAction
+    data class FmChanged(val fm: FmState) : AppAction
     data class SafeModeChanged(val enabled: Boolean) : AppAction
     data class ShowMessage(val message: String?) : AppAction
     data class SelectIndex(val index: Int) : AppAction
 }
 
 sealed interface AppEffect {
+    // FM and the decoder cannot both own the output, so opening the tuner stops
+    // playback and leaving the screen releases it again.
+    data object FmOpen : AppEffect
+    data object FmClose : AppEffect
+    data class FmTune(val steps: Int) : AppEffect
+    data class FmSeek(val up: Boolean) : AppEffect
+    data object FmTogglePower : AppEffect
+
     data class PlayCollection(
         val trackIds: List<Long>,
         val startIndex: Int,
@@ -145,6 +155,7 @@ val AppAction.code: String get() = when (this) {
     is AppAction.DisplayChanged -> "display_changed"
     is AppAction.PreferencesChanged -> "preferences_changed"
     is AppAction.DiagnosticsChanged -> "diagnostics_changed"
+    is AppAction.FmChanged -> "fm_changed"
     is AppAction.SafeModeChanged -> "safe_mode_changed"
     is AppAction.ShowMessage -> "show_message"
     is AppAction.SelectIndex -> "select_index"

@@ -59,6 +59,7 @@ object ScreenCatalogue {
         put(Screen.ScreenTimeout)
         put(Screen.Storage)
         put(Screen.PlaybackHistory)
+        put(Screen.FmRadio)
         put(Screen.System)
         put(Screen.Diagnostics)
         put(Screen.Reset)
@@ -73,7 +74,8 @@ object ScreenCatalogue {
         declaredSubtypes().filterNot { it in samples }.map { it.simpleName ?: "<anonymous>" }
 
     /** Screens that hold no rows by design; everything else must build something. */
-    val rowless: Set<String> = setOf(Screen.NowPlaying.code)
+    // Both are drawn directly rather than as row lists, so they have no rows.
+    val rowless: Set<String> = setOf(Screen.NowPlaying.code, Screen.FmRadio.code)
 
     /** Screens whose content depends on a library, so emptiness is legitimate. */
     val contentScreens: Set<String> = setOf(

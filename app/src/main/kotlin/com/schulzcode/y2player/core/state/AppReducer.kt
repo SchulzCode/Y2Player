@@ -19,13 +19,20 @@ object AppReducer {
         AppAction.Back -> back(state)
         AppAction.NavigateHome -> Reduction(
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) state
-            else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
+            else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu))),
+            if (state.currentScreen == Screen.FmRadio) listOf(FmClose) else emptyList()
         )
         AppAction.Left -> left(state)
         AppAction.Right -> right(state)
         AppAction.PlayPause -> Reduction(state, listOf(TogglePlayback))
-        AppAction.MediaNext -> Reduction(state, listOf(NextTrack))
-        AppAction.MediaPrevious -> Reduction(state, listOf(PreviousTrack))
+        // On the FM screen the transport buttons hand the search to the tuner,
+        // which uses its own signal threshold instead of stepping blindly.
+        AppAction.MediaNext ->
+            if (state.currentScreen == Screen.FmRadio) Reduction(state, listOf(FmSeek(true)))
+            else Reduction(state, listOf(NextTrack))
+        AppAction.MediaPrevious ->
+            if (state.currentScreen == Screen.FmRadio) Reduction(state, listOf(FmSeek(false)))
+            else Reduction(state, listOf(PreviousTrack))
         AppAction.MediaStop -> if (state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PLAYING || state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PREPARING) Reduction(state, listOf(TogglePlayback)) else Reduction(state)
         AppAction.SeekBackward -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(-state.preferences.seekStepMs.toLong()))) else Reduction(state)
         AppAction.SeekForward -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong()))) else Reduction(state)
@@ -38,6 +45,7 @@ object AppReducer {
         is AppAction.DisplayChanged -> Reduction(state.copy(display = action.display))
         is AppAction.PreferencesChanged -> Reduction(preserveSelection(state, state.copy(preferences = action.preferences)))
         is AppAction.DiagnosticsChanged -> Reduction(preserveSelection(state, state.copy(diagnostics = action.diagnostics)))
+        is AppAction.FmChanged -> Reduction(state.copy(fm = action.fm))
         is AppAction.SafeModeChanged -> Reduction(state.copy(safeMode = action.enabled))
         is AppAction.ShowMessage -> Reduction(state.copy(transientMessage = action.message))
         is AppAction.SelectIndex -> Reduction(normalizeSelection(setSelected(state, action.index.coerceAtLeast(0))))
@@ -55,18 +63,23 @@ object AppReducer {
     }
 
     private fun moveSelection(state: AppState, delta: Int): Reduction {
+        // The wheel tunes on the FM screen, the way it changes volume on Now Playing.
+        if (state.currentScreen == Screen.FmRadio) return Reduction(state, listOf(FmTune(delta)))
         if (state.currentScreen == Screen.NowPlaying) return Reduction(state, listOf(AdjustVolume(if (delta > 0) 1 else -1)))
         val count = ScreenContent.rows(state).size
         return if (count == 0) Reduction(state) else Reduction(setSelected(state, (state.selectedIndex + delta).floorMod(count)))
     }
 
     private fun confirm(state: AppState): Reduction {
+        if (state.currentScreen == Screen.FmRadio) return Reduction(state, listOf(FmTogglePower))
         if (state.currentScreen == Screen.NowPlaying) return Reduction(state, listOf(TogglePlayback))
         val screenRows = ScreenContent.rows(state)
         if (screenRows.isEmpty()) return confirmEmptyScreen(state)
         val row = screenRows.getOrNull(state.selectedIndex) ?: return Reduction(state)
         return when (val screen = state.currentScreen) {
             Screen.MainMenu -> confirmMainMenu(state, row)
+            // Handled above: the FM screen has no rows, so it never gets here.
+            Screen.FmRadio -> Reduction(state)
             Screen.Music -> confirmMusic(state, row)
             Screen.Audiobooks -> confirmAudiobook(state, row)
             is Screen.AudiobookOptions -> confirmAudiobookOptions(state, screen, row)
@@ -135,6 +148,7 @@ object AppReducer {
         return when (key) {
             "music" -> push(state, Screen.Music)
             "audiobooks" -> Reduction(pushState(state, Screen.Audiobooks), listOf(RefreshAudiobooks))
+            "fm_radio" -> Reduction(pushState(state, Screen.FmRadio), listOf(FmOpen))
             "now_playing" -> if (state.playback.currentTrackId != null) Reduction(toNowPlaying(state))
                 else Reduction(toNowPlaying(state), listOf(PlayQueueIndex(state.playback.currentQueueIndex ?: 0)))
             "shuffle_all" -> Reduction(toNowPlaying(state), listOf(ShuffleAll))
@@ -671,6 +685,11 @@ object AppReducer {
     }
 
     private fun back(state: AppState): Reduction {
+        // Leaving the screen powers the tuner down and releases the device, so
+        // FM never keeps the output while the rest of the app runs.
+        if (state.currentScreen == Screen.FmRadio && state.screenStack.size > 1) {
+            return Reduction(pop(state), listOf(FmClose))
+        }
         if (state.screenStack.size > 1) return Reduction(pop(state))
         val current = state.currentScreen
         if (current is Screen.Folders) {

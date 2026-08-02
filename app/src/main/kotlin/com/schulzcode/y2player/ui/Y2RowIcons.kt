@@ -52,6 +52,7 @@ object Y2RowIcons {
     private fun exactAction(key: String): Y2Icon? = when (key) {
         "music" -> Y2Icon.MUSIC
         "audiobooks" -> Y2Icon.BOOK
+        "fm_radio" -> Y2Icon.SPEAKER
         "now_playing" -> Y2Icon.PLAYING
         "settings" -> Y2Icon.SETTINGS
 

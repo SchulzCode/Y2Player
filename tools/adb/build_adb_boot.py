@@ -29,6 +29,12 @@ MTK_NAME = b"ROOTFS"
 CPIO_HEADER_SIZE = 110
 CPIO_TRAILER = "TRAILER!!!"
 USB_CONFIG = b"persist.sys.usb.config=mass_storage,adb"
+# AudioFMController::SetFmEnable picks the FM audio path from this property.
+# Left at its default of 0 the HAL selects direct-connection mode whenever the
+# output is headset or headphone, and that path produces no sound on the Y2.
+# 2 is FM_FORCE_INDIRECT_MODE, the mixed path the speaker already uses. The
+# af. prefix is not writable by shell or by an app, so it has to be set here.
+FM_AUDIO_PROP = b"af.fm.force_direct_mode_type=2"
 Y2_INIT_MARKER = b"# Y2Player secure ADB + mass-storage composition"
 Y2_INIT_ACTION = (
     b"\n"
@@ -268,6 +274,10 @@ def patch_ramdisk(entries: list[CpioEntry], adbd: bytes) -> list[CpioEntry]:
         if required not in default_prop.data:
             raise ValueError(f"secure ADB property was not preserved: {required.decode()}")
 
+    if b"af.fm.force_direct_mode_type" in default_prop.data:
+        raise ValueError("stock ramdisk unexpectedly already sets the FM audio path")
+    default_prop.data = default_prop.data.rstrip(b"\n") + b"\n" + FM_AUDIO_PROP + b"\n"
+
     project_init = by_name["init.project.rc"]
     if Y2_INIT_MARKER in project_init.data:
         raise ValueError("Y2 ADB init action is already present")
@@ -316,6 +326,12 @@ def verify_patched_ramdisk(entries: list[CpioEntry], expected_adbd: bytes) -> li
             raise ValueError(f"missing secure property: {required.decode()}")
     checks.append("default USB composition is mass_storage,adb")
     checks.append("RSA authorization and non-root shell security remain enabled")
+
+    if default_prop.count(FM_AUDIO_PROP) != 1:
+        raise ValueError("FM audio path property is not set exactly once")
+    if default_prop.count(b"af.fm.force_direct_mode_type") != 1:
+        raise ValueError("conflicting FM audio path property present")
+    checks.append("FM audio path forced to indirect mode (af.fm.force_direct_mode_type=2)")
 
     project_init = by_name["init.project.rc"].data
     if project_init.count(Y2_INIT_MARKER) != 1:

@@ -57,7 +57,7 @@ class AppReducerNowPlayingTest {
     @Test fun mainMenuKeepsOnlyTheFourPrimaryDestinations() {
         val rows = ScreenContent.rows(AppState())
         assertEquals(
-            listOf("music", "audiobooks", "shuffle_all", "settings"),
+            listOf("music", "audiobooks", "fm_radio", "shuffle_all", "settings"),
             rows.map { (it as ScreenRow.Action).key }
         )
 

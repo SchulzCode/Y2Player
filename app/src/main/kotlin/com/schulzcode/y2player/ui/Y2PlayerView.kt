@@ -21,6 +21,7 @@ import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.BluetoothAdapterMode
+import com.schulzcode.y2player.fm.FmState
 import com.schulzcode.y2player.core.state.BluetoothLinkState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
@@ -125,6 +126,11 @@ class Y2PlayerView(
     private var cachedHomeHint = ""
     private var cachedScanProgressFraction: Float? = null
     private var cachedScanProgressPhase = 0f
+    private var cachedFmFrequency = ""
+    private var cachedFmStatus = ""
+    private var cachedFmSignal = ""
+    private var cachedFmHint = ""
+    private var cachedFmFraction = 0f
     private var cachedDetailTitle = ""
     private var cachedDetailTitle2 = ""
     private var cachedDetailSubtitle = ""
@@ -210,7 +216,9 @@ class Y2PlayerView(
         super.onDraw(canvas)
         canvas.drawColor(palette.background)
         drawHeader(canvas)
-        if (state.currentScreen == Screen.NowPlaying) {
+        if (state.currentScreen == Screen.FmRadio) {
+            drawFmRadio(canvas)
+        } else if (state.currentScreen == Screen.NowPlaying) {
             drawNowPlaying(canvas)
         } else {
             if (hasDetailHeader()) drawDetailHeader(canvas)
@@ -893,6 +901,67 @@ class Y2PlayerView(
         boldPaint.textAlign = Paint.Align.LEFT
     }
 
+    /**
+     * Every string the FM screen shows is built here rather than in onDraw, so
+     * a frame costs no formatting and no allocation.
+     */
+    private fun updateFmCache() {
+        val fm = state.fm
+        cachedFmFrequency = fm.frequencyLabel
+        cachedFmFraction = fm.signalFraction
+        cachedFmStatus = when {
+            fm.message != null -> fm.message
+            !fm.available -> "FM unavailable"
+            fm.seeking -> "Seeking"
+            !fm.powered -> "Off"
+            fm.stereo -> "Stereo"
+            else -> "Mono"
+        }
+        cachedFmSignal = if (fm.powered && fm.rssi != FmState.RSSI_UNKNOWN) "${fm.rssi} dBm" else ""
+        cachedFmHint = if (fm.powered) "Wheel tunes · Skip seeks · Select stops"
+        else "Select turns the radio on"
+    }
+
+    private fun drawFmRadio(canvas: Canvas) {
+        val centerX = width * .5f
+        val top = headerHeight + 26f * density
+
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 56f * density
+        boldPaint.color = if (state.fm.powered) palette.primaryText else palette.mutedText
+        canvas.drawText(cachedFmFrequency, centerX, top + 44f * density, boldPaint)
+
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
+        paint.color = palette.secondaryText
+        canvas.drawText("MHz", centerX, top + 66f * density, paint)
+
+        paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
+        paint.color = if (state.fm.available) palette.secondaryText else palette.warning
+        canvas.drawText(cachedFmStatus, centerX, top + 90f * density, paint)
+
+        // Signal meter, drawn with the same geometry as the playback progress bar.
+        val left = 20f * density
+        val right = width - 20f * density
+        val barTop = top + 104f * density
+        val barHeight = 6f * density
+        paint.color = palette.divider
+        canvas.drawRect(left, barTop, right, barTop + barHeight, paint)
+        if (cachedFmFraction > 0f) {
+            paint.color = palette.accent
+            canvas.drawRect(left, barTop, left + (right - left) * cachedFmFraction, barTop + barHeight, paint)
+        }
+
+        paint.textSize = Y2UiTheme.META_SP * density
+        paint.color = palette.mutedText
+        canvas.drawText(cachedFmSignal, centerX, barTop + 24f * density, paint)
+        canvas.drawText(cachedFmHint, centerX, barTop + 44f * density, paint)
+
+        paint.textAlign = Paint.Align.LEFT
+        boldPaint.textAlign = Paint.Align.LEFT
+    }
+
     private fun drawArtwork(
         canvas: Canvas,
         left: Float,
@@ -1089,6 +1158,7 @@ class Y2PlayerView(
     }
 
     private fun updatePresentationCache() {
+        updateFmCache()
         cachedRoute = Y2UiLogic.routePresentation(state.playback.outputRoute)
         cachedHeaderRouteIcon = when (cachedRoute.icon) {
             RouteIcon.BLUETOOTH -> RouteIcon.BLUETOOTH

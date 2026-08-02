@@ -55,23 +55,30 @@ class MainMenuHierarchyTest {
     // ---- main menu -------------------------------------------------------------
 
     @Test fun `the main menu fits the split layout without scrolling`() {
-        // 318 px of row area at 58 dp per row leaves room for five; four keeps a margin.
+        // 318 px of row area at 58 dp per row leaves room for five. FM Radio
+        // consumes the last of that budget, so this is now exact.
         assertTrue("main menu must not exceed the split-home row budget", ScreenContent.rows(AppState()).size <= 5)
-        assertEquals(4, ScreenContent.rows(AppState()).size)
+        assertEquals(5, ScreenContent.rows(AppState()).size)
     }
 
     @Test fun `the main menu offers Shuffle All when nothing is loaded`() {
-        assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(AppState(library = library)))
+        assertEquals(
+            listOf("music", "audiobooks", "fm_radio", "shuffle_all", "settings"),
+            keys(AppState(library = library))
+        )
     }
 
     @Test fun `the main menu offers Now Playing once a track is loaded`() {
         val state = AppState(library = library, playback = playing)
-        assertEquals(listOf("music", "audiobooks", "now_playing", "settings"), keys(state))
+        assertEquals(
+            listOf("music", "audiobooks", "fm_radio", "now_playing", "settings"),
+            keys(state)
+        )
     }
 
     @Test fun `the Now Playing row names the current track`() {
         val state = AppState(library = library, playback = playing)
-        val row = ScreenContent.rows(state)[2] as ScreenRow.Action
+        val row = ScreenContent.rows(state)[3] as ScreenRow.Action
         assertEquals("Now Playing", row.title)
         assertTrue(row.subtitle.orEmpty().contains("Song"))
     }

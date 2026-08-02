@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        Normal-protection MediaTek permission. platform.xml maps it to the
+        system, media and camera gids. /dev/fm is a character device owned by
+        system:media with group read/write, so this is what lets a
+        non-platform-signed app open the tuner.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_MTK_MMHW" />
+
     <application>
         <service
             android:name=".debug.MediaRegressionService"
             android:exported="true"
             android:process=":media_regression" />
+        <service
+            android:name=".debug.FmProbeService"
+            android:exported="true"
+            android:process=":fm_probe" />
     </application>
 </manifest>

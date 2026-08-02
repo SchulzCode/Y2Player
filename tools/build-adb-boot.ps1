@@ -130,6 +130,7 @@ try {
         "AOSP libhardware ref : android-4.4.2_r1 @ 7ccf148f5066ceb1a161f0d7a7d66f75c6e8d420",
         "Target               : ARMv7, Android API 19, static executable",
         "USB composition      : mass_storage,adb",
+        "FM audio path        : af.fm.force_direct_mode_type=2 (FM_FORCE_INDIRECT_MODE)",
         "ADB authentication   : RSA authorization required",
         "ADB privilege        : non-root shell",
         "BOOTIMG limit        : 16777216 bytes",

@@ -45,6 +45,7 @@ object ScreenContent {
     fun title(state: AppState): String = when (val screen = state.currentScreen) {
         Screen.MainMenu -> "Y2 Player"
         Screen.Music -> "Music"
+        Screen.FmRadio -> "FM Radio"
         Screen.Audiobooks -> "Audiobooks"
         is Screen.AudiobookOptions -> audiobookName(state, screen.folderKey) ?: "Book"
         is Screen.AudiobookChapters -> "Chapters"
@@ -124,6 +125,8 @@ object ScreenContent {
 
     private fun buildRows(state: AppState): List<ScreenRow> = when (val screen = state.currentScreen) {
         Screen.MainMenu -> mainMenuRows(state)
+        // Drawn like Now Playing rather than as a list, so it has no rows.
+        Screen.FmRadio -> emptyList()
         Screen.Music -> musicRows(state)
         Screen.Audiobooks -> audiobookRows(state)
         is Screen.AudiobookOptions -> audiobookOptionRows(state, screen.folderKey)
@@ -215,6 +218,7 @@ object ScreenContent {
     private fun mainMenuRows(state: AppState): List<ScreenRow> = listOf(
         ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"),
         ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"),
+        ScreenRow.Action("FM Radio", "Tune the built-in tuner", "fm_radio"),
         nowPlayingOrShuffleRow(state),
         ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings")
     )
