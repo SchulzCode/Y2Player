@@ -24,6 +24,7 @@ would be silently ignored here, leaving the device with no launcher.
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,7 @@ import zipfile
 
 import sparse
 import patch_primary_audio_hal as hal_patch
+import system_package_policy as package_policy
 
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
@@ -138,6 +140,68 @@ def free_bytes(image):
     return free * block
 
 
+def stat_size(stat_output):
+    match = re.search(r"\bSize:\s*(\d+)", stat_output)
+    return int(match.group(1)) if match else None
+
+
+def zero_free_blocks(image):
+    """Overwrite every block marked free by ext4 so sparse.pack can omit it."""
+    header = run(["dumpe2fs", "-h", image])
+    report = run(["dumpe2fs", image])
+    if header.returncode != 0 or report.returncode != 0:
+        raise SystemExit("dumpe2fs could not enumerate ext4 free blocks")
+
+    values = {}
+    for line in header.stdout.splitlines():
+        match = re.match(r"^(Block count|Free blocks|Block size):\s*(\d+)$", line)
+        if match:
+            values[match.group(1)] = int(match.group(2))
+    if set(values) != {"Block count", "Free blocks", "Block size"}:
+        raise SystemExit("dumpe2fs header is missing block-count information")
+
+    ranges = []
+    for line in report.stdout.splitlines():
+        # Group entries are indented; the superblock's aggregate value is not.
+        match = re.match(r"^\s+Free blocks:\s*(.*)$", line)
+        if not match or not match.group(1).strip() or match.group(1).strip() == "(none)":
+            continue
+        for token in match.group(1).split(","):
+            bounds = token.strip().split("-", 1)
+            start = int(bounds[0])
+            end = int(bounds[-1])
+            if start > end or start < 0 or end >= values["Block count"]:
+                raise SystemExit(f"invalid ext4 free-block range: {token.strip()}")
+            ranges.append((start, end))
+
+    ranges.sort()
+    for previous, current in zip(ranges, ranges[1:]):
+        if current[0] <= previous[1]:
+            raise SystemExit(
+                f"overlapping ext4 free-block ranges: {previous} and {current}"
+            )
+    parsed_count = sum(end - start + 1 for start, end in ranges)
+    if parsed_count != values["Free blocks"]:
+        raise SystemExit(
+            "ext4 free-block map does not match superblock: "
+            f"map={parsed_count}, superblock={values['Free blocks']}"
+        )
+
+    block_size = values["Block size"]
+    zero_chunk = b"\x00" * (8 << 20)
+    with open(image, "r+b", buffering=0) as handle:
+        for start, end in ranges:
+            remaining = (end - start + 1) * block_size
+            handle.seek(start * block_size)
+            while remaining:
+                piece_size = min(remaining, len(zero_chunk))
+                handle.write(zero_chunk[:piece_size])
+                remaining -= piece_size
+        handle.flush()
+        os.fsync(handle.fileno())
+    return parsed_count, parsed_count * block_size, len(ranges)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--system", required=True, help="stock sparse system.img (never modified)")
@@ -199,6 +263,46 @@ def main():
     if "Inode" in query(raw, f"stat {TARGET_NATIVE_LIBRARY}"):
         raise SystemExit(f"stock image unexpectedly already contains {TARGET_NATIVE_LIBRARY}")
     log(f"      found {STOCK_LAUNCHER}")
+    for required_apk in package_policy.REQUIRED_APKS:
+        if "Inode" not in query(raw, f"stat {required_apk}"):
+            raise SystemExit(
+                f"required stock package is missing: {required_apk} — refusing to minimize"
+            )
+
+    prune_paths = []
+    prune_bytes = 0
+    for directory, stem in package_policy.pruned_packages():
+        apk_path, odex_path = package_policy.package_files(directory, stem)
+        apk_stat = query(raw, f"stat {apk_path}")
+        if "Inode" not in apk_stat:
+            raise SystemExit(
+                f"expected removable stock package is missing: {apk_path} — "
+                "is this the audited stock Y2 image?"
+            )
+        prune_paths.append(apk_path)
+        prune_bytes += stat_size(apk_stat) or 0
+        odex_stat = query(raw, f"stat {odex_path}")
+        if "Inode" in odex_stat:
+            prune_paths.append(odex_path)
+            prune_bytes += stat_size(odex_stat) or 0
+    for support_path in package_policy.PRUNED_SUPPORT_FILES:
+        support_stat = query(raw, f"stat {support_path}")
+        if "Inode" not in support_stat:
+            raise SystemExit(
+                f"expected removable support file is missing: {support_path} — "
+                "is this the audited stock Y2 image?"
+            )
+        prune_paths.append(support_path)
+        prune_bytes += stat_size(support_stat) or 0
+
+    log(
+        f"      package profile: {package_policy.PROFILE_NAME} "
+        f"({len(package_policy.pruned_packages())} optional packages)"
+    )
+    for group, packages in package_policy.PRUNED_PACKAGE_GROUPS.items():
+        log(f"        prune {group}: {len(packages)}")
+    log(f"      removable payload: {len(prune_paths)} files, {prune_bytes} bytes")
+    log(f"      required package guard: {len(package_policy.REQUIRED_APKS)} APKs")
     stock_hal = raw + ".stock-primary-hal.so"
     patched_hal = raw + ".patched-primary-hal.so"
     if not dump(raw, TARGET_PRIMARY_AUDIO_HAL, stock_hal):
@@ -218,13 +322,15 @@ def main():
         f"SHA-256 {hal_patch.PATCHED_SHA256}"
     )
     log("      DAC frequency hook: guarded numeric 44100/48000-Hz ioctl")
-    log(f"      free space before: {free_bytes(raw)} bytes")
+    free_before = free_bytes(raw)
+    log(f"      free space before: {free_before} bytes")
 
-    log("\n[3/6] installing Y2Player runtime and patched primary-audio HAL")
+    log("\n[3/6] pruning optional packages and installing Y2Player runtime")
     context_file = raw + ".selinux"
     with open(context_file, "wb") as handle:
         handle.write(SELINUX_CONTEXT)
-    commands = [
+    commands = [f"rm {path}" for path in prune_paths]
+    commands += [
         f"rm {STOCK_LAUNCHER}",
         "cd /priv-app",
         f"write {os.path.abspath(args.apk)} Y2Player.apk",
@@ -249,8 +355,12 @@ def main():
         ),
     ]
     if "Inode" in query(raw, f"stat {STOCK_LAUNCHER_ODEX}"):
-        commands.insert(1, f"rm {STOCK_LAUNCHER_ODEX}")
+        commands.insert(len(prune_paths) + 1, f"rm {STOCK_LAUNCHER_ODEX}")
         log(f"      removing stale {STOCK_LAUNCHER_ODEX}")
+    log(
+        f"      removing {len(package_policy.pruned_packages())} optional packages "
+        f"and {len(package_policy.PRUNED_SUPPORT_FILES)} private support libraries"
+    )
     result = debugfs(raw, commands, write=True)
     if result.returncode != 0:
         for temporary in (context_file, stock_hal, patched_hal):
@@ -265,12 +375,30 @@ def main():
     os.unlink(stock_hal)
     os.unlink(patched_hal)
 
-    log("\n[4/6] reconciling filesystem (e2fsck)")
-    check = run(["e2fsck", "-fy", raw])
+    log("\n[4/6] reconciling filesystem and clearing freed blocks")
+    # First reconcile metadata. Discard may punch holes on capable hosts, but
+    # drvfs-backed WSL files do not reliably honor it, so the audited free-block
+    # map is also zeroed explicitly below before sparse.pack().
+    check = run(["e2fsck", "-fy", "-E", "discard", raw])
     # 0 = clean, 1 = errors corrected. Anything higher is uncorrected damage.
     if check.returncode >= 4:
         raise SystemExit(f"e2fsck reported uncorrected errors ({check.returncode}):\n{check.stdout}")
-    log(f"      e2fsck exit {check.returncode} ({'clean' if check.returncode == 0 else 'corrected'})")
+    log(
+        f"      e2fsck -E discard exit {check.returncode} "
+        f"({'clean' if check.returncode == 0 else 'corrected'})"
+    )
+    zeroed_blocks, zeroed_bytes, zeroed_ranges = zero_free_blocks(raw)
+    log(
+        f"      zeroed {zeroed_blocks} free blocks ({zeroed_bytes} bytes) "
+        f"across {zeroed_ranges} ext4 ranges"
+    )
+    post_zero_check = run(["e2fsck", "-fn", raw])
+    if post_zero_check.returncode >= 4:
+        raise SystemExit(
+            "zeroing free blocks damaged ext4 metadata: "
+            f"e2fsck exit {post_zero_check.returncode}\n{post_zero_check.stdout}"
+        )
+    log(f"      post-zero e2fsck -fn exit {post_zero_check.returncode}")
 
     log("\n[5/6] verifying result")
     problems = []
@@ -357,13 +485,25 @@ def main():
     # A second copy under /system/app would install the package twice.
     if "Y2Player" in query(raw, "ls /app"):
         problems.append("a duplicate Y2Player is present in /system/app")
+    for directory, stem in package_policy.pruned_packages():
+        for path in package_policy.package_files(directory, stem):
+            if "Inode" in query(raw, f"stat {path}"):
+                problems.append(f"pruned package file is still present: {path}")
+    for path in package_policy.PRUNED_SUPPORT_FILES:
+        if "Inode" in query(raw, f"stat {path}"):
+            problems.append(f"pruned support file is still present: {path}")
+    for path in package_policy.REQUIRED_APKS:
+        if "Inode" not in query(raw, f"stat {path}"):
+            problems.append(f"required package was removed: {path}")
     if query(raw, "ls -p /lib").count("liby2audio.so") != 1:
         problems.append("liby2audio.so must exist exactly once under /system/lib")
     for directory in ("/vendor/lib", "/lib64", "/vendor/lib64"):
         if "liby2audio.so" in query(raw, f"ls -p {directory}"):
             problems.append(f"conflicting runtime library found under /system{directory}")
 
-    log(f"      free space after: {free_bytes(raw)} bytes")
+    free_after = free_bytes(raw)
+    log(f"      free space after: {free_after} bytes")
+    log(f"      filesystem space recovered: {free_after - free_before} bytes")
     if problems:
         raise SystemExit("INTEGRATION FAILED:\n  - " + "\n  - ".join(problems))
     log("      all checks passed")

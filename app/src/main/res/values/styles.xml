@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!--
-        windowBackground is what fills the window between it being shown and the
-        first onDraw. It must match Y2Palette.DARK.background, or a cold start
-        flashes the wrong colour for a frame.
-    -->
+    <!-- windowBackground must match Y2Palette.DARK.background or a cold start
+         flashes the wrong colour before the first onDraw. -->
     <style name="AppTheme" parent="android:style/Theme.Black.NoTitleBar.Fullscreen">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
@@ -12,10 +9,8 @@
         <item name="android:windowBackground">#0A0D12</item>
     </style>
 
-    <!--
-        Selected in MainActivity.onCreate before super, because a theme cannot be
-        chosen from a preference in the manifest. Must match Y2Palette.LIGHT.background.
-    -->
+    <!-- Must match Y2Palette.LIGHT.background. Applied in MainActivity.onCreate
+         before super, since the manifest cannot pick a theme from a preference. -->
     <style name="AppTheme.Light" parent="AppTheme">
         <item name="android:windowBackground">#F4F1EA</item>
     </style>

@@ -9,10 +9,11 @@ enum class Y2Icon {
     SONG, FAVORITE, RECENT, ALBUM, ARTIST, FOLDER, PLAYLIST, PLAYING, QUEUE,
     BLUETOOTH, SETTINGS, STORAGE, DISPLAY, DIAGNOSTICS, SORT, ADD, INFO,
     ACTION, REFRESH, HEADPHONES, SPEAKER, DISCONNECTED, UNKNOWN, CHEVRON, PLAY, PAUSE,
-    PREVIOUS, NEXT, CHECK, PREPARING, WARNING, SHUFFLE, REPEAT, TIMER, DAC
+    PREVIOUS, NEXT, CHECK, PREPARING, WARNING, SHUFFLE, REPEAT, TIMER, DAC,
+    MUSIC, BOOK, LIBRARY, SLIDERS, VOLUME, EQUALIZER, CROSSFADE, HISTORY, REMOVE, SYSTEM, WHEEL,
+    CHAPTERS
 }
 
-/** Small monochrome Canvas icon set; one Path and RectF are reused for every draw. */
 class Y2IconPainter(private val paint: Paint, density: Float) {
     private val path = Path()
     private val rect = RectF()
@@ -34,7 +35,20 @@ class Y2IconPainter(private val paint: Paint, density: Float) {
             Y2Icon.ARTIST -> drawArtist(canvas, left, top, size)
             Y2Icon.FOLDER -> drawFolder(canvas, left, top, size)
             Y2Icon.PLAYLIST -> drawPlaylist(canvas, left, top, size)
-            Y2Icon.PLAYING, Y2Icon.PLAY -> drawPlay(canvas, left, top, size)
+            Y2Icon.PLAY -> drawPlay(canvas, left, top, size)
+            Y2Icon.PLAYING -> drawPlaying(canvas, left, top, size)
+            Y2Icon.MUSIC -> drawMusic(canvas, left, top, size)
+            Y2Icon.BOOK -> drawBook(canvas, left, top, size)
+            Y2Icon.LIBRARY -> drawLibrary(canvas, left, top, size)
+            Y2Icon.SLIDERS -> drawSliders(canvas, left, top, size)
+            Y2Icon.VOLUME -> drawVolume(canvas, left, top, size)
+            Y2Icon.EQUALIZER -> drawEqualizer(canvas, left, top, size)
+            Y2Icon.CROSSFADE -> drawCrossfade(canvas, left, top, size)
+            Y2Icon.HISTORY -> drawHistory(canvas, left, top, size)
+            Y2Icon.REMOVE -> drawRemove(canvas, left, top, size)
+            Y2Icon.SYSTEM -> drawSystem(canvas, left, top, size)
+            Y2Icon.WHEEL -> drawWheel(canvas, centerX, centerY, size)
+            Y2Icon.CHAPTERS -> drawChapters(canvas, left, top, size)
             Y2Icon.QUEUE -> drawQueue(canvas, left, top, size)
             Y2Icon.BLUETOOTH -> drawBluetooth(canvas, left, top, size)
             Y2Icon.SETTINGS -> drawSettings(canvas, centerX, centerY, size)
@@ -131,6 +145,141 @@ class Y2IconPainter(private val paint: Paint, density: Float) {
         path.lineTo(x + s * .35f, y + s * .76f)
         path.close()
         canvas.drawPath(path, paint)
+    }
+
+    private fun drawPlaying(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawCircle(x + s * .50f, y + s * .50f, s * .36f, paint)
+        path.reset()
+        path.moveTo(x + s * .41f, y + s * .33f)
+        path.lineTo(x + s * .68f, y + s * .50f)
+        path.lineTo(x + s * .41f, y + s * .67f)
+        path.close()
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawMusic(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .40f, y + s * .24f, x + s * .40f, y + s * .68f, paint)
+        canvas.drawLine(x + s * .78f, y + s * .16f, x + s * .78f, y + s * .60f, paint)
+        canvas.drawLine(x + s * .40f, y + s * .24f, x + s * .78f, y + s * .16f, paint)
+        canvas.drawCircle(x + s * .27f, y + s * .71f, s * .13f, paint)
+        canvas.drawCircle(x + s * .65f, y + s * .63f, s * .13f, paint)
+    }
+
+    private fun drawBook(canvas: Canvas, x: Float, y: Float, s: Float) {
+        path.reset()
+        path.moveTo(x + s * .50f, y + s * .30f)
+        path.quadTo(x + s * .30f, y + s * .16f, x + s * .13f, y + s * .24f)
+        path.lineTo(x + s * .13f, y + s * .74f)
+        path.quadTo(x + s * .30f, y + s * .66f, x + s * .50f, y + s * .80f)
+        path.quadTo(x + s * .70f, y + s * .66f, x + s * .87f, y + s * .74f)
+        path.lineTo(x + s * .87f, y + s * .24f)
+        path.quadTo(x + s * .70f, y + s * .16f, x + s * .50f, y + s * .30f)
+        path.close()
+        canvas.drawPath(path, paint)
+        canvas.drawLine(x + s * .50f, y + s * .30f, x + s * .50f, y + s * .80f, paint)
+    }
+
+    private fun drawLibrary(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .26f, y + s * .22f, x + s * .26f, y + s * .72f, paint)
+        canvas.drawLine(x + s * .44f, y + s * .32f, x + s * .44f, y + s * .72f, paint)
+        canvas.drawLine(x + s * .62f, y + s * .18f, x + s * .62f, y + s * .72f, paint)
+        canvas.drawLine(x + s * .78f, y + s * .36f, x + s * .78f, y + s * .72f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .80f, x + s * .86f, y + s * .80f, paint)
+    }
+
+    private fun drawSliders(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .14f, y + s * .33f, x + s * .86f, y + s * .33f, paint)
+        canvas.drawLine(x + s * .14f, y + s * .67f, x + s * .86f, y + s * .67f, paint)
+        canvas.drawCircle(x + s * .64f, y + s * .33f, s * .11f, paint)
+        canvas.drawCircle(x + s * .36f, y + s * .67f, s * .11f, paint)
+    }
+
+    private fun drawVolume(canvas: Canvas, x: Float, y: Float, s: Float) {
+        path.reset()
+        path.moveTo(x + s * .12f, y + s * .40f)
+        path.lineTo(x + s * .28f, y + s * .40f)
+        path.lineTo(x + s * .46f, y + s * .24f)
+        path.lineTo(x + s * .46f, y + s * .76f)
+        path.lineTo(x + s * .28f, y + s * .60f)
+        path.lineTo(x + s * .12f, y + s * .60f)
+        path.close()
+        canvas.drawPath(path, paint)
+        rect.set(x + s * .40f, y + s * .34f, x + s * .68f, y + s * .66f)
+        canvas.drawArc(rect, -55f, 110f, false, paint)
+        rect.set(x + s * .40f, y + s * .20f, x + s * .88f, y + s * .80f)
+        canvas.drawArc(rect, -55f, 110f, false, paint)
+    }
+
+    private fun drawEqualizer(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .28f, y + s * .16f, x + s * .28f, y + s * .84f, paint)
+        canvas.drawLine(x + s * .50f, y + s * .16f, x + s * .50f, y + s * .84f, paint)
+        canvas.drawLine(x + s * .72f, y + s * .16f, x + s * .72f, y + s * .84f, paint)
+        canvas.drawCircle(x + s * .28f, y + s * .37f, s * .10f, paint)
+        canvas.drawCircle(x + s * .50f, y + s * .63f, s * .10f, paint)
+        canvas.drawCircle(x + s * .72f, y + s * .31f, s * .10f, paint)
+    }
+
+    private fun drawCrossfade(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .13f, y + s * .28f, x + s * .61f, y + s * .70f, paint)
+        canvas.drawLine(x + s * .39f, y + s * .70f, x + s * .87f, y + s * .28f, paint)
+        canvas.drawLine(x + s * .11f, y + s * .80f, x + s * .89f, y + s * .80f, paint)
+    }
+
+    private fun drawHistory(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawCircle(x + s * .34f, y + s * .43f, s * .25f, paint)
+        canvas.drawLine(x + s * .34f, y + s * .28f, x + s * .34f, y + s * .43f, paint)
+        canvas.drawLine(x + s * .34f, y + s * .43f, x + s * .46f, y + s * .49f, paint)
+        canvas.drawLine(x + s * .68f, y + s * .32f, x + s * .88f, y + s * .32f, paint)
+        canvas.drawLine(x + s * .68f, y + s * .52f, x + s * .88f, y + s * .52f, paint)
+        canvas.drawLine(x + s * .14f, y + s * .82f, x + s * .88f, y + s * .82f, paint)
+    }
+
+    private fun drawRemove(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .16f, y + s * .30f, x + s * .84f, y + s * .30f, paint)
+        canvas.drawLine(x + s * .40f, y + s * .30f, x + s * .42f, y + s * .19f, paint)
+        canvas.drawLine(x + s * .60f, y + s * .30f, x + s * .58f, y + s * .19f, paint)
+        canvas.drawLine(x + s * .42f, y + s * .19f, x + s * .58f, y + s * .19f, paint)
+        path.reset()
+        path.moveTo(x + s * .26f, y + s * .30f)
+        path.lineTo(x + s * .32f, y + s * .83f)
+        path.lineTo(x + s * .68f, y + s * .83f)
+        path.lineTo(x + s * .74f, y + s * .30f)
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawSystem(canvas: Canvas, x: Float, y: Float, s: Float) {
+        rect.set(x + s * .26f, y + s * .26f, x + s * .74f, y + s * .74f)
+        canvas.drawRoundRect(rect, s * .05f, s * .05f, paint)
+        for (i in 0..1) {
+            val offset = x + s * (.40f + i * .20f)
+            canvas.drawLine(offset, y + s * .14f, offset, y + s * .26f, paint)
+            canvas.drawLine(offset, y + s * .74f, offset, y + s * .86f, paint)
+        }
+        for (i in 0..1) {
+            val offset = y + s * (.40f + i * .20f)
+            canvas.drawLine(x + s * .14f, offset, x + s * .26f, offset, paint)
+            canvas.drawLine(x + s * .74f, offset, x + s * .86f, offset, paint)
+        }
+    }
+
+    private fun drawChapters(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawLine(x + s * .40f, y + s * .26f, x + s * .86f, y + s * .26f, paint)
+        canvas.drawLine(x + s * .40f, y + s * .50f, x + s * .86f, y + s * .50f, paint)
+        canvas.drawLine(x + s * .40f, y + s * .74f, x + s * .86f, y + s * .74f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .20f, x + s * .22f, y + s * .20f, paint)
+        canvas.drawLine(x + s * .22f, y + s * .20f, x + s * .22f, y + s * .32f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .44f, x + s * .26f, y + s * .44f, paint)
+        canvas.drawLine(x + s * .26f, y + s * .44f, x + s * .16f, y + s * .56f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .56f, x + s * .26f, y + s * .56f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .68f, x + s * .26f, y + s * .68f, paint)
+        canvas.drawLine(x + s * .26f, y + s * .68f, x + s * .26f, y + s * .80f, paint)
+        canvas.drawLine(x + s * .16f, y + s * .80f, x + s * .26f, y + s * .80f, paint)
+    }
+
+    private fun drawWheel(canvas: Canvas, x: Float, y: Float, s: Float) {
+        canvas.drawCircle(x, y, s * .37f, paint)
+        canvas.drawCircle(x, y, s * .12f, paint)
+        canvas.drawLine(x, y - s * .37f, x, y - s * .23f, paint)
     }
 
     private fun drawQueue(canvas: Canvas, x: Float, y: Float, s: Float) {

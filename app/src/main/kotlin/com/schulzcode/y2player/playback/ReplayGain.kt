@@ -3,7 +3,6 @@ package com.schulzcode.y2player.playback
 import kotlin.math.min
 import kotlin.math.pow
 
-/** How ReplayGain metadata should be selected for a playing track. */
 enum class ReplayGainMode(val storageId: String, val label: String) {
     OFF("off", "Off"),
     ALBUM("album", "Album Gain"),
@@ -19,7 +18,27 @@ enum class ReplayGainMode(val storageId: String, val label: String) {
     }
 }
 
-/** ReplayGain values exported by FFmpeg from the selected audio stream. */
+enum class CrossfadeMode(val storageId: String, val label: String) {
+    ALWAYS("always", "Always"),
+
+    WHILE_SHUFFLING("while_shuffling", "While shuffling");
+
+    fun next(): CrossfadeMode = entries[(ordinal + 1) % entries.size]
+
+    fun effectiveMs(configuredMs: Int, shuffleEnabled: Boolean): Long = when {
+        configuredMs <= 0 -> 0L
+        this == ALWAYS -> configuredMs.toLong()
+        shuffleEnabled -> configuredMs.toLong()
+        else -> 0L
+    }
+
+    companion object {
+        fun fromStorage(value: String?): CrossfadeMode = entries.firstOrNull {
+            it.storageId == value || it.name == value
+        } ?: ALWAYS
+    }
+}
+
 internal data class ReplayGainMetadata(
     val trackGainDb: Float? = null,
     val trackPeak: Float? = null,
@@ -37,7 +56,6 @@ internal data class ReplayGainAdjustment(
     val clippingPrevented: Boolean = false
 )
 
-/** Pure selection and clipping policy shared by normal, gapless and shuffled playback. */
 internal object ReplayGain {
     private const val MIN_GAIN_DB = -60f
     private const val MAX_GAIN_DB = 24f

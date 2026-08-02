@@ -7,15 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/**
- * Keeps the app's idea of what it can play tied to what is actually compiled in.
- *
- * Before the FFmpeg migration these were independent: a Kotlin table described
- * AOSP's codec support and the FFmpeg configure line described the build, and
- * nothing noticed when they disagreed. This makes disagreement a build failure.
- */
 class FfmpegBuildCapabilitiesTest {
-
     @Test fun decoderListMatchesTheFfmpegConfigureLine() {
         assertEquals(flagValues("enable-decoder"), AudioCodecSupport.DECODERS)
     }
@@ -24,11 +16,6 @@ class FfmpegBuildCapabilitiesTest {
         assertEquals(flagValues("enable-demuxer"), AudioCodecSupport.DEMUXERS)
     }
 
-    /**
-     * The specific drift this test was written after: the big-endian PCM
-     * decoders AIFF needs were built, but its demuxer was not enabled, so AIFF
-     * was reported unplayable for a reason that was not true.
-     */
     @Test fun aiffHasBothADemuxerAndAPcmDecoder() {
         assertTrue("aiff" in AudioCodecSupport.DEMUXERS)
         assertTrue("pcm_s16be" in AudioCodecSupport.DECODERS)
@@ -39,7 +26,6 @@ class FfmpegBuildCapabilitiesTest {
         assertTrue("asf demuxer", "asf" in AudioCodecSupport.DEMUXERS)
     }
 
-    /** Every codec the app claims is playable must have a container to arrive in. */
     @Test fun everyEnabledDecoderIsReachableThroughSomeEnabledDemuxer() {
         assertTrue(AudioCodecSupport.DEMUXERS.isNotEmpty())
         assertTrue(AudioCodecSupport.DECODERS.isNotEmpty())
@@ -50,12 +36,6 @@ class FfmpegBuildCapabilitiesTest {
             }
     }
 
-    /**
-     * The invariant that was actually broken: AIFF was enabled in the FFmpeg
-     * build and labelled playable, but `LibraryScanner` never indexed it, so the
-     * label described a file the user could never see. A capability list that
-     * the scanner does not honour is not a capability.
-     */
     @Test fun everyPlayableExtensionIsIndexedByTheScanner() {
         val notIndexed = AudioCodecSupport.SUPPORTED_EXTENSIONS -
             LibraryScanner.SUPPORTED_EXTENSIONS
@@ -66,7 +46,6 @@ class FfmpegBuildCapabilitiesTest {
         )
     }
 
-    /** And the reverse: nothing is indexed that the app declares unplayable. */
     @Test fun nothingIndexedIsDeclaredUnplayable() {
         LibraryScanner.SUPPORTED_EXTENSIONS.forEach { extension ->
             assertNotEquals(
@@ -77,7 +56,6 @@ class FfmpegBuildCapabilitiesTest {
         }
     }
 
-    /** AIFF is only reachable end to end if all three layers agree. */
     @Test fun aiffIsReachableThroughEveryLayer() {
         listOf("aif", "aiff", "aifc").forEach { extension ->
             assertTrue(

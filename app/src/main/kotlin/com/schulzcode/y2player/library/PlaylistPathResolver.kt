@@ -25,12 +25,6 @@ internal class PlaylistPathResolver(baseDirectory: File) {
         return runCatching { candidate.canonicalPath }.getOrNull()
     }
 
-    /**
-     * Desktop media players commonly export absolute Windows, macOS or Linux paths.
-     * Preserve the longest useful tail and search only beside the playlist and its
-     * nearby ancestors. Once one file maps a desktop directory to a device directory,
-     * every remaining entry from that directory becomes one direct stat.
-     */
     private fun relocateForeignPath(normalized: String): File? {
         val sourceDirectory = normalized.substringBeforeLast('/', missingDelimiterValue = "")
         val fileName = normalized.substringAfterLast('/')

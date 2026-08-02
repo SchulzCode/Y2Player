@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.R
 import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.bluetooth.BluetoothController
@@ -22,6 +23,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppEffect
 import com.schulzcode.y2player.core.state.AppStore
+import com.schulzcode.y2player.core.state.code
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
@@ -34,6 +36,7 @@ import com.schulzcode.y2player.input.HapticController
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.input.HapticPolicy
 import com.schulzcode.y2player.input.HardwareKeyGate
+import com.schulzcode.y2player.input.InputProbe
 import com.schulzcode.y2player.input.Y2InputController
 import com.schulzcode.y2player.library.LibraryRepository
 import com.schulzcode.y2player.playback.PlaybackService
@@ -43,6 +46,7 @@ import com.schulzcode.y2player.playback.VolumeModeTransfer
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.settings.DisplayController
+import com.schulzcode.y2player.settings.SystemHapticsController
 import com.schulzcode.y2player.settings.UiSoundEffectsController
 import com.schulzcode.y2player.storage.StorageMonitor
 import java.util.concurrent.LinkedBlockingQueue
@@ -56,6 +60,7 @@ class MainActivity : Activity() {
     private lateinit var diagnosticsRepository: DiagnosticsRepository
     private lateinit var preferences: AppPreferences
     private lateinit var displayController: DisplayController
+    private lateinit var systemHapticsController: SystemHapticsController
     private lateinit var uiSoundEffectsController: UiSoundEffectsController
     private lateinit var bluetoothController: BluetoothController
     private var bluetoothUiActive = false
@@ -104,31 +109,21 @@ class MainActivity : Activity() {
     private val markStableRunnable = Runnable { safeModeManager.markStartupStable() }
     private val effectListener = AppStore.EffectListener(::handleEffect)
 
-    /**
-     * Records the action name and resulting screen only — never the full state,
-     * which would be large, noisy and full of track metadata. This is enough to
-     * replay a navigation sequence from a field log.
-     *
-     * Wheel detents are rate-limited: a fast spin emits dozens of actions per
-     * second, which would flood the bounded event queue and evict more useful
-     * events. One wheel event per window (with the final index) still shows
-     * where the spin landed.
-     */
     private val actionLogger = AppStore.ActionListener { action, state ->
         val wheel = action == AppAction.WheelClockwise || action == AppAction.WheelCounterClockwise
         if (wheel) {
             eventLog.logRateLimited(
                 "wheel_action", WHEEL_LOG_WINDOW_MS,
                 Sev.DEBUG, Sub.REDUCER, Ev.ACTION,
-                "action" to action::class.java.simpleName,
-                "screen" to state.currentScreen::class.java.simpleName,
+                "action" to action.code,
+                "screen" to state.currentScreen.code,
                 "index" to state.selectedIndex
             )
         } else {
             eventLog.debug(
                 Sub.REDUCER, Ev.ACTION,
-                "action" to action::class.java.simpleName,
-                "screen" to state.currentScreen::class.java.simpleName,
+                "action" to action.code,
+                "screen" to state.currentScreen.code,
                 "index" to state.selectedIndex
             )
         }
@@ -158,16 +153,11 @@ class MainActivity : Activity() {
     }
 
     private val storageListener = StorageMonitor.Listener { device ->
-        // The storage monitor knows nothing about the motor, and DeviceChanged
-        // replaces the whole DeviceState, so the flag is re-attached here rather
-        // than being silently reset to false on every mount event.
         store.dispatch(AppAction.DeviceChanged(device.copy(hapticsAvailable = hapticController.available)))
     }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            // A callback can race with onStop/unbind on old vendor framework
-            // builds. Never attach a listener to a no-longer-visible Activity.
             if (!playbackBound || !uiStarted) return
             playbackBinder = service as? PlaybackService.LocalBinder
             playbackBinder?.addListener(playbackListener)
@@ -187,12 +177,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LOW_PROFILE
-        // Hardware volume keys must always target the music stream, not the ringer.
         volumeControlStream = AudioManager.STREAM_MUSIC
 
         val container = (application as Y2Application).container
-        // Assigned first: everything below may log, and an event dropped during
-        // onCreate is one lost from exactly the window a startup failure lives in.
         eventLog = container.eventLog
         logger = container.logger
         store = container.appStore
@@ -202,6 +189,7 @@ class MainActivity : Activity() {
         safeModeManager = container.safeModeManager
         val startupSafeMode = safeModeManager.beginUiStartup()
         displayController = DisplayController(this)
+        systemHapticsController = SystemHapticsController(this)
         uiSoundEffectsController = UiSoundEffectsController(this)
         bluetoothController = container.bluetoothController
         if (startupSafeMode) bluetoothController.stop()
@@ -215,16 +203,6 @@ class MainActivity : Activity() {
 
         storageMonitor = container.storageMonitor
 
-        // The state snapshot attached to every event. Kept small and cheap: it is
-        // built once per logged event, on the caller thread, from volatile reads.
-        //
-        // `snapshotStore` is a local rather than the `store` field on purpose.
-        // EventLog lives in AppContainer for the life of the process and holds
-        // this provider forever, so referencing the field would capture
-        // MainActivity — leaking the activity, its view tree and any decoded
-        // artwork across every recreation. The AppStore is container-scoped and
-        // is the same instance a new activity would use, so closing over it
-        // directly is both leak-free and correct after recreation.
         val snapshotStore = container.appStore
         eventLog.setStateProvider {
             val current = snapshotStore.state
@@ -242,10 +220,6 @@ class MainActivity : Activity() {
         }
         eventLog.info(Sub.ACTIVITY, Ev.ACTIVITY_CREATE, "safeMode" to startupSafeMode)
 
-        // The UI-facing state listener is registered per visible lifecycle in
-        // onStart/onStop so a stopped Activity never renders. Effect and action
-        // listeners stay process-long: effects can be produced by background
-        // dispatches (route loss, storage) that must not be dropped while stopped.
         store.addEffectListener(effectListener)
         store.addActionListener(actionLogger)
         libraryRepository.addListener(libraryListener, emitImmediately = false)
@@ -257,16 +231,9 @@ class MainActivity : Activity() {
         store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
         if (!startupSafeMode) libraryRepository.loadCached()
 
-        // The playback service is started and bound in onStart, so a stopped and
-        // unbound Activity stops being a bound client and an idle service can exit.
         mainHandler.postDelayed(markStableRunnable, STARTUP_STABLE_DELAY_MS)
     }
 
-    /**
-     * As the HOME activity (singleTask) this receives the HOME intent instead of
-     * being recreated. A launcher always returns to its top level when HOME is
-     * pressed; without this the user would be left wherever they had navigated.
-     */
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -279,11 +246,8 @@ class MainActivity : Activity() {
         super.onStart()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_START)
         uiStarted = true
-        // Visible again: render current state, then (re)start and bind the service.
         registerVisibleStateListeners()
         bindPlaybackServiceIfNeeded()
-        // Re-arm Bluetooth management if the screen came back while on the
-        // Bluetooth screen; rebuilds the bonded/connected snapshot from scratch.
         evaluateBluetoothUi()
         backgroundExecutor.execute {
             diagnosticsRepository.refresh()
@@ -294,6 +258,8 @@ class MainActivity : Activity() {
         super.onResume()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_RESUME)
         val currentPreferences = preferences.snapshot()
+        val systemHaptics = systemHapticsController.suppress()
+        if (!systemHaptics.success) logger.warn("Settings", systemHaptics.message)
         storageMonitor.publish()
         store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
         store.dispatch(AppAction.PreferencesChanged(currentPreferences))
@@ -307,8 +273,6 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
-        // Completes the lifecycle trail. Diagnosing "playback stopped when the
-        // screen went off" needs the pause in the timeline, not just the stop.
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_PAUSE)
         super.onPause()
     }
@@ -316,24 +280,14 @@ class MainActivity : Activity() {
     override fun onStop() {
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_STOP)
         uiStarted = false
-        // The Activity is no longer visible: release Bluetooth management (deferred
-        // if an operation is mid-flight). Never disconnects an active headset.
         evaluateBluetoothUi()
-        // Stop being a bound client and stop rendering. Music keeps playing: the
-        // started foreground service outlives the unbind. An idle (paused) service
-        // sees zero bound clients and can now stop itself.
         unbindPlaybackServiceIfNeeded()
         unregisterVisibleStateListeners()
         inputController.resetHeldKeys()
-        // The screen is going away; the next key must re-read the real state
-        // rather than a cached "screen on" from while the UI was visible.
         HardwareKeyGate.invalidateScreenState()
-        // No motor activity while the UI is gone, and none left running into a
-        // shutdown or reboot.
         hapticController.suspend()
         super.onStop()
     }
-
 
     override fun onLowMemory() {
         super.onLowMemory()
@@ -343,9 +297,6 @@ class MainActivity : Activity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // Unlike the playback service (see its onTrimMemory), trimming here on
-        // TRIM_MEMORY_UI_HIDDEN is intentional: row and artwork caches are cheap to
-        // rebuild and worthless while no UI is visible.
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
             playerView.trimMemory()
             ScreenContent.clearCachedRows()
@@ -356,8 +307,6 @@ class MainActivity : Activity() {
         destroyed = true
         mainHandler.removeCallbacks(clearMessageRunnable)
         mainHandler.removeCallbacks(markStableRunnable)
-        // Guarded: onStop normally already unbound and unregistered these, so both
-        // are no-ops here. Safe if the Activity is destroyed without a prior onStop.
         unbindPlaybackServiceIfNeeded()
         libraryRepository.removeListener(libraryListener)
         diagnosticsRepository.removeListener(diagnosticsListener)
@@ -375,10 +324,6 @@ class MainActivity : Activity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            // In perceptual mode the hardware keys must drive the same level as
-            // the wheel, otherwise the device would have two volume controls
-            // that disagree. In system mode the keys fall through to Android's
-            // default handling.
             if (store.state.preferences.volumeMode != VolumeMode.PERCEPTUAL) return super.dispatchKeyEvent(event)
             if (event.action == KeyEvent.ACTION_DOWN) {
                 handleEffect(AppEffect.AdjustVolume(if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) 1 else -1))
@@ -393,6 +338,7 @@ class MainActivity : Activity() {
             return true
         }
         if (!HardwareKeyGate.accept(event, HardwareKeyGate.Source.ACTIVITY)) return true
+        if (BuildConfig.DEBUG) InputProbe.log("ACTIVITY", event)
         return if (inputController.handle(event)) true else super.dispatchKeyEvent(event)
     }
 
@@ -403,7 +349,8 @@ class MainActivity : Activity() {
 
     private fun handleEffect(effect: AppEffect) {
         when (effect) {
-            is AppEffect.PlayCollection -> requirePlayback { it.playCollection(effect.trackIds, effect.startIndex) }
+            is AppEffect.PlayCollection ->
+                requirePlayback { it.playCollection(effect.trackIds, effect.startIndex, effect.shuffled, effect.fromStart) }
             is AppEffect.PlayQueueIndex -> requirePlayback { it.playQueueIndex(effect.index) }
             is AppEffect.RemoveQueueIndex -> requirePlayback { it.removeQueueIndex(effect.index) }
             is AppEffect.MoveQueueItem -> requirePlayback { it.moveQueueItem(effect.index, effect.delta) }
@@ -423,8 +370,6 @@ class MainActivity : Activity() {
                 else -> { libraryRepository.scan(); showMessage("Library scan started") }
             }
             AppEffect.ShuffleAll -> {
-                // Tracks this device has already failed to decode are left out:
-                // shuffling into one produces a silent skip for no reason.
                 val tracks = store.state.library.availableTracks.filterNot { it.decodeFailed }
                 if (tracks.isEmpty()) showMessage("No music found") else requirePlayback { binder ->
                     binder.playCollectionShuffled(tracks.map { track -> track.id })
@@ -468,17 +413,13 @@ class MainActivity : Activity() {
             AppEffect.ToggleVerboseDiagnostics -> {
                 val value = preferences.toggleVerboseDiagnostics()
                 applyPlaybackPreferences(value)
-                // Both logs follow this one switch; without the second call the
-                // human-readable log would keep writing to flash after the user
-                // turned diagnostics off.
                 eventLog.setEnabled(value.verboseDiagnostics)
                 logger.setVerbose(value.verboseDiagnostics)
-                // Always recorded: this is a WARN-level marker so the transition
-                // is visible in the log even when verbose mode is being turned off.
                 eventLog.warn(Sub.DIAG, Ev.ACTION, "verbose" to value.verboseDiagnostics)
                 showMessage(if (value.verboseDiagnostics) "Verbose diagnostics on" else "Verbose diagnostics off")
             }
             AppEffect.ToggleKeepScreenOn -> applyPlaybackPreferences(preferences.toggleKeepScreenOn())
+            AppEffect.ToggleExtraTrackInfo -> applyPlaybackPreferences(preferences.toggleExtraTrackInfo())
             AppEffect.ToggleLightTheme -> applyPlaybackPreferences(preferences.toggleLightTheme())
             is AppEffect.SetBalance -> applyPlaybackPreferences(preferences.setBalance(effect.balance))
             AppEffect.ToggleLocalKeysWhileScreenOff ->
@@ -487,6 +428,7 @@ class MainActivity : Activity() {
             AppEffect.ToggleResumePosition -> applyPlaybackPreferences(preferences.toggleResumePosition())
             AppEffect.ToggleGapless -> applyPlaybackPreferences(preferences.toggleGapless())
             AppEffect.CycleCrossfade -> applyPlaybackPreferences(preferences.cycleCrossfade())
+            AppEffect.CycleCrossfadeMode -> applyPlaybackPreferences(preferences.cycleCrossfadeMode())
             AppEffect.CyclePauseFade -> applyPlaybackPreferences(preferences.cyclePauseFade())
             AppEffect.CycleSeekStep -> applyPlaybackPreferences(preferences.cycleSeekStep())
             AppEffect.CycleLongSeekStep -> applyPlaybackPreferences(preferences.cycleLongSeekStep())
@@ -496,7 +438,6 @@ class MainActivity : Activity() {
                 val value = preferences.cycleHapticLevel()
                 applyPlaybackPreferences(value)
                 hapticController.setLevel(value.hapticLevel)
-                // One confirming pulse so the user feels the level they picked.
                 hapticController.wheelDetent()
                 showMessage(
                     if (value.hapticLevel == HapticLevel.OFF) "Wheel haptics off"
@@ -538,6 +479,21 @@ class MainActivity : Activity() {
             AppEffect.CycleLoudnessGain -> applyPlaybackPreferences(preferences.cycleLoudnessGain())
             is AppEffect.SetSortOrder -> applyPlaybackPreferences(preferences.setSortOrder(effect.order))
 
+            AppEffect.RefreshPlaybackHistory -> refreshPlaybackHistory()
+            AppEffect.RefreshAudiobooks -> libraryRepository.refreshAudiobookProgress()
+            is AppEffect.ClearAudiobookProgress -> {
+                requirePlayback { it.clearAudiobookProgress(effect.folderKey) }
+                libraryRepository.refreshAudiobookProgress()
+                showMessage("Progress cleared")
+            }
+            AppEffect.ClearPlaybackHistory -> {
+                val binder = playbackBinder
+                if (binder == null) showMessage("Playback is starting") else backgroundExecutor.execute {
+                    val cleared = binder.clearHistory()
+                    showMessage(if (cleared) "Playback history cleared" else "No history to clear")
+                    diagnosticsRepository.setPlaybackHistory(0, 0)
+                }
+            }
             AppEffect.ExportDiagnostics -> backgroundExecutor.execute {
                 diagnosticsRepository.export().onSuccess { file -> showMessage("Saved ${file.name}") }
                     .onFailure { showMessage(it.message ?: "Export failed") }
@@ -559,35 +515,20 @@ class MainActivity : Activity() {
             AppEffect.ExitSafeMode -> {
                 safeModeManager.exitSafeMode()
                 store.dispatch(AppAction.SafeModeChanged(false))
-                // Bluetooth stays UI-scoped: it re-arms only if the user is on the
-                // Bluetooth screen, which the state change above re-evaluates.
                 requirePlayback { it.setSafeMode(false) }
                 libraryRepository.scan()
                 showMessage("Safe Mode disabled")
             }
 
             AppEffect.OpenAndroidSettings -> {
-                // NEW_TASK keeps Settings out of the launcher's task, so Back from
-                // Settings returns to the system, not into a mixed Y2Player stack.
                 val settings = Intent(android.provider.Settings.ACTION_SETTINGS)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 runCatching { startActivity(settings) }
                     .onFailure { showMessage("Android Settings is not available on this firmware") }
             }
-
         }
     }
 
-    /**
-     * Input entry point. Everything reaching here has already survived
-     * [HardwareKeyGate], so duplicates and bounces are gone.
-     *
-     * A wheel detent earns a pulse only if the reduction actually did something:
-     * the reducer returns the *same* state instance when nothing moved, so
-     * reference inequality is a free, allocation-free "did it change" signal. The
-     * vibrate call itself happens on the haptics thread, so this adds a couple of
-     * field reads to the scroll path and nothing more.
-     */
     private fun dispatchInput(action: AppAction) {
         if (action != AppAction.WheelClockwise && action != AppAction.WheelCounterClockwise) {
             store.dispatch(action)
@@ -604,15 +545,6 @@ class MainActivity : Activity() {
         if (pulse) hapticController.wheelDetent()
     }
 
-    /**
-     * One volume step. Exactly one layer responds: either Android's music stream
-     * (with the system volume panel as feedback) or the in-app gain. Stacking
-     * both would square the attenuation and make the bottom of the range unusable.
-     *
-     * The SharedPreferences write is a small `apply()` — asynchronous commit, no
-     * blocking I/O on the main thread — and only happens when the level actually
-     * moves, so holding a key at either end writes nothing.
-     */
     private fun adjustVolume(direction: Int) {
         if (store.state.preferences.volumeMode != VolumeMode.PERCEPTUAL) {
             (getSystemService(Context.AUDIO_SERVICE) as AudioManager).adjustStreamVolume(
@@ -626,11 +558,7 @@ class MainActivity : Activity() {
         val value = preferences.adjustVolumeLevel(direction)
         if (value.volumeLevel == before) return
         applyPlaybackPreferences(value)
-        // Replaces the transient message rather than queueing, so a fast wheel
-        // spin costs one state field write per step and no Toast backlog.
         showMessage("Volume ${VolumeCurve.percentForLevel(value.volumeLevel)}%")
-        // Rate limited: a wheel spin can emit dozens of steps per second and the
-        // interesting fact is where the level ended up, not every intermediate.
         eventLog.logRateLimited(
             "volume_level",
             VOLUME_LOG_WINDOW_MS,
@@ -640,6 +568,14 @@ class MainActivity : Activity() {
             "level" to value.volumeLevel,
             "pct" to VolumeCurve.percentForLevel(value.volumeLevel)
         )
+    }
+
+    private fun refreshPlaybackHistory() {
+        val binder = playbackBinder ?: return
+        backgroundExecutor.execute {
+            val summary = binder.historySummary()
+            diagnosticsRepository.setPlaybackHistory(summary.sessions, summary.bytes)
+        }
     }
 
     private fun cycleVolumeMode() {
@@ -689,35 +625,6 @@ class MainActivity : Activity() {
         )
     }
 
-    /**
-     * Picks the window background before the window exists.
-     *
-     * `windowBackground` fills the window from the moment it is shown until the
-     * first `onDraw`, and it is resolved when the window is created — so this has to
-     * run before `super.onCreate`, and it cannot be expressed in the manifest, which
-     * has no way to consult a preference. Without it a light-theme cold start shows
-     * a frame of near-black before the first paint.
-     *
-     * Reads the cached preferences snapshot, which startup has already built, so
-     * this is a memory read rather than disk I/O on the critical path. Defensive
-     * about it anyway: failing to read a cosmetic preference must not stop the
-     * launcher from coming up, since on this device there is nothing else to fall
-     * back to.
-     *
-     * Only the *next* cold start reflects a toggle. That is deliberate — the view
-     * paints its own opaque background over the whole surface, so an in-flight theme
-     * change needs no window involvement, and recreating the activity to update one
-     * invisible attribute would be a visible restart of the home screen.
-     */
-    /**
-     * Whether a press on the device's own keys may act right now.
-     *
-     * Read from the preferences snapshot per press rather than mirrored into a
-     * field: presses are rare next to the cost of acting on a stale answer right
-     * after the user flips the setting, and the snapshot is already in memory.
-     * Guarded on initialisation because a HOME intent can in principle arrive
-     * before onCreate has finished wiring the activity up.
-     */
     private fun inputAllowed(keyCode: Int): Boolean = HardwareKeyGate.isInputAllowed(
         context = this,
         keyCode = keyCode,
@@ -738,14 +645,6 @@ class MainActivity : Activity() {
         playbackBinder?.applyPreferences(value)
     }
 
-    /**
-     * Runs [block] against the bound service, or reports that it is not ready.
-     *
-     * Reported through the in-app status line rather than a Toast: this is an
-     * appliance whose UI owns every pixel, and the same message is already shown
-     * that way from [cycleVolumeMode]. A system-styled Toast for one of the two
-     * was the odd one out.
-     */
     private fun requirePlayback(block: (PlaybackService.LocalBinder) -> Unit) {
         val binder = playbackBinder
         if (binder == null) showMessage("Playback is starting") else block(binder)
@@ -756,19 +655,10 @@ class MainActivity : Activity() {
         store.dispatch(AppAction.BluetoothChanged(bluetoothController.snapshot()))
     }
 
-    /**
-     * Starts the playback service and binds to it.
-     *
-     * Started *and* bound: the start keeps music playing after the Activity
-     * stops, while the binding is what makes this a counted client, so an idle
-     * service can stop itself once the UI goes away.
-     */
     private fun bindPlaybackServiceIfNeeded() {
         if (playbackBound) return
         val serviceIntent = Intent(this, PlaybackService::class.java)
         startService(serviceIntent)
-        // Set the guard before calling into the framework so even a synchronous
-        // vendor callback observes a live binding request.
         playbackBound = true
         val accepted = runCatching {
             bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -786,7 +676,6 @@ class MainActivity : Activity() {
 
     private fun registerVisibleStateListeners() {
         if (stateListenerRegistered) return
-        // emitImmediately renders the latest store state as soon as we re-register.
         store.addStateListener(stateListener)
         stateListenerRegistered = true
     }
@@ -797,12 +686,6 @@ class MainActivity : Activity() {
         stateListenerRegistered = false
     }
 
-    /**
-     * Starts Bluetooth management only while the user is on the Bluetooth screen
-     * and the Activity is visible, and never in Safe Mode. Called on every state
-     * change and on start/stop; the tracked flag keeps it to real transitions so
-     * repeated states are cheap no-ops.
-     */
     private fun evaluateBluetoothUi() {
         val wantActive = uiStarted &&
             !safeModeManager.isSafeMode() &&

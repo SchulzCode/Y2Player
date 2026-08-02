@@ -5,7 +5,6 @@ import com.schulzcode.y2player.playback.NativeAudio
 import com.schulzcode.y2player.storage.StorageRoot
 import java.io.File
 
-/** One metadata-only FFmpeg result. Numeric sentinels avoid boxed JNI values. */
 class FfmpegMetadata internal constructor(
     val success: Boolean = false,
     val errorCategory: Int = 0,
@@ -38,10 +37,6 @@ class FfmpegMetadata internal constructor(
     val hasArtwork: Boolean = false
 )
 
-/**
- * The library's single metadata parser. FFmpeg inspects the container without
- * opening a decoder; one JNI crossing returns every scan field.
- */
 class MetadataReader(
     private val extract: (String) -> FfmpegMetadata = { NativeAudio.nativeReadMetadata(it) }
 ) {
@@ -111,6 +106,6 @@ class MetadataReader(
 
     companion object {
         private const val REPLAY_GAIN_SCALE = 100_000f
-        private val MEDIA_FAILURES = setOf(2, 3) // NativeErrorCategory.UNSUPPORTED/CORRUPT
+        private val MEDIA_FAILURES = setOf(2, 3)
     }
 }

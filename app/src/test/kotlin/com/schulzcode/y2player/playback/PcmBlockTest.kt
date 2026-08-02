@@ -7,20 +7,9 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Regression cover for the reusable decode block.
- *
- * The bug this exists for: a reusable typed buffer view had its limit
- * narrowed per block, and on API 19 that leaves the *backing* ByteBuffer's limit
- * reduced even after `clear()`, which surfaced on device as
- * `IndexOutOfBoundsException: index=14988, limit=14988`. The block now performs
- * exactly one bulk copy and never narrows the view, so the sizes from those
- * device logs are pinned here.
- */
 class PcmBlockTest {
-
-    private val mp3SizedFrames = 47      // 376 float PCM bytes
-    private val flacSizedFrames = 3_747  // 29,976 float PCM bytes
+    private val mp3SizedFrames = 47
+    private val flacSizedFrames = 3_747
 
     @Test fun repeatedSmallBlocksReuseTheSameArrayAndLeaveTheViewAtFullCapacity() {
         val block = FfmpegPlaybackEngine.PcmBlock()
@@ -69,7 +58,6 @@ class PcmBlockTest {
         assertBufferUnnarrowed(block)
     }
 
-    /** Zero is a real value: it means EOF, and must stay staged and sticky. */
     @Test fun aStagedZeroFrameBlockReportsEndOfStreamAndStaysStaged() {
         val block = FfmpegPlaybackEngine.PcmBlock()
         assertFalse(block.hasStagedBlock)
@@ -78,7 +66,6 @@ class PcmBlockTest {
         assertTrue(block.hasStagedBlock)
         assertTrue(block.atEndOfStream)
         assertEquals(0, block.remainingFrameCount)
-        // Consuming nothing must not release an EOF marker.
         block.consume(0)
         assertTrue(block.hasStagedBlock)
     }
@@ -96,10 +83,6 @@ class PcmBlockTest {
         assertFalse(block.hasStagedBlock)
     }
 
-    /**
-     * The F1 case: a crossfade consumes only what both sides supply, so the
-     * longer block must keep its remainder and its read offset.
-     */
     @Test fun aPartiallyConsumedBlockKeepsItsRemainderAndOffset() {
         val block = FfmpegPlaybackEngine.PcmBlock()
         fill(block, flacSizedFrames, valueOffset = 0)
@@ -110,7 +93,6 @@ class PcmBlockTest {
         assertTrue(block.hasStagedBlock)
         assertEquals(flacSizedFrames - mp3SizedFrames, block.remainingFrameCount)
         assertEquals(mp3SizedFrames * PcmFormat.CHANNELS, block.consumedSampleOffset)
-        // The remainder is the real decoded audio, not moved or cleared.
         assertEquals(
             sampleValue(mp3SizedFrames * PcmFormat.CHANNELS),
             block.pcm[block.consumedSampleOffset],
@@ -130,11 +112,6 @@ class PcmBlockTest {
         }
     }
 
-    /**
-     * Frames, not bytes and not samples. The old API took a byte count and had to
-     * prove at runtime that it divided cleanly; an over-long block is now simply
-     * not representable.
-     */
     @Test fun aFrameCountBeyondTheBlockIsRejected() {
         val block = FfmpegPlaybackEngine.PcmBlock()
 

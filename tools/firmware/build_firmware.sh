@@ -51,6 +51,10 @@ done
 [ -f "$STOCK_SYSTEM" ] || fail "base system image not found: $STOCK_SYSTEM"
 [ -f "$STOCK_SCATTER" ] || fail "scatter file not found: $STOCK_SCATTER"
 
+PACKAGE_PROFILE="$(python3 -c "import sys; sys.path.insert(0, 'tools/firmware'); import system_package_policy as p; print(p.PROFILE_NAME)")"
+PRUNED_PACKAGE_COUNT="$(python3 -c "import sys; sys.path.insert(0, 'tools/firmware'); import system_package_policy as p; print(len(p.pruned_packages()))")"
+REQUIRED_PACKAGE_COUNT="$(python3 -c "import sys; sys.path.insert(0, 'tools/firmware'); import system_package_policy as p; print(len(p.REQUIRED_APKS))")"
+
 python3 - "$STOCK_SYSTEM" <<'PY'
 import struct, sys
 with open(sys.argv[1], 'rb') as handle:
@@ -62,6 +66,9 @@ log "base system.img: $(stat -c%s "$STOCK_SYSTEM") bytes"
 log "APK install path: /system/priv-app/Y2Player.apk"
 log "native install path: /system/lib/liby2audio.so"
 log "patched HAL path: /system/lib/libaudio.primary.default.so"
+log "package profile: $PACKAGE_PROFILE"
+log "optional packages pruned: $PRUNED_PACKAGE_COUNT"
+log "critical package guards: $REQUIRED_PACKAGE_COUNT"
 log "boot.img: not used and not emitted"
 
 if [ -n "$APK" ]; then
@@ -142,8 +149,15 @@ fi
   echo "Base path            : $STOCK_SYSTEM"
   echo "Base SHA-256         : $(sha "$STOCK_SYSTEM")"
   echo "Output path          : $OUTDIR/system.img"
+  echo "Base sparse size     : $(stat -c%s "$STOCK_SYSTEM") bytes"
+  echo "Output sparse size   : $(stat -c%s "$OUTDIR/system.img") bytes"
   echo "Output SHA-256       : $(sha "$OUTDIR/system.img")"
   echo "Format               : Android sparse (ext4 payload)"
+  echo "Package profile      : $PACKAGE_PROFILE"
+  echo "Optional packages    : $PRUNED_PACKAGE_COUNT APK/ODEX sets pruned"
+  echo "Critical guards      : $REQUIRED_PACKAGE_COUNT retained APKs verified"
+  echo "Provision.apk        : retained for blank-userdata first boot"
+  echo "Freed ext4 blocks    : cleared and independently verified as zero"
   echo "APK install path     : /system/priv-app/Y2Player.apk"
   echo "Native install path  : /system/lib/liby2audio.so"
   echo "Primary HAL path     : /system/lib/libaudio.primary.default.so"

@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UsbRefreshPolicyTest {
-
     @Test fun unchangedChargingDoesNotRefresh() {
         assertFalse(UsbRefreshPolicy.onChargingSignal(currentCharging = true, reportedCharging = true).refresh)
         assertFalse(UsbRefreshPolicy.onChargingSignal(currentCharging = false, reportedCharging = false).refresh)

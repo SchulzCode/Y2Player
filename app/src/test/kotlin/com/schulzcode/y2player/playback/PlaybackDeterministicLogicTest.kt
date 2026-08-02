@@ -58,14 +58,6 @@ class PlaybackDeterministicLogicTest {
         assertFalse(EngineCommand.Seek(1).isSupersededBy(EngineCommand.ClearNext))
     }
 
-    /**
-     * An explicit skip is only ever superseded by another skip: it must not be
-     * dropped by an unrelated transport command, or a user's press is lost.
-     *
-     * Timed transitions no longer travel as commands at all — the engine
-     * schedules them against its own frame counter — so this covers only the
-     * user-initiated path.
-     */
     @Test fun anExplicitSkipIsOnlyReplacedByAnotherSkip() {
         assertTrue(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.SkipToPrepared))
         assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.Start))
@@ -73,10 +65,6 @@ class PlaybackDeterministicLogicTest {
         assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.ClearNext))
     }
 
-    /**
-     * Transition configuration follows the preferences, so a burst of setting
-     * changes must collapse to the newest one rather than replaying old policy.
-     */
     @Test fun transitionConfigurationCoalescesToTheNewest() {
         assertTrue(
             EngineCommand.ConfigureTransition(gaplessEnabled = true, crossfadeMs = 0)
@@ -103,5 +91,4 @@ class PlaybackDeterministicLogicTest {
                 .isSupersededBy(EngineCommand.Start)
         )
     }
-
 }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.2 — interface redesign, audiobooks, and library browsing
+
+- Added Audiobooks as a main-menu destination. Books are grouped by folder, and disc or part folders collapse into the book above them.
+- Added audiobook resume that returns to the saved position inside a chapter instead of restarting it, with a short rewind and an end-of-chapter guard.
+- Persisted audiobook position on the existing progress tick. Previously only chapter start, pause, and release wrote a position, so a force-quit mid-chapter lost the place.
+- Added a per-book chapter list, Start from Beginning, and a confirmed Clear Progress, backed by the schema-14 audiobook_progress table.
+- Fixed a defect where every library scan rebuilt LibraryState from scratch and erased all saved audiobook positions.
+- Added 47 stroke-only vector row icons drawn from one shared Path and RectF, with no per-frame allocation and no bitmap assets.
+- Rebuilt the main menu, Music section, and Settings tree around the four rows the 480 x 360 display shows at once.
+- Moved Bluetooth from Audio to the Settings root.
+- Reordered every menu by how often each entry is opened, placing reference screens such as About and Diagnostics last and destructive rows below the actions beside them.
+- Added confirmation prompts to all six irreversible actions. Delete Playlist, Clear History, and Clear Queue previously ran on a single press.
+- Moved Reset Library out of Diagnostics and onto Settings, System, Reset, where it now asks for confirmation before deleting the index.
+- Added Listening History under Settings, Library. The session count is read when the screen is opened rather than reported as zero until the row is pressed.
+- Corrected the Reset Library description, which stated that playlists and favourites were rebuilt from the card when they are deleted.
+- Fixed albums breaking apart when browsed by artist. Album membership now uses the album-artist tag, so a feature credit on one track no longer hides that track.
+- Added featured artists as their own entries using a parser that splits only on explicit feature words and never on &, comma, or plus.
+- Added a Shuffle row to album track lists, matching Songs, Favorites, Recently Played, artists, and playlists.
+- Removed every non-essential comment across the repository and verified by lexing that the code stream and all string literals were unchanged.
+- Added a screen catalogue derived from Screen sealed subclasses that fails when a new screen is added without navigation coverage.
+
 ## 2.1 — scanner and media-engine improvements
 
 - Added the collation-correct `(volume_id, relative_path COLLATE NOCASE)` covering index, reducing the measured large-library fallback lookup from 258.160 seconds to 4.124 seconds.

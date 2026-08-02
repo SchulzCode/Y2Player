@@ -1,12 +1,5 @@
 package com.schulzcode.y2player.library
 
-/**
- * Fixed-size, allocation-free scan timing accumulator.
- *
- * Profiling is enabled only for debug builds by [LibraryRepository]. A scan may
- * touch 100k files, so recording a sample must remain two clock reads and three
- * primitive-array writes; there are no per-file log entries or sample objects.
- */
 class ScanProfiler(val enabled: Boolean) {
     private val counts = LongArray(ScanPhase.entries.size)
     private val totalNanos = LongArray(ScanPhase.entries.size)
@@ -41,7 +34,6 @@ class ScanProfiler(val enabled: Boolean) {
     }
 }
 
-/** Exclusive Kotlin/SQLite phases. Native FFmpeg sub-phases are reported separately. */
 enum class ScanPhase(val code: String) {
     ROOT_DISCOVERY("root_discovery"),
     SCAN_RECORD("scan_record"),

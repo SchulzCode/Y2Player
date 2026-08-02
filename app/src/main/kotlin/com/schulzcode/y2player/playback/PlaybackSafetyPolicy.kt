@@ -12,7 +12,6 @@ data class PrivateRouteSnapshot(
     }
 }
 
-/** Pure safety state used by framework route and audio-focus callbacks. */
 class PlaybackSafetyPolicy {
     private val guardedRoutes = linkedSetOf<PrivateAudioRoute>()
     private var routeGuardArmed = false
@@ -43,9 +42,8 @@ class PlaybackSafetyPolicy {
     ): Boolean {
         val connected = routes.connected()
         val lostGuardedRoute = guardedRoutes.any { it !in connected }
-        // Bluetooth loss is never allowed to fall through to the built-in speaker. The
-        // user preference only applies to a wired unplug, and a latched loss consumes
-        // duplicate noisy/A2DP broadcasts without repeating the stop sequence.
+        // Bluetooth loss never falls through to the speaker. The preference covers a
+        // wired unplug only.
         val guardedBluetooth = PrivateAudioRoute.BLUETOOTH in guardedRoutes
         val bluetoothLoss = guardedBluetooth &&
             (PrivateAudioRoute.BLUETOOTH !in connected || becomingNoisy)
@@ -88,21 +86,10 @@ class PlaybackSafetyPolicy {
         return resume
     }
 
-    /**
-     * False exactly while a route loss is latched, i.e. while automatic starts
-     * are suppressed. Also the assertion tests use to observe latching, so the
-     * policy exposes one predicate rather than two spellings of it.
-     */
     fun canAutomaticallyStart(): Boolean = !routeLossLatched
     fun hasPendingFocusResume(): Boolean = resumeAfterTransientFocusLoss && !routeLossLatched
 }
 
-/**
- * Whether a playback failure was the media's fault or the moment's.
- *
- * Only [UNSUPPORTED] is remembered against a file. Source removal, output loss,
- * cancellation and internal failures do not say that the encoded media is bad.
- */
 enum class PlaybackFailure { UNSUPPORTED, TRANSIENT, UNKNOWN }
 
 internal object PlaybackRequestGate {
@@ -111,12 +98,51 @@ internal object PlaybackRequestGate {
 }
 
 internal object PlaybackPositionPolicy {
-    private const val END_GUARD_MS = 5_000L
+    const val END_GUARD_MS = 5_000L
+
+    const val AUDIOBOOK_MIN_SAVE_MS = 10_000L
+
+    // Speech needs a run-up; resuming mid-sentence loses the thread.
+    const val AUDIOBOOK_REWIND_MS = 5_000L
 
     fun clampRestored(positionMs: Long, durationMs: Long): Long {
         if (positionMs <= 0 || durationMs <= 0 || positionMs >= durationMs) return 0
         return if (durationMs - positionMs <= END_GUARD_MS) 0 else positionMs
     }
+
+    fun audiobookSavePosition(positionMs: Long, durationMs: Long): Long = when {
+        positionMs < AUDIOBOOK_MIN_SAVE_MS -> 0
+        durationMs > 0 && durationMs - positionMs <= END_GUARD_MS -> 0
+        else -> positionMs
+    }
+
+    fun audiobookResumePosition(positionMs: Long, durationMs: Long): Long {
+        if (positionMs <= 0) return 0
+        if (durationMs > 0 && positionMs >= durationMs) return 0
+        return (positionMs - AUDIOBOOK_REWIND_MS).coerceAtLeast(0)
+    }
+}
+
+internal class ListeningSession(
+    val startedAtUtcMs: Long,
+    val startPositionMs: Long,
+    private val uptimeMs: () -> Long
+) {
+    private var accumulatedMs = 0L
+    private var since: Long? = null
+
+    fun resume() {
+        if (since == null) since = uptimeMs()
+    }
+
+    fun pause() {
+        val start = since ?: return
+        since = null
+        accumulatedMs += (uptimeMs() - start).coerceAtLeast(0)
+    }
+
+    fun listenedMs(): Long =
+        accumulatedMs + (since?.let { (uptimeMs() - it).coerceAtLeast(0) } ?: 0L)
 }
 
 internal class GenerationGuard {

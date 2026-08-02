@@ -6,9 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.view.KeyEvent
+import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.input.HardwareKeyGate
+import com.schulzcode.y2player.input.InputProbe
 import kotlin.math.abs
 
 class MediaButtonReceiver : BroadcastReceiver() {
@@ -20,12 +22,7 @@ class MediaButtonReceiver : BroadcastReceiver() {
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
         val serviceRequest = MediaButtonPolicy.serviceRequest(event.keyCode, source)
             ?: return logRejected(context, "unmapped_key", source, event)
-        // The vendor rebroadcasts AVRCP on its own action, so the intent tells us
-        // nothing about origin; the input device behind the event does.
         val fromLocalKeypad = HardwareKeyGate.isLocalKeypad(event.deviceId)
-        // Read here rather than passed in: this receiver is declared in the
-        // manifest and runs whether or not the activity is alive, so the activity
-        // cannot be the thing that supplies it. The snapshot is cached in memory.
         val localKeysWhileScreenOff = (context.applicationContext as? Y2Application)
             ?.container?.preferences?.snapshot()?.localKeysWhileScreenOff ?: false
         if (!HardwareKeyGate.isInputAllowed(
@@ -49,6 +46,9 @@ class MediaButtonReceiver : BroadcastReceiver() {
         ) {
             return logRejected(context, "press_gate", source, event)
         }
+        if (BuildConfig.DEBUG) {
+            InputProbe.log("BROADCAST", event, "intent=${intent.action} mapped=${serviceRequest.keyCode}")
+        }
         val serviceIntent = Intent(context, PlaybackService::class.java).apply {
             action = serviceRequest.action
             putExtra(PlaybackService.EXTRA_MEDIA_KEY_CODE, serviceRequest.keyCode)
@@ -56,17 +56,6 @@ class MediaButtonReceiver : BroadcastReceiver() {
         context.startService(serviceIntent)
     }
 
-    /**
-     * Records which gate dropped a media command, and what the command looked
-     * like when it arrived.
-     *
-     * Four independent gates can reject an event, and until this existed a
-     * report of "the headset stopped working" could not be told apart from "the
-     * headset command never arrived" — every attempt to separate a local key
-     * press from a remote one had to be guessed and then tested on hardware.
-     * Shares the per-process budget with [logIncomingEvent], so it cannot become
-     * a source of log volume itself.
-     */
     private fun logRejected(
         context: Context,
         reason: String,
@@ -87,9 +76,6 @@ class MediaButtonReceiver : BroadcastReceiver() {
     private fun logIncomingEvent(context: Context, intentAction: String?, event: KeyEvent?) {
         if (!MediaButtonDiagnosticBudget.take()) return
         val logger = (context.applicationContext as? Y2Application)?.container?.logger ?: return
-        // scanCode and inputSource are what separate a local key from a headset
-        // command; without them a report of "the play button still works with
-        // the screen off" cannot be told apart from a stem press.
         logger.info(
             "MediaButtonInput",
             "intentAction=$intentAction keyCode=${event?.keyCode ?: KeyEvent.KEYCODE_UNKNOWN} " +
@@ -120,7 +106,6 @@ class MediaButtonReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_Y2_KEY = "com.innioasis.y2.key"
 
-        /** Process-lifetime API-19 media-button ownership; safe to re-assert on playback start. */
         @Suppress("DEPRECATION")
         fun register(context: Context, logger: DiagnosticLogger) {
             val appContext = context.applicationContext
@@ -132,7 +117,6 @@ class MediaButtonReceiver : BroadcastReceiver() {
     }
 }
 
-/** Source-scoped key mapping; it contains no screen, timing or playback state. */
 internal object MediaButtonPolicy {
     data class ServiceRequest(val action: String, val keyCode: Int)
 
@@ -164,11 +148,8 @@ internal object MediaButtonPolicy {
     }
 }
 
-/**
- * Normalizes API-19 vendor delivery to one command for DOWN+UP, DOWN-only or
- * UP-only presses. A DOWN is dispatched immediately so a missing release cannot
- * lose the command; its matching UP is then consumed.
- */
+// Vendor delivery is not guaranteed to be a DOWN/UP pair. A DOWN dispatches
+// immediately so a missing release cannot lose the press; its UP is consumed.
 internal object MediaButtonPressGate {
     private data class Edge(
         val keyCode: Int,
@@ -253,12 +234,7 @@ internal object MediaButtonPressGate {
     private const val RELEASE_WINDOW_MS = 1_000L
 }
 
-/** Caps raw input diagnostics per process; progress and ordinary playback are never logged here. */
 private object MediaButtonDiagnosticBudget {
-    // Raised from 64: a single input-debugging session exhausted the old budget
-    // before the interesting presses happened. Informational logging is now
-    // gated on the verbose-diagnostics preference, so this cannot run away on a
-    // device that is not being debugged.
     private var remaining = 512
 
     @Synchronized

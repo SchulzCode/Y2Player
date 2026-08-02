@@ -4,11 +4,6 @@ import android.content.Context
 import android.media.AudioManager
 import android.provider.Settings
 
-/**
- * Reconciles Y2Player's persisted preference with Android's global UI-sound
- * state. The Y2 can start the HOME activity before AudioService finishes boot,
- * so callers reapply this both on activity resume and after BOOT_COMPLETED.
- */
 class UiSoundEffectsController(context: Context) {
     private val appContext = context.applicationContext
 
@@ -26,8 +21,6 @@ class UiSoundEffectsController(context: Context) {
             true
         }
 
-        // The setting database can already contain 0 while AudioService still
-        // has samples cached from early boot. Always unload when Off is desired.
         if (!enabled) runCatching {
             val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             audioManager.unloadSoundEffects()

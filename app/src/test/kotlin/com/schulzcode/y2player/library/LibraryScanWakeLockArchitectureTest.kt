@@ -10,10 +10,13 @@ class LibraryScanWakeLockArchitectureTest {
             repositoryRoot(),
             "app/src/main/kotlin/com/schulzcode/y2player/library/LibraryDatabase.kt"
         ).readText()
+        // .gitattributes checks Kotlin out with native endings, so on Windows this
+        // source arrives CRLF and a literal \n in the assertion below would never
+        // match. Normalise rather than assert against the checkout's line endings.
         val repositorySource = File(
             repositoryRoot(),
             "app/src/main/kotlin/com/schulzcode/y2player/library/LibraryRepository.kt"
-        ).readText()
+        ).readText().replace("\r\n", "\n")
         val ensureOpen = databaseSource.substring(
             databaseSource.indexOf("fun ensureOpen()"),
             databaseSource.indexOf("override fun onUpgrade")

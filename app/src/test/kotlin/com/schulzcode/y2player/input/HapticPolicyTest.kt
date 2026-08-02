@@ -6,11 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HapticPolicyTest {
-
-    // --- level mapping -------------------------------------------------------
-
     @Test fun defaultAndUnknownStoredValuesAreOff() {
-        // A corrupt preference must never leave the device buzzing on every detent.
         assertEquals(HapticLevel.OFF, HapticLevel.fromStorage(null))
         assertEquals(HapticLevel.OFF, HapticLevel.fromStorage(""))
         assertEquals(HapticLevel.OFF, HapticLevel.fromStorage("extreme"))
@@ -37,13 +33,10 @@ class HapticPolicyTest {
         for (level in HapticLevel.values().drop(1)) {
             assertTrue(level.enabled)
             assertTrue("durations must increase", level.durationMs > previous)
-            // A detent is a tick, not a buzz — and every millisecond is motor current.
             assertTrue("${level.name} pulse ${level.durationMs} ms is too long", level.durationMs <= 40L)
             previous = level.durationMs
         }
     }
-
-    // --- rate limiting -------------------------------------------------------
 
     @Test fun firstDetentAlwaysPulses() {
         assertTrue(HapticRateLimiter(50L).allow(0L))
@@ -58,16 +51,10 @@ class HapticPolicyTest {
         assertTrue("the boundary itself must pass", limiter.allow(1_050L))
     }
 
-    /**
-     * The failure this prevents: a fast spin emitting a detent every 20 ms would
-     * queue pulses behind each other and leave the motor running after the wheel
-     * stopped. Feedback must stay bounded and aligned with the wheel.
-     */
     @Test fun fastSpinIsThinnedToABoundedTickRate() {
         val limiter = HapticRateLimiter(55L)
         var now = 0L
         repeat(100) { limiter.allow(now); now += 20L }
-        // 100 detents over 2 seconds → at most ~2000/55 pulses.
         assertTrue("fired ${limiter.pulseCount()}", limiter.pulseCount() <= 100 * 20 / 55 + 1)
         assertEquals(100, limiter.pulseCount() + limiter.suppressedCount())
     }
@@ -99,8 +86,6 @@ class HapticPolicyTest {
         assertEquals(0, second[1])
     }
 
-    // --- acceptance rules ----------------------------------------------------
-
     @Test fun noPulseWhenTheDeviceHasNoMotor() {
         assertFalse(
             HapticPolicy.shouldPulse(HapticLevel.STRONG, available = false, onNowPlaying = true, stateChanged = true)
@@ -113,7 +98,6 @@ class HapticPolicyTest {
         )
     }
 
-    /** A detent against the end of an empty list changes nothing, so it must be silent. */
     @Test fun noPulseWhenTheDetentChangedNothing() {
         assertFalse(
             HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, onNowPlaying = false, stateChanged = false)
@@ -126,7 +110,6 @@ class HapticPolicyTest {
         )
     }
 
-    /** On Now Playing the wheel sets volume via an effect, not a state change. */
     @Test fun pulseOnNowPlayingEvenWithoutAStateChange() {
         assertTrue(
             HapticPolicy.shouldPulse(HapticLevel.MEDIUM, available = true, onNowPlaying = true, stateChanged = false)

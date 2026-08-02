@@ -28,24 +28,11 @@ import com.schulzcode.y2player.core.state.ScreenRow
 import com.schulzcode.y2player.core.state.isProgressOnlyUpdate
 import com.schulzcode.y2player.util.TimeFormat
 
-/**
- * Single custom-drawn surface for the whole UI.
- *
- * Rendering rules: all strings and derived visual state are cached in
- * [updatePresentationCache] / [refreshVisibleRowCache]; onDraw never allocates,
- * never formats, never looks anything up. The partial invalidation paths in
- * [render] (selection-only / progress-only) must stay intact.
- *
- * Layout is derived from the runtime width/height. The primary target is the Y2's
- * 480x360 landscape panel; a portrait panel automatically falls back to the stacked
- * Now Playing layout.
- */
 @SuppressLint("ViewConstructor")
 @Suppress("DEPRECATION")
 class Y2PlayerView(
     context: Context,
     private val dispatch: (AppAction) -> Unit,
-    // Shared process-wide loader (AppContainer); this view must not shut it down.
     private val artworkLoader: AlbumArtworkLoader
 ) : View(context) {
     private val density = resources.displayMetrics.density.coerceAtLeast(1f)
@@ -58,7 +45,6 @@ class Y2PlayerView(
         style = Paint.Style.FILL
     }
     private val iconPainter = Y2IconPainter(paint, density)
-    /** Held rather than looked up per render; `isEnabled` is a local field read. */
     private val accessibilityManager =
         context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
     private val reusableRect = Rect()
@@ -66,19 +52,8 @@ class Y2PlayerView(
 
     private var state: AppState = AppState()
 
-    /**
-     * Colours for the current theme.
-     *
-     * A plain field holding one instance, read directly in the draw path, so
-     * switching themes costs nothing at paint time — the alternative, resolving a
-     * colour through a lookup on every one of the ~90 draw calls per frame, would
-     * have put work on the main thread to support a setting that changes twice a
-     * year. Nothing derived from these colours is cached anywhere (icons take their
-     * colour as a draw argument), so swapping the reference is the whole job.
-     */
     private var palette: Y2Palette = Y2Palette.DARK
 
-    /** Returns whether the palette actually changed, so [render] can force a full repaint. */
     private fun applyPalette(lightTheme: Boolean): Boolean {
         val next = Y2Palette.of(lightTheme)
         if (next == palette) return false
@@ -163,13 +138,7 @@ class Y2PlayerView(
 
     fun render(newState: AppState) {
         val oldState = state
-        // Every pixel is a different colour after this, so a theme change must not
-        // be served by either partial repaint below.
         val themeChanged = applyPalette(newState.preferences.lightTheme)
-        // Shared with the reducer so the two layers cannot drift; see
-        // isProgressOnlyUpdate. The outer comparison additionally requires that
-        // nothing *else* in the state changed, which is what makes the cheap
-        // partial repaint below safe.
         val progressOnly = !themeChanged && isProgressOnlyUpdate(oldState.playback, newState.playback) &&
             oldState.copy(playback = newState.playback) == newState
         val sameScreenPath = oldState.screenStack.size == newState.screenStack.size &&
@@ -190,11 +159,10 @@ class Y2PlayerView(
             cachedDuration = TimeFormat.duration(newState.playback.durationMs)
             when (newState.currentScreen) {
                 Screen.NowPlaying -> invalidate(0, headerHeight.toInt(), width, (height - footerHeight).toInt())
-                // The home player pane shows live progress; repaint only its region.
                 Screen.MainMenu -> if (isSplitHome() && newState.playback.currentTrackId != null) {
                     invalidate(rowAreaRight().toInt(), headerHeight.toInt(), width, (height - footerHeight).toInt())
                 }
-                Screen.PlaybackSettings, Screen.NowPlayingOptions -> if (
+                Screen.NowPlayingOptions -> if (
                     oldState.playback.sleepTimerRemainingMs != newState.playback.sleepTimerRemainingMs
                 ) {
                     rows = ScreenContent.rows(newState)
@@ -225,7 +193,6 @@ class Y2PlayerView(
     }
 
     fun release() {
-        // The artwork loader is owned by AppContainer and outlives this view.
         artwork = null
         artworkPath = null
         detailArtwork = null
@@ -254,10 +221,8 @@ class Y2PlayerView(
         drawStatusMessage(canvas)
     }
 
-    /** Home uses the iPod-style split layout on landscape panels: menu left, player pane right. */
     private fun isSplitHome(): Boolean = state.currentScreen == Screen.MainMenu && width > height
 
-    /** Right edge of the list area; the home player pane owns the rest. */
     private fun rowAreaRight(): Float = if (isSplitHome()) width * .55f else width.toFloat()
 
     private fun hasDetailHeader(): Boolean = state.currentScreen is Screen.AlbumSongs || state.currentScreen is Screen.ArtistSongs
@@ -281,7 +246,6 @@ class Y2PlayerView(
             MotionEvent.ACTION_UP -> {
                 if (!pendingTouchActive) true else {
                     pendingTouchActive = false
-                    // Tapping the home player pane opens Now Playing, like a Right press.
                     if (isSplitHome() && event.x >= rowAreaRight() && event.y >= headerHeight && event.y < height - footerHeight) {
                         pendingTouchIndex = null
                         dispatch(AppAction.Right)
@@ -320,7 +284,6 @@ class Y2PlayerView(
         return (visibleStart + ((y - rowsTop) / rowHeight).toInt()).takeIf { it in rows.indices }
     }
 
-    // ------------------------------------------------------------------ header
     private fun drawHeader(canvas: Canvas) {
         paint.style = Paint.Style.FILL
         paint.color = palette.surface
@@ -408,7 +371,6 @@ class Y2PlayerView(
         canvas.restoreToCount(headerSave)
     }
 
-    /** Battery glyph + percent; returns the x consumed up to (for stacking leftwards). */
     private fun drawBattery(canvas: Canvas, rightEdge: Float): Float {
         val color = when {
             state.device.charging -> palette.success
@@ -421,11 +383,6 @@ class Y2PlayerView(
         paint.color = color
         val textWidth = if (cachedBatteryText.isEmpty()) 0f else {
             canvas.drawText(cachedBatteryText, rightEdge, 28f * density, paint)
-            // A fixed reservation rather than the measured string. The text is
-            // right-aligned so its own position is stable, but measuring it would
-            // drag the glyph and the route icon sideways every time the level
-            // crossed a digit — now that the percent is permanent, that would be a
-            // header that visibly twitches on its own.
             paint.measureText(BATTERY_TEXT_REFERENCE) + 5f * density
         }
 
@@ -454,8 +411,6 @@ class Y2PlayerView(
         }
         return bodyRight - bodyWidth - 10f * density
     }
-
-    // ------------------------------------------------------------------ rows
 
     private fun drawRows(canvas: Canvas) {
         if (rows.isEmpty()) {
@@ -530,7 +485,6 @@ class Y2PlayerView(
         val left = Y2UiTheme.ROW_FOCUS_INSET_DP * density
         val right = rowSurfaceRight()
 
-        // Subtle background for the focused row.
         reusableRectF.set(
             left,
             top + 2.5f * density,
@@ -548,7 +502,6 @@ class Y2PlayerView(
             paint
         )
 
-        // Accent indicator only on the left side.
         val barWidth = Y2UiTheme.FOCUS_BAR_WIDTH_DP * density
 
         reusableRectF.set(
@@ -580,7 +533,6 @@ class Y2PlayerView(
         canvas.drawRoundRect(reusableRectF, Y2UiTheme.ROW_RADIUS_DP * density, Y2UiTheme.ROW_RADIUS_DP * density, paint)
     }
 
-    /** Right edge of row surfaces, including the complete focus stroke and scrollbar gap. */
     private fun rowSurfaceRight(): Float {
         if (!hasScrollIndicator()) return rowAreaRight() - Y2UiTheme.ROW_FOCUS_INSET_DP * density
         val scrollbarLeft = rowAreaRight() -
@@ -620,7 +572,12 @@ class Y2PlayerView(
             queueScreen = state.currentScreen == Screen.Queue,
             favoritesScreen = state.currentScreen == Screen.Favorites,
             playlistScreen = state.currentScreen is Screen.PlaylistTracks,
-            recentScreen = state.currentScreen == Screen.RecentlyPlayed
+            recentScreen = state.currentScreen == Screen.RecentlyPlayed,
+            audiobooksScreen = state.currentScreen == Screen.Audiobooks,
+            drilldownScreen = state.currentScreen is Screen.AlbumSongs ||
+                state.currentScreen is Screen.ArtistSongs ||
+                state.currentScreen is Screen.ArtistAlbums ||
+                state.currentScreen is Screen.AudiobookChapters
         )
         val title: String
         val detail: String
@@ -635,6 +592,16 @@ class Y2PlayerView(
                 title = "Music storage unavailable"
                 detail = "Insert or remount the SD card"
                 icon = Y2Icon.STORAGE
+            }
+            EmptyStateKind.EMPTY_LIST -> {
+                title = "Nothing here"
+                detail = "These files are no longer on the card"
+                icon = Y2Icon.WARNING
+            }
+            EmptyStateKind.EMPTY_AUDIOBOOKS -> {
+                title = "No audiobooks found"
+                detail = "Put books inside an AUDIOBOOKS folder"
+                icon = Y2Icon.BOOK
             }
             EmptyStateKind.EMPTY_QUEUE -> {
                 title = "Queue is empty"
@@ -702,13 +669,6 @@ class Y2PlayerView(
         boldPaint.textAlign = Paint.Align.LEFT
     }
 
-    // ------------------------------------------------------------ album / artist detail
-
-    /**
-     * A compact header keeps identity and artwork visible without creating a
-     * second focus pane. The wheel remains one-dimensional: header action first,
-     * then tracks, with the selected row always scrolled into view.
-     */
     private fun drawDetailHeader(canvas: Canvas) {
         val top = headerHeight
         val bottom = top + detailHeaderHeight
@@ -737,18 +697,10 @@ class Y2PlayerView(
         canvas.drawText(cachedDetailSubtitle, textLeft, if (cachedDetailTitle2.isEmpty()) top + 51f * density else top + 66f * density, paint)
     }
 
-    // ------------------------------------------------------------------ now playing
-
     private fun drawNowPlaying(canvas: Canvas) {
         if (Y2UiLogic.playerLayout(width, height) == PlayerLayout.WIDE) drawNowPlayingWide(canvas) else drawNowPlayingTall(canvas)
     }
 
-    /**
-     * Landscape layout: artwork dominates the left, everything else forms one calm
-     * left-aligned column. Hierarchy: artwork > title > artist > album > state badges
-     * > progress. Route/DAC details appear only as warnings; the codec line is the
-     * single always-on secondary detail (it is a HiFi player).
-     */
     private fun drawNowPlayingWide(canvas: Canvas) {
         val contentTop = headerHeight
         val contentHeight = height - footerHeight - contentTop
@@ -762,8 +714,6 @@ class Y2PlayerView(
         val controlY = artTop + artSize - 22f * density
         val barTop = controlY - 48f * density
 
-        // Metadata block flows top-down with one fact per line; the title may take
-        // two lines — it is the most important text in the application.
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
         boldPaint.color = palette.primaryText
@@ -793,10 +743,6 @@ class Y2PlayerView(
         }
         drawStateBadges(canvas, colLeft + 8f * density, (y + 25f * density).coerceAtMost(barTop - 18f * density), 28f * density)
 
-        // Fixed, breathing-room anchored progress block at the artwork's bottom edge.
-        // Non-playing states announce themselves as a quiet text tag ABOVE the bar —
-        // a glyph beside the bar merged visually with the knob into one malformed
-        // shape (the "gold blob" defect).
         if (cachedStatusTag.isNotEmpty()) {
             boldPaint.textAlign = Paint.Align.LEFT
             boldPaint.textSize = Y2UiTheme.BADGE_SP * density
@@ -847,13 +793,6 @@ class Y2PlayerView(
         )
     }
 
-    /**
-     * Home player pane (right 45 % of the split home). While a track is loaded:
-     * artwork thumbnail, title, artist, live progress — the playing music is always
-     * visible content, never a menu row. Idle: library summary pointing at
-     * Shuffle All. Everything drawn from cached strings and the shared artwork
-     * bitmap; no allocations.
-     */
     private fun drawHomePane(canvas: Canvas) {
         val paneLeft = rowAreaRight() + 6f * density
         val paneRight = width - 10f * density
@@ -915,7 +854,6 @@ class Y2PlayerView(
         boldPaint.textAlign = Paint.Align.LEFT
     }
 
-    /** Portrait fallback: stacked Now Playing layout for natural-portrait panels. */
     private fun drawNowPlayingTall(canvas: Canvas) {
         val centerX = width * .5f
         val artSize = (width * .46f).coerceIn(124f * density, 156f * density)
@@ -995,11 +933,6 @@ class Y2PlayerView(
         paint.style = Paint.Style.FILL
     }
 
-    /**
-     * State badges show only *active* states (shuffle on, repeat on, timer armed,
-     * favorited). A muted icon for "off" answers a question nobody asked — the
-     * absence of a badge already means off.
-     */
     private fun drawStateBadges(canvas: Canvas, startX: Float, centerY: Float, step: Float) {
         var x = startX
         if (state.playback.shuffleEnabled) {
@@ -1039,8 +972,6 @@ class Y2PlayerView(
         paint.color = palette.accent
         canvas.drawRoundRect(reusableRectF, barHeight * .5f, barHeight * .5f, paint)
         if (progress > 0f) {
-            // Clamp the knob inside the track: near 0% or 100% an unclamped knob
-            // bulges past the bar's rounded ends.
             val knobRadius = 3f * density
             val knobX = progressRight.coerceIn(left + knobRadius, right - knobRadius)
             canvas.drawCircle(knobX, top + barHeight * .5f, knobRadius, paint)
@@ -1070,8 +1001,6 @@ class Y2PlayerView(
         paint.color = palette.accent
         canvas.drawRoundRect(reusableRectF, barHeight * .5f, barHeight * .5f, paint)
     }
-
-    // ------------------------------------------------------------------ footer
 
     private fun drawFooter(canvas: Canvas) {
         if (isSplitHome()) return
@@ -1109,8 +1038,6 @@ class Y2PlayerView(
 
         val controlX = width - 29f * density
         val controlY = top + footerHeight * .5f
-        // Playback status, not a separate focus stop. Reserve FOCUS_SURFACE and
-        // its accent outline for controls the wheel can actually focus.
         paint.color = palette.surface
         canvas.drawCircle(controlX, controlY, 20f * density, paint)
         val playbackIcon = when (state.playback.status) {
@@ -1161,21 +1088,14 @@ class Y2PlayerView(
         canvas.drawText(cachedMessageBody, 46f * density, top + 42f * density, paint)
     }
 
-    // ------------------------------------------------------------------ caches
-
     private fun updatePresentationCache() {
         cachedRoute = Y2UiLogic.routePresentation(state.playback.outputRoute)
-        // Header status earns space only for an active choice (Bluetooth) or a real
-        // problem (output lost). Speaker playback is audible; it needs no alarm icon.
         cachedHeaderRouteIcon = when (cachedRoute.icon) {
             RouteIcon.BLUETOOTH -> RouteIcon.BLUETOOTH
             RouteIcon.DISCONNECTED -> RouteIcon.DISCONNECTED
             else -> null
         }
         cachedBatteryPercent = state.device.batteryPercent
-        // Always shown when known, by request. Empty only while the level is still
-        // unknown — before the first ACTION_BATTERY_CHANGED arrives — where the
-        // glyph alone is honest and "0%" would not be.
         cachedBatteryText = state.device.batteryPercent?.let { "$it%" } ?: ""
         updateFooterPosition()
         val track = state.playback.currentTrackId?.let(state.library.byId::get)
@@ -1183,26 +1103,41 @@ class Y2PlayerView(
         val nowWidth = nowPlayingTextWidth()
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
         splitNowTitle(track?.title ?: "Nothing playing", nowWidth)
+        val book = track?.audiobookFolderKey?.let { ScreenContent.audiobookEntry(state, it) }
         paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
-        cachedNowArtist = ellipsize(track?.displayArtist ?: "Select a track", nowWidth, paint)
+        val artistText = when {
+            track == null -> "Select a track"
+            book != null -> Y2UiLogic.audiobookArtistLine(book.name, track.artist)
+            else -> track.displayArtist
+        }
+        cachedNowArtist = ellipsize(artistText, nowWidth, paint)
         paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
-        // Suppress the album line when it merely repeats the artist (common for
-        // single-artist metadata) — two identical adjacent lines read as a bug.
-        val albumText = track?.displayAlbum?.takeUnless { it == track.displayArtist } ?: ""
+        val albumText = when {
+            track == null -> ""
+            book != null -> Y2UiLogic.audiobookChapterLine(
+                book.chapterIds.indexOf(track.id).takeIf { it >= 0 }?.plus(1),
+                book.chapterCount
+            )
+            else -> Y2UiLogic.albumLine(
+                album = track.displayAlbum,
+                artist = track.displayArtist,
+                year = track.year,
+                includeYear = state.preferences.extraTrackInfo
+            )
+        }
         cachedNowAlbum = ellipsize(albumText, nowWidth, paint)
-        cachedTechnicalLine = if (track == null) "" else buildTechnicalLine(
+        cachedTechnicalLine = if (track == null) "" else Y2UiLogic.technicalLine(
             AudioCodecLabels.label(track.codec, track.extension),
             track.sampleRate,
-            track.bitDepth
+            track.bitDepth,
+            if (state.preferences.extraTrackInfo) track.bitrate else null,
+            if (state.preferences.extraTrackInfo) track.genre else null
         )
         cachedDacLabel = Y2UiLogic.dacModeLabel(
             state.preferences.audioQualityMode,
             state.playback.dac.detected,
             state.playback.dac.hiFiRequestAccepted
         )
-        // Only real problems surface as warnings: output lost or a DAC fallback.
-        // Speaker playback is audible reality, not an anomaly, so the codec line
-        // stays as the single secondary detail.
         val outputLost = cachedRoute.icon == RouteIcon.DISCONNECTED
         val dacWarning = cachedDacLabel.contains("unavailable") || cachedDacLabel.contains("fallback")
         cachedNowSecondaryWarning = outputLost || dacWarning
@@ -1213,7 +1148,6 @@ class Y2PlayerView(
         }
         paint.textSize = Y2UiTheme.META_SP * density
         cachedNowSecondary = ellipsize(secondary, nowWidth, paint)
-        // Status changes always trigger a full render, so this stays cache-driven.
         cachedStatusTag = when (state.playback.status) {
             PlaybackStatus.PAUSED -> "PAUSED"
             PlaybackStatus.PREPARING -> "LOADING"
@@ -1225,14 +1159,11 @@ class Y2PlayerView(
         cachedMiniTitle = if (track == null) "" else ellipsize(track.title, miniTextWidth, boldPaint)
         paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
         cachedMiniArtist = if (track == null) "" else ellipsize(track.displayArtist, miniTextWidth, paint)
-        // Home player pane strings (pane is ~45% of the width, minus padding).
         val paneTextWidth = (fallbackWidth() * .45f - 40f * density).coerceAtLeast(40f * density)
         boldPaint.textSize = Y2UiTheme.MINI_TITLE_SP * density
         cachedPaneTitle = if (track == null) "" else ellipsize(track.title, paneTextWidth, boldPaint)
         paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
         cachedPaneArtist = if (track == null) "" else ellipsize(track.displayArtist, paneTextWidth, paint)
-        // Idle-pane strings: computed and ellipsized here (never in onDraw) so they can
-        // never cross the pane boundary, matching every other cached string.
         val count = state.library.availableTracks.size
         val processed = state.library.scanProgress.processedFiles.coerceAtLeast(0)
         cachedScanProgressFraction = Y2UiLogic.scanProgressFraction(processed, count)
@@ -1251,7 +1182,6 @@ class Y2PlayerView(
         }
         boldPaint.textSize = Y2UiTheme.BODY_SP * density
         cachedHomeStats = ellipsize(stats, paneTextWidth, boldPaint)
-        // The idle pane's second line guides the next action instead of a static slogan.
         val homeHint = when {
             state.library.isScanning -> "Scanning your music…"
             count == 0 -> "Add music, then rescan"
@@ -1325,11 +1255,6 @@ class Y2PlayerView(
         cachedDetailTitle2 = ellipsize(title.substring(breakAt).trimStart(), maxWidth, boldPaint)
     }
 
-    /**
-     * Wraps the Now Playing title onto up to two lines at a word boundary; the
-     * second line ellipsizes. Runs only in the presentation cache, never in onDraw.
-     * boldPaint must already carry the title text size.
-     */
     private fun splitNowTitle(title: String, maxWidth: Float) {
         if (title.isEmpty() || boldPaint.measureText(title) <= maxWidth) {
             cachedNowTitle = title
@@ -1349,7 +1274,6 @@ class Y2PlayerView(
 
     private fun fallbackHeight(): Float = (height.takeIf { it > 0 } ?: (Y2UiTheme.TARGET_HEIGHT_PX * density).toInt()).toFloat()
 
-    /** Text width available on Now Playing; mirrors the wide/tall draw layouts. */
     private fun nowPlayingTextWidth(): Float {
         val w = fallbackWidth()
         val h = fallbackHeight()
@@ -1428,25 +1352,12 @@ class Y2PlayerView(
         return fallback
     }
 
-    private fun buildTechnicalLine(codec: String, sampleRate: Int?, bitDepth: Int?): String {
-        val rate = sampleRate?.takeIf { it > 0 }?.let { if (it % 1000 == 0) "${it / 1000} kHz" else "${it / 1000.0} kHz" }
-        val depth = bitDepth?.takeIf { it > 0 }?.let { "$it-bit" }
-        return when {
-            rate != null && depth != null -> "$codec · $rate · $depth"
-            rate != null -> "$codec · $rate"
-            depth != null -> "$codec · $depth"
-            else -> codec
-        }
-    }
-
     private fun requestArtwork() {
         val path = state.playback.currentTrackId?.let(state.library.byId::get)?.absolutePath
         if (path != artworkPath) {
             artworkPath = path
             artwork = null
             if (path != null) {
-                // Same target size as LegacyRemoteControlController so both consumers share one
-                // cache entry and one decode per track; drawBitmap scales at draw time.
                 artworkLoader.load(path, SHARED_ARTWORK_SIZE_PX) { loadedPath, bitmap ->
                     if (loadedPath == artworkPath) {
                         artwork = bitmap
@@ -1487,13 +1398,6 @@ class Y2PlayerView(
         }
     }
 
-    /**
-     * Clamped to the fixed row-cache size: the per-row caches are [MAX_VISIBLE_ROWS]
-     * slots, and drawRows indexes them by (row - cachedRowStart). A panel tall
-     * enough to fit more rows than the cache holds would otherwise overrun those
-     * arrays. The target 480x360 panel fits four readable rows, so this only guards the
-     * portrait-fallback geometry.
-     */
     private fun visibleRowCount(): Int {
         val availableHeight = (rowAreaBottom() - rowAreaTop()).coerceAtLeast(0f)
         return Y2UiLogic.visibleRowCount(availableHeight, rowHeight).coerceAtMost(MAX_VISIBLE_ROWS)
@@ -1547,57 +1451,8 @@ class Y2PlayerView(
         cachedRowEnd = -1
     }
 
-    private fun iconFor(row: ScreenRow): Y2Icon = when (row) {
-        is ScreenRow.TrackRow -> if (row.track.id == state.playback.currentTrackId) Y2Icon.PLAYING else Y2Icon.SONG
-        is ScreenRow.Folder -> Y2Icon.FOLDER
-        is ScreenRow.Group -> when {
-            // Content lists get content icons: an album row with an ⓘ icon reads
-            // like an error dialog, not a library.
-            state.currentScreen == Screen.Albums -> Y2Icon.ALBUM
-            state.currentScreen == Screen.Artists -> Y2Icon.ARTIST
-            row.key.contains("dac") -> Y2Icon.DAC
-            row.key.contains("error") || row.key.contains("limit") || row.key.contains("unsupported") -> Y2Icon.WARNING
-            else -> Y2Icon.INFO
-        }
-        is ScreenRow.Action -> iconForKey(row.key)
-    }
-
-    private fun iconForKey(key: String): Y2Icon = when {
-        key == "collection_play" -> Y2Icon.PLAY
-        key == "rescan" || key == "bt_refresh" -> Y2Icon.REFRESH
-        key == "music" || key == "songs" -> Y2Icon.SONG
-        key == "favorites" || key.contains("favorite") -> Y2Icon.FAVORITE
-        key == "recent" || key == "playlist_recent" -> Y2Icon.RECENT
-        key == "albums" || key.startsWith("track_album") -> Y2Icon.ALBUM
-        key == "artists" || key.startsWith("track_artist") -> Y2Icon.ARTIST
-        key.startsWith("np_playlist") -> Y2Icon.PLAYLIST
-        key == "folders" -> Y2Icon.FOLDER
-        key == "now_playing" || key.startsWith("track_play") || key.startsWith("queue_play") -> Y2Icon.PLAYING
-        key == "queue" || key.contains("queue") -> Y2Icon.QUEUE
-        key == "bluetooth" || key.startsWith("bt_") -> Y2Icon.BLUETOOTH
-        key == "audio" -> Y2Icon.HEADPHONES
-        key == "settings" || key == "system" || key == "playback" || key.startsWith("playback_") ||
-            key == "sound" || key == "equalizer" || key == "sound_dynamics" || key.contains("effects") ||
-            key.startsWith("eq_") -> Y2Icon.SETTINGS
-        key == "interface" -> Y2Icon.DISPLAY
-        key == "library_settings" -> Y2Icon.PLAYLIST
-        key == "output_information" -> Y2Icon.DAC
-        key.startsWith("track_details") -> Y2Icon.INFO
-        key == "storage" || key.startsWith("storage:") || key == "rescan" -> Y2Icon.STORAGE
-        key == "display" || key.startsWith("brightness") || key.startsWith("timeout") || key == "keep_screen_on" -> Y2Icon.DISPLAY
-        key == "diagnostics" || key.startsWith("diag_") -> Y2Icon.DIAGNOSTICS
-        key == "sort" || key.startsWith("sort:") -> Y2Icon.SORT
-        // Import/export are both playlist operations; without this arm they split
-        // into ADD vs PLAYLIST icons and read as unrelated actions.
-        key == "playlist_import_m3u" || key == "playlist_export_m3u" -> Y2Icon.PLAYLIST
-        key.contains("sleep_timer") -> Y2Icon.TIMER
-        key.contains("shuffle") -> Y2Icon.SHUFFLE
-        key.contains("repeat") -> Y2Icon.REPEAT
-        key.contains("audio_quality") -> Y2Icon.DAC
-        key.contains("create") || key.contains("add") || key.contains("import") -> Y2Icon.ADD
-        key.startsWith("playlist") -> Y2Icon.PLAYLIST
-        else -> Y2Icon.ACTION
-    }
+    private fun iconFor(row: ScreenRow): Y2Icon =
+        Y2RowIcons.forRow(row, state.currentScreen, state.playback.currentTrackId)
 
     private fun rowSubtitle(row: ScreenRow): String? = when {
         row !is ScreenRow.TrackRow -> row.subtitle
@@ -1608,13 +1463,16 @@ class Y2PlayerView(
 
     private fun trailingIconFor(row: ScreenRow, active: Boolean): Y2Icon? {
         val action = row as? ScreenRow.Action ?: return null
-        if (active) return Y2Icon.CHECK
         val key = action.key
-        return if (key in NAVIGATION_KEYS || key.startsWith("storage:") || key.startsWith("playlist:") ||
+        // A row that opens a screen shows where it goes. CHECK is reserved for the
+        // selected value of a setting, so navigation wins over the active mark.
+        if (key in NAVIGATION_KEYS || key.startsWith("storage:") || key.startsWith("playlist:") ||
+            key.startsWith("audiobook:") || key.startsWith("audiobook_chapters:") ||
             key.startsWith("track_playlist") || key.startsWith("track_browse") || key.startsWith("track_details") ||
             key.startsWith("track_album") || key.startsWith("track_artist") || key.startsWith("np_playlist") ||
             key.startsWith("np_track_options")
-        ) Y2Icon.CHEVRON else null
+        ) return Y2Icon.CHEVRON
+        return if (active) Y2Icon.CHECK else null
     }
 
     private fun isActive(row: ScreenRow): Boolean {
@@ -1622,9 +1480,6 @@ class Y2PlayerView(
             (state.playback.status == PlaybackStatus.PLAYING || state.playback.status == PlaybackStatus.PREPARING)
         val action = row as? ScreenRow.Action ?: return false
         return when {
-            action.key == "collection_play" -> state.playback.currentTrackId?.let { currentId ->
-                rows.any { (it as? ScreenRow.TrackRow)?.track?.id == currentId }
-            } == true
             action.key == "now_playing" -> state.playback.currentTrackId != null
             action.key == "shuffle" -> state.playback.shuffleEnabled
             action.key == "repeat" -> state.playback.repeatMode != RepeatMode.OFF
@@ -1676,20 +1531,6 @@ class Y2PlayerView(
         return text.substring(0, end) + suffix
     }
 
-    /**
-     * Publishes the accessibility description, but only when someone is listening.
-     *
-     * This used to be assigned on every render — including the selection-only
-     * path, i.e. once per wheel detent — building a string and firing an
-     * accessibility state change for a description that nothing on this device
-     * reads. Gating on [AccessibilityManager.isEnabled] keeps the behaviour
-     * identical for a real accessibility client while costing one field read
-     * per render when, as here, no service is running.
-     *
-     * Deliberately `setContentDescription` rather than an override of the
-     * getter: overriding the getter hides the value from the accessibility
-     * node, which is the opposite of the point.
-     */
     private fun updateContentDescription(value: AppState) {
         if (accessibilityManager?.isEnabled != true) return
         contentDescription = buildContentDescription(value)
@@ -1711,12 +1552,12 @@ class Y2PlayerView(
         private const val MAX_VISIBLE_ROWS = 12
         private const val SCAN_PROGRESS_PHASE_STEPS = 200
 
-        /** Widest battery reading, so the header reserves a constant width for it. */
         private const val BATTERY_TEXT_REFERENCE = "100%"
         const val SHARED_ARTWORK_SIZE_PX = 256
         private val NAVIGATION_KEYS = setOf(
-            "music", "songs", "albums", "artists", "playlists", "folders", "audio", "settings",
-            "playlist_favorites", "playlist_recent", "playback", "sort", "bluetooth",
+            "music", "audiobooks", "now_playing", "songs", "albums", "artists", "playlists",
+            "folders", "favorites", "recent", "audio", "settings", "output", "sort", "bluetooth",
+            "sound_effects", "reset", "extra_track_info",
             "display", "controls", "storage", "system", "diagnostics", "android_settings", "about",
             "interface", "library_settings", "sound", "balance", "brightness", "timeout", "queue",
             "queue_management", "playback_transitions", "playback_seeking", "playback_volume",

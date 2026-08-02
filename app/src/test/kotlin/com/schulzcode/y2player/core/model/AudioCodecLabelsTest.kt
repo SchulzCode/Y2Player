@@ -20,7 +20,6 @@ class AudioCodecLabelsTest {
         assertEquals("MP3", AudioCodecLabels.label(null, "mp3"))
         assertEquals("DSF", AudioCodecLabels.label("", "dsf"))
         assertEquals("OPUS", AudioCodecLabels.label("audio/opus", "opus"))
-        // Nonsensical long identifiers fall back rather than shouting garbage.
         assertEquals("APE", AudioCodecLabels.label("application/octet-stream-strange", "ape"))
         assertEquals("AUDIO", AudioCodecLabels.label(null, ""))
     }

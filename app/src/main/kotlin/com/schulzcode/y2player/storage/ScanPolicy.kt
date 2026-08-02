@@ -1,16 +1,5 @@
 package com.schulzcode.y2player.storage
 
-/*
- * Storage-driven scan policy.
- *
- * These two units answer one question between them — "given what Android just
- * reported about the volumes, should the library be rescanned, and for which
- * volume?" — and are consumed together by the storage coordinator in
- * Y2Application. They were previously two files that had to be read in sequence
- * to follow a single decision.
- */
-
-/** Pure classification of Android storage snapshots for process-level policy. */
 object StorageTransitionPolicy {
     data class Changes(
         val becameUnavailable: Set<String>,
@@ -37,12 +26,6 @@ object StorageTransitionPolicy {
     }
 }
 
-/**
- * Coalesces equivalent framework hints emitted around a stock-UMS remount.
- * StorageMonitor already debounces bursts of each broadcast type; this gate
- * also prevents the later USB-disconnected/media-scanner hint from scheduling
- * a second full-library pass after the mount transition scheduled one.
- */
 class RemountScanGate(private val coalesceWindowMs: Long = DEFAULT_WINDOW_MS) {
     private val lastMountByVolume = LinkedHashMap<String, Long>()
 

@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
+import com.schulzcode.y2player.playback.CrossfadeMode
 import com.schulzcode.y2player.playback.ReplayGainMode
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
@@ -29,18 +30,7 @@ data class BluetoothUiState(
     val devices: List<BluetoothDeviceEntry> = emptyList(),
     val pendingOperation: String? = null,
     val lastError: String? = null,
-    /**
-     * Adapter-level "an A2DP sink is connected", independent of the profile
-     * proxy.
-     *
-     * Per-device [BluetoothDeviceEntry.linkState] can only be resolved while the
-     * profile proxy is open, and the proxy is scoped to the Bluetooth screen. Any
-     * other screen therefore saw every device report DISCONNECTED and announced
-     * "not connected" over a working headset. This field is read from the adapter
-     * itself, so it stays true wherever the user happens to be.
-     */
     val profileAudioConnected: Boolean = false,
-    /** Best known name of the connected sink; null when only the fact is known. */
     val connectedDeviceName: String? = null
 ) {
     val audioConnected: Boolean
@@ -67,7 +57,6 @@ data class DeviceState(
     val androidVersion: String = "Android 4.4",
     val firmwareBuild: String = "Unknown",
     val uptimeMs: Long = 0,
-    /** False until the device profile is resolved; hides the haptics setting. */
     val hapticsAvailable: Boolean = false
 )
 
@@ -78,53 +67,22 @@ data class DisplayState(
 )
 
 data class PlayerPreferencesState(
-    /**
-     * Android's own UI click/feedback sounds. Default off: a dedicated music
-     * player must never inject its own clicks into the listener's ears. The
-     * setting is user-reversible because it mutates a system-wide value.
-     */
     val uiSoundEffectsEnabled: Boolean = false,
-    /**
-     * Records DEBUG/INFO structured events (WARN and ERROR are always recorded
-     * regardless, so normal use costs almost nothing).
-     */
     val verboseDiagnostics: Boolean = false,
-    /**
-     * Which layer attenuates the signal. SYSTEM is the default: the Android music
-     * stream responds to the volume keys and the app adds no attenuation of its
-     * own. PERCEPTUAL attenuates inside the player instead. The two are never
-     * stacked — exactly one of them responds to the volume keys.
-     */
     val volumeMode: VolumeMode = VolumeMode.SYSTEM,
-    /** In-app level in `0..VolumeCurve.STEPS`. Only meaningful in PERCEPTUAL mode. */
     val volumeLevel: Int = VolumeCurve.STEPS,
-    /** Metadata loudness normalization. Off preserves the original PCM path exactly. */
     val replayGainMode: ReplayGainMode = ReplayGainMode.OFF,
-    /** Wheel detent feedback. Off by default; see [HapticLevel] for why it is a duration. */
     val hapticLevel: HapticLevel = HapticLevel.OFF,
     val keepScreenOnWhilePlaying: Boolean = false,
-    /**
-     * Renders the interface on paper rather than ink. Off by default: the dark
-     * design is the original and stays the default.
-     *
-     * On a transmissive LCD this is also the readable choice outdoors, because a
-     * light background lets the backlight through instead of blocking it.
-     */
+    val extraTrackInfo: Boolean = false,
     val lightTheme: Boolean = false,
-    /**
-     * Lets the click wheel and its buttons act while the screen is off.
-     *
-     * Off by default, which is the safe reading of an appliance that lives in a
-     * pocket: with the screen off only a Bluetooth remote, the volume keys and
-     * power respond. Turning it on trades that protection for being able to skip
-     * a track without waking the display.
-     */
     val localKeysWhileScreenOff: Boolean = false,
     val pauseOnDisconnect: Boolean = true,
     val resumePosition: Boolean = true,
     val sortOrder: TrackSortOrder = TrackSortOrder.TITLE,
     val gaplessEnabled: Boolean = true,
     val crossfadeMs: Int = 0,
+    val crossfadeMode: CrossfadeMode = CrossfadeMode.ALWAYS,
     val pauseResumeFadeMs: Int = 200,
     val seekStepMs: Int = 10_000,
     val longSeekStepMs: Int = 30_000,
@@ -136,26 +94,9 @@ data class PlayerPreferencesState(
     val equalizerBandLevelsMb: List<Int> = emptyList(),
     val bassStrength: Int = 0,
     val loudnessGainMb: Int = 0,
-    /**
-     * Left/right channel balance in `-100..100`; see [AudioBalance].
-     *
-     * Centred by default. Not part of the audio-effects group even though it shapes
-     * the output: it is a per-channel gain on the player, so unlike the equalizer it
-     * works on firmware with no effect framework and is not bypassed by Direct DAC.
-     */
     val balance: Int = AudioBalance.CENTRE
 )
 
-/**
- * True when the only difference between two playback snapshots is the passage
- * of time: position, duration and the sleep-timer countdown.
- *
- * This question is asked once per progress tick by both the reducer (to decide
- * whether navigation state needs re-normalising) and the renderer (to decide
- * whether anything outside the progress area must repaint). It was implemented
- * separately in each, by the same copy-and-compare technique — two copies of one
- * rule that had to stay identical, in two layers, with nothing to keep them so.
- */
 fun isProgressOnlyUpdate(previous: PlaybackSnapshot, current: PlaybackSnapshot): Boolean =
     previous.copy(
         positionMs = current.positionMs,
@@ -178,5 +119,4 @@ data class AppState(
     val currentEntry: ScreenEntry get() = screenStack.last()
     val currentScreen: Screen get() = currentEntry.screen
     val selectedIndex: Int get() = currentEntry.selectedIndex
-
 }

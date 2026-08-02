@@ -5,9 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pins the native half of the fixed float32 decoder/output contract. */
 class NativeFloatPipelineArchitectureTest {
-
     @Test fun swresampleWritesPackedFloatDirectlyIntoTheJniBuffer() {
         val source = nativeSource()
 

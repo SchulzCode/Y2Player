@@ -4,9 +4,7 @@ import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pins notification ordering that avoids two RemoteViews posts per playback start. */
 class PlaybackNotificationArchitectureTest {
-
     @Test fun playingSnapshotIsBuiltBeforeEnteringForeground() {
         val source = File(
             repositoryRoot(),

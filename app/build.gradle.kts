@@ -18,10 +18,6 @@ if (keystorePropertiesFile.exists()) {
     }
 }
 
-/**
- * Build identity shared by BuildConfig, structured logs and the release manifest.
- * CI can pass `-PbuildId`; local builds derive a UTC timestamp, commit and dirty flag.
- */
 val resolvedBuildId: String = (project.findProperty("buildId") as String?)
     ?: run {
         fun git(vararg args: String): String? = runCatching {
@@ -35,7 +31,6 @@ val resolvedBuildId: String = (project.findProperty("buildId") as String?)
 
         val commit = git("rev-parse", "--short=12", "HEAD") ?: "nogit"
         val dirty = if (git("status", "--porcelain").isNullOrEmpty()) "" else "-dirty"
-        // UTC keeps locally generated IDs stable across build hosts.
         val formatter = SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'").apply {
             timeZone = TimeZone.getTimeZone("UTC")
         }
@@ -51,22 +46,12 @@ android {
         applicationId = "com.schulzcode.y2player"
         minSdk = 19
         targetSdk = 19
-        // 1.0 is the first released version. Documents describing a 1.3-1.9
-        // lineage referred to pre-history development builds that were never
-        // released under those numbers and are not part of this repository.
-        //
-        // Increment on every release that could reach a device as a package
-        // upgrade: Android refuses to install a lower versionCode over a higher
-        // one, and the firmware image path (system/priv-app) does not remove
-        // that constraint for anyone who sideloads.
-        versionCode = 5
-        versionName = "2.1"
+        versionCode = 7
+        versionName = "2.2"
 
         buildConfigField("String", "BUILD_ID", "\"$resolvedBuildId\"")
 
         ndk {
-            // The Y2 is a 32-bit ARMv7/API-19 device. Packaging another ABI is
-            // a release error and would only inflate the system APK.
             abiFilters += "armeabi-v7a"
         }
     }
@@ -127,40 +112,18 @@ android {
 
     packaging {
         jniLibs {
-            // liby2audio.so is already stripped and audited by the pinned NDK
-            // build; AGP's locally installed (newer) strip tool must not rewrite it.
+            // Already stripped by the pinned NDK. AGP's newer strip tool must not rewrite it.
             keepDebugSymbols += "**/liby2audio.so"
         }
     }
 }
 
-/**
- * Refuses a build whose checked-in liby2audio.so predates its own sources.
- *
- * The APK consumes a prebuilt native library rather than compiling it through
- * externalNativeBuild, which is the right call for a SHA-pinned, audited,
- * reproducible artifact — but it means `./gradlew assemble` does not notice when
- * y2audio.c has changed and the binary has not. The result would be a silently
- * stale library.
- *
- * This deliberately fails rather than rebuilding: the native build runs through
- * WSL from a PowerShell wrapper, and invoking that from every ordinary Gradle
- * build would make the Windows path fragile. A clear error naming the command is
- * the better trade.
- *
- * The stamp covers everything that can change the output: the JNI source, its
- * version script, build-ffmpeg.sh — which carries the FFmpeg and NDK hashes,
- * every configure flag and every compiler flag as literals — and every file in
- * tools/native/patches, plus the selected NEON mode. So a NEON toggle, a codec
- * allowlist change or an edited FFmpeg patch all invalidate the packaged binary.
- */
 val verifyNativeAudioStamp by tasks.registering {
     val nativeSource = rootProject.file("app/src/main/c/y2audio.c")
     val versionScript = rootProject.file("app/src/main/c/y2audio.map")
     val nativeBuildScript = rootProject.file("tools/native/build-ffmpeg.sh")
-    // Local deviations from the verified FFmpeg tarball. Sorted by name, byte
-    // order, to match the LC_ALL=C ordering the native build uses.
     val patchDirectory = rootProject.file("tools/native/patches")
+    // Byte order, to match the LC_ALL=C sort in build-ffmpeg.sh.
     val patches = patchDirectory.listFiles()
         ?.filter { it.isFile && it.name.endsWith(".patch") }
         ?.sortedBy { it.name }
@@ -168,9 +131,6 @@ val verifyNativeAudioStamp by tasks.registering {
     val stampFile = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.stamp")
     val library = rootProject.file("app/src/main/jniLibs/armeabi-v7a/liby2audio.so")
 
-    // Configuration selected outside the native script is part of the artifact
-    // identity too. Ordinary builds expect the conservative non-NEON binary;
-    // evaluation builds must explicitly opt into the matching identity.
     val nativeNeon = when (val value = project.findProperty("nativeNeon")?.toString()?.lowercase()) {
         null, "false", "0" -> false
         "true", "1" -> true
@@ -178,11 +138,6 @@ val verifyNativeAudioStamp by tasks.registering {
     }
     inputs.property("nativeNeon", nativeNeon)
 
-    // Kotlin-only iteration before the native library has been rebuilt is a real
-    // workflow, so there is an explicit way past this. It has to be typed, which
-    // is the point: it cannot happen by accident, and a release build that used
-    // it is visible in the command line. Read at configuration time so the task
-    // action holds no reference to Project.
     val allowStale = project.findProperty("allowStaleNative")?.toString() == "true"
 
     inputs.files(nativeSource, versionScript, nativeBuildScript)
@@ -211,7 +166,7 @@ val verifyNativeAudioStamp by tasks.registering {
         }
 
         // Same construction as the tail of build-ffmpeg.sh: hash each input, join
-        // the hex digests with newlines, then hash that.
+        // the hex digests with newlines, hash that.
         val perFileDigests = sources.joinToString("") { source ->
             MessageDigest.getInstance("SHA-256")
                 .digest(source.readBytes())
@@ -246,4 +201,7 @@ tasks.named("preBuild") { dependsOn(verifyNativeAudioStamp) }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Host tests only; never packaged. Lets the screen catalogue derive from the
+    // sealed hierarchy so a new screen cannot be added without being covered.
+    testImplementation(kotlin("reflect"))
 }

@@ -1,19 +1,9 @@
 package com.schulzcode.y2player.ui
 
-/**
- * Compact, allocation-free visual tokens for the 480 x 360 landscape mdpi Y2 display.
- * The layout code derives everything from the runtime width/height, so a portrait
- * panel still renders correctly; these targets are only pre-layout fallbacks.
- *
- * Colours live in [Y2Palette] instead, because they are the only tokens that vary
- * between the dark and light themes.
- */
 object Y2UiTheme {
     const val TARGET_WIDTH_PX = 480
     const val TARGET_HEIGHT_PX = 360
 
-    // Authored for the real 480 x 360 mdpi panel. Four comfortably readable rows
-    // are preferable to six cramped ones when the click wheel scrolls predictably.
     const val HEADER_HEIGHT_DP = 42f
     const val COMPACT_FOOTER_HEIGHT_DP = 30f
     const val MINI_PLAYER_HEIGHT_DP = 58f

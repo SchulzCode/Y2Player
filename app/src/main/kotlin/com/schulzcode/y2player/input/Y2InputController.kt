@@ -18,19 +18,20 @@ class Y2InputController(private val dispatch: (AppAction) -> Unit) {
             }
             val heldFor = (event.eventTime - event.downTime).coerceAtLeast(0)
             val longPress = InputPressClassifier.isLongPress(event.isLongPress, event.repeatCount, heldFor)
-            if (longPress && longPressedKeys.add(keyCode)) {
+            val holdIsNavigable = InputPressClassifier.holdOpensNowPlaying(
+                keyCode,
+                fromLocalKeypad = { HardwareKeyGate.isLocalKeypad(event.deviceId) }
+            )
+            if (longPress && holdIsNavigable != false && longPressedKeys.add(keyCode)) {
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> dispatch(AppAction.SeekBackwardLong)
                     KeyEvent.KEYCODE_DPAD_RIGHT -> dispatch(AppAction.SeekForwardLong)
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> dispatch(AppAction.ConfirmLong)
+                    in InputPressClassifier.PLAY_PAUSE_KEYS -> dispatch(AppAction.ShowNowPlaying)
                 }
             } else if (longPress && event.repeatCount > 0 &&
                 event.repeatCount % InputPressClassifier.SCRUB_REPEAT_PERIOD == 0
             ) {
-                // Continuous scrubbing: while left/right stays held past the long-press
-                // threshold, repeat the seek roughly every SCRUB_REPEAT_PERIOD key
-                // repeats (~400 ms) instead of seeking only once per hold. The reducer
-                // still gates seeks to the Now Playing screen.
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> dispatch(AppAction.SeekBackwardLong)
                     KeyEvent.KEYCODE_DPAD_RIGHT -> dispatch(AppAction.SeekForwardLong)
@@ -42,6 +43,15 @@ class Y2InputController(private val dispatch: (AppAction) -> Unit) {
         if (event.action != KeyEvent.ACTION_UP) return true
         if (!pressedKeys.remove(keyCode)) return true
         if (longPressedKeys.remove(keyCode)) return true
+
+        val heldForMs = (event.eventTime - event.downTime).coerceAtLeast(0)
+        if (InputPressClassifier.releaseOpensNowPlaying(keyCode, heldForMs) &&
+            HardwareKeyGate.isLocalKeypad(event.deviceId)
+        ) {
+            dispatch(AppAction.ShowNowPlaying)
+            return true
+        }
+
         val action = when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> AppAction.WheelCounterClockwise
             KeyEvent.KEYCODE_DPAD_DOWN -> AppAction.WheelClockwise
@@ -82,14 +92,23 @@ internal object InputPressClassifier {
     const val LONG_PRESS_REPEAT = 3
     const val LONG_PRESS_MS = 650L
 
-    /**
-     * Key-repeat events between successive scrub seeks while a seek key stays held.
-     * Android repeats roughly every 50 ms after the initial delay, so 8 repeats is
-     * ~400 ms between seek steps — fast enough to feel continuous, slow enough not
-     * to flood the playback decoder with superseded seeks on the MT6582.
-     */
+    val PLAY_PAUSE_KEYS = setOf(
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_PLAY,
+        KeyEvent.KEYCODE_MEDIA_PAUSE,
+        KeyEvent.KEYCODE_HEADSETHOOK
+    )
+
+    // ~400 ms per seek step at Android's repeat rate: continuous to the thumb,
+    // without flooding the decoder with superseded seeks.
     const val SCRUB_REPEAT_PERIOD = 8
 
     fun isLongPress(frameworkLongPress: Boolean, repeatCount: Int, heldForMs: Long): Boolean =
         frameworkLongPress || repeatCount >= LONG_PRESS_REPEAT || heldForMs.coerceAtLeast(0) >= LONG_PRESS_MS
+
+    fun holdOpensNowPlaying(keyCode: Int, fromLocalKeypad: () -> Boolean): Boolean? =
+        if (keyCode in PLAY_PAUSE_KEYS) fromLocalKeypad() else null
+
+    fun releaseOpensNowPlaying(keyCode: Int, heldForMs: Long): Boolean =
+        keyCode in PLAY_PAUSE_KEYS && heldForMs.coerceAtLeast(0) >= LONG_PRESS_MS
 }

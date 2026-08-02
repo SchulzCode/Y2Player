@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EventJsonTest {
-
     private fun escaped(value: String): String = StringBuilder().also { EventJson.escape(value, it) }.toString()
     private fun valued(value: Any?): String = StringBuilder().also { EventJson.appendValue(value, it) }.toString()
 
@@ -14,8 +13,6 @@ class EventJsonTest {
         assertEquals("\"plain\"", escaped("plain"))
         assertEquals("\"say \\\"hi\\\"\"", escaped("say \"hi\""))
         assertEquals("\"a\\\\b\"", escaped("a\\b"))
-        // A newline inside a value would otherwise split one event into two
-        // unparseable NDJSON lines.
         assertEquals("\"a\\nb\"", escaped("a\nb"))
         assertEquals("\"a\\tb\"", escaped("a\tb"))
     }
@@ -27,7 +24,6 @@ class EventJsonTest {
     @Test fun truncatesOversizedValuesSoLogsNeverCarryPayloads() {
         val long = "x".repeat(EventJson.MAX_VALUE_CHARS + 500)
         val result = escaped(long)
-        // +2 quotes +1 ellipsis
         assertEquals(EventJson.MAX_VALUE_CHARS + 3, result.length)
         assertTrue(result.endsWith("…\""))
     }

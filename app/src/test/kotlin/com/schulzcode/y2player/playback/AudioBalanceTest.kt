@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioBalanceTest {
-    /** Off by default, and "off" has to mean the signal is untouched. */
     @Test fun centreLeavesBothChannelsAtFullGain() {
         assertEquals(0, AudioBalance.CENTRE)
         assertEquals(1f, AudioBalance.leftGain(AudioBalance.CENTRE), 0f)
@@ -14,11 +13,6 @@ class AudioBalanceTest {
         assertTrue(AudioBalance.isCentred(AudioBalance.CENTRE))
     }
 
-    /**
-     * Balance attenuates the far channel and never boosts the near one, because
-     * Final PCM16 output clips at 1.0. Leaning left must lower the right rather
-     * than raise the left.
-     */
     @Test fun leaningAttenuatesTheOppositeChannelOnly() {
         assertEquals(1f, AudioBalance.leftGain(-50), 0f)
         assertEquals(0.5f, AudioBalance.rightGain(-50), 1e-6f)
@@ -35,7 +29,6 @@ class AudioBalanceTest {
         assertEquals(1f, AudioBalance.rightGain(AudioBalance.RANGE), 0f)
     }
 
-    /** No gain may ever exceed unity, whatever it is handed. */
     @Test fun gainsStayWithinUnityForEveryOfferedLevelAndBeyond() {
         (-500..500).forEach { value ->
             val left = AudioBalance.leftGain(value)
@@ -53,7 +46,6 @@ class AudioBalanceTest {
         assertFalse(AudioBalance.isCentred(-9_999))
     }
 
-    /** A stored value from a future build must not silence a channel outright. */
     @Test fun theOfferedLevelsSpanTheRangeAndIncludeCentre() {
         val levels = AudioBalance.LEVELS
         assertEquals(21, levels.size)
@@ -63,7 +55,6 @@ class AudioBalanceTest {
         assertEquals("levels must be ordered for the settings list", levels.sorted(), levels)
     }
 
-    /** The label is the only thing telling the user which way round it is. */
     @Test fun labelsNameTheSideThatStaysLoud() {
         assertEquals("Centre · off", AudioBalance.label(0))
         assertEquals("Left only", AudioBalance.label(-100))

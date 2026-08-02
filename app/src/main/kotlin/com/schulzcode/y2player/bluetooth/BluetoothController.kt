@@ -33,15 +33,6 @@ class BluetoothController(
     fun interface Listener { fun onBluetoothChanged(state: BluetoothUiState) }
     data class OperationResult(val accepted: Boolean, val message: String)
 
-    /**
-     * The operation currently awaiting a framework callback.
-     *
-     * Previously these were bare strings compared across four methods and handed
-     * straight to the UI as [BluetoothUiState.pendingOperation]. Rewording the
-     * user-visible text silently broke pair-then-connect and the operation
-     * timeout, with nothing to catch it. The label stays presentational; the
-     * identity is now the enum constant.
-     */
     enum class Operation(val label: String) {
         PAIRING("Pairing"),
         CONNECTION("Connection"),
@@ -62,7 +53,6 @@ class BluetoothController(
     private var pendingAddress: String? = null
     private var pendingOperation: Operation? = null
     private var lastError: String? = null
-    /** Survives the proxy closing so the summary can still name the headset. */
     private var lastConnectedName: String? = null
     private var proxyGeneration = 0L
     private var proxyRequestPending = false
@@ -87,8 +77,6 @@ class BluetoothController(
                 "result" to "timeout"
             )
             clearPending()
-            // If the UI already left, clearPending has queued the deferred stop;
-            // do not open a fresh proxy just to close it on the next main-loop turn.
             if (!stopWhenIdle) refreshA2dpProxy()
             publish()
         }
@@ -134,13 +122,6 @@ class BluetoothController(
         publish()
     }
 
-    /**
-     * Ties Bluetooth management to the Bluetooth screen. Activating opens the
-     * receiver and A2DP proxy; deactivating closes them — which never disconnects
-     * the headset, since the system owns the A2DP link. A deactivation requested
-     * while an operation is in flight is deferred so the proxy is never torn down
-     * mid pair/connect/disconnect/forget.
-     */
     fun setUiActive(active: Boolean) {
         uiActive = active
         if (active) {
@@ -203,8 +184,6 @@ class BluetoothController(
     fun startScan(): OperationResult {
         val local = adapter ?: return OperationResult(false, "Bluetooth hardware is unavailable")
         if (!local.isEnabled) return OperationResult(false, "Turn Bluetooth on first")
-        // Single-radio hardware: inquiry scanning while A2DP is connected or playing
-        // wastes power and can glitch the audio, so refuse rather than scan over it.
         if (hasActiveA2dpConnection()) {
             logger.info("Bluetooth", "scan blocked: active A2DP audio present")
             return OperationResult(false, SCAN_BLOCKED_MESSAGE)
@@ -368,8 +347,6 @@ class BluetoothController(
         discovered[device.address] = device
         val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
         logger.info("Bluetooth", "A2DP ${device.displayName()} state=$state")
-        // Addresses are masked: a field log should be shareable without
-        // identifying the reporter's headset.
         eventLog?.info(
             Sub.BLUETOOTH, Ev.BT_A2DP_STATE,
             "device" to maskedAddress(device.address),
@@ -402,27 +379,14 @@ class BluetoothController(
         if (state == BluetoothA2dp.STATE_PLAYING) cancelDiscoveryForActiveAudio("A2DP playing")
     }
 
-    /**
-     * True when an A2DP device is connected or streaming. The connected-devices
-     * query is a binder call that can fail if the proxy is mid-restart, so it is
-     * guarded and treated as "not connected" on failure rather than crashing.
-     */
     private fun hasActiveA2dpConnection(): Boolean {
         val proxyConnected = runCatching { a2dp?.connectedDevices?.isNotEmpty() == true }.getOrDefault(false)
-        // The aggregate adapter state remains available while the UI-scoped
-        // profile proxy is still connecting, closing a race that could otherwise
-        // allow inquiry over an already-connected headset.
         val profileConnected = runCatching {
             adapter?.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothAdapter.STATE_CONNECTED
         }.getOrDefault(false)
         return proxyConnected || profileConnected || playingAddresses.isNotEmpty()
     }
 
-    /**
-     * Cancels an in-flight inquiry when audio takes over the radio. Only touches
-     * discovery — never the connection, codec, or transmit power — and does
-     * nothing when no scan is running, so repeat events do not spam cancel calls.
-     */
     private fun cancelDiscoveryForActiveAudio(reason: String) {
         val local = adapter ?: return
         if (!runCatching { local.isDiscovering }.getOrDefault(false)) return
@@ -533,8 +497,6 @@ class BluetoothController(
                 audioStreaming = device.address in playingAddresses
             )
         }.sortedWith(compareByDescending<BluetoothDeviceEntry> { it.linkState == BluetoothLinkState.CONNECTED }.thenBy { it.name.lowercase() })
-        // Asked of the adapter, not the proxy, so it survives this controller
-        // being stopped when the user leaves the Bluetooth screen.
         val profileConnected = runCatching {
             local.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothAdapter.STATE_CONNECTED
         }.getOrDefault(false)
@@ -542,8 +504,6 @@ class BluetoothController(
         if (proxyConnectedName != null) lastConnectedName = proxyConnectedName
         return BluetoothUiState(
             profileAudioConnected = profileConnected,
-            // Falls back to the last name seen while the proxy was open: the
-            // adapter can say a sink is connected without saying which one.
             connectedDeviceName = proxyConnectedName ?: lastConnectedName.takeIf { profileConnected },
             adapterMode = when (local.state) {
                 BluetoothAdapter.STATE_OFF -> BluetoothAdapterMode.OFF
@@ -622,20 +582,9 @@ class BluetoothController(
         mainHandler.removeCallbacks(timeoutRunnable)
         pendingAddress = null
         pendingOperation = null
-        // Posted, not called inline: a chained operation (e.g. auto-connect right
-        // after pairing) re-sets a pending op synchronously after this returns, so
-        // by the time the check runs it correctly sees the follow-up in flight.
         if (stopWhenIdle) mainHandler.post { maybeStopAfterIdle() }
     }
 
-    /**
-     * Coalesces snapshot publishing. [buildSnapshot] performs several binder
-     * round-trips (bonded devices, connected devices, per-device connection
-     * state), so running it for every broadcast — including one ACTION_FOUND per
-     * device discovered — would stall the main thread exactly while the user is
-     * turning the wheel on the Bluetooth screen. Debouncing collapses a burst of
-     * broadcasts into a single rebuild.
-     */
     private fun publish() {
         mainHandler.removeCallbacks(publishRunnable)
         mainHandler.postDelayed(publishRunnable, PUBLISH_DEBOUNCE_MS)

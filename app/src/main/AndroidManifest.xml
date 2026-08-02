@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Bluetooth is optional: the player's core function is local playback to
-         the built-in DAC. Marking it required would block installation on any
-         unit whose platform does not declare the feature. -->
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />
@@ -17,8 +14,6 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Optional wheel detent feedback. Normal-protection, granted at install;
-         the setting is hidden entirely when Vibrator.hasVibrator() is false. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
@@ -30,12 +25,8 @@
         android:supportsRtl="false"
         android:theme="@style/AppTheme">
 
-        <!-- configChanges: the renderer derives its whole layout from the runtime
-             width/height and repaints on onSizeChanged, so handling configuration
-             changes in-place avoids destroying and rebuilding the launcher (and
-             any in-flight diagnostics work) for a locale or dock change.
-             stateNotNeeded: a HOME activity must be able to restart with no saved
-             state after the system reclaims the process. -->
+        <!-- The renderer repaints from runtime size on onSizeChanged, so a recreate
+             would only discard in-flight diagnostics work. -->
         <activity
             android:name=".ui.MainActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode|locale|fontScale|mcc|mnc"
@@ -45,7 +36,7 @@
             android:screenOrientation="landscape"
             android:stateNotNeeded="true"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
-            <intent-filter android:priority="1000">
+            <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -61,9 +52,8 @@
             android:exported="false"
             android:label="@string/service_name" />
 
-        <!-- BOOT_COMPLETED is a protected system broadcast. Reapplying here is
-             intentionally later than the HOME activity's early boot startup,
-             after AudioService has had a chance to load its sound pool. -->
+        <!-- Later than the HOME activity's own startup, so AudioService has loaded
+             its sound pool before settings are reapplied. -->
         <receiver
             android:name=".settings.BootSettingsReceiver"
             android:exported="true">
@@ -72,11 +62,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- Must stay exported: it receives the framework MEDIA_BUTTON broadcast
-             and the vendor "com.innioasis.y2.key" broadcast sent by the platform
-             key handler. Consequence accepted for this closed appliance: any
-             installed app could drive playback. The receiver validates the action
-             and rejects any key code outside its allowlist. -->
+        <!-- Must stay exported. Both MEDIA_BUTTON and the vendor key broadcast are
+             sent by the platform, and neither reaches an unexported receiver. -->
         <receiver
             android:name=".playback.MediaButtonReceiver"
             android:exported="true">

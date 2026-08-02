@@ -13,12 +13,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Y2UiLogicTest {
-    /**
-     * Colours moved to [Y2Palette] when the light theme arrived, and the contrast
-     * checks that used to live here are now applied to *both* palettes in
-     * `Y2PaletteTest`. What is left here is the pair of literals this test was
-     * really guarding — the identity of the dark design.
-     */
     @Test fun themeUsesOneReadableAccentOnDarkSurfaces() {
         assertEquals(0xFF0A0D12.toInt(), Y2Palette.DARK.background)
         assertEquals(0xFFD6AC53.toInt(), Y2Palette.DARK.accent)
@@ -92,7 +86,6 @@ class Y2UiLogicTest {
     }
 
     @Test fun y2LandscapeViewportKeepsFourReadableRowsAndTracksSelection() {
-        // 360 px tall landscape panel minus 44/30 dp chrome leaves four 58 dp rows.
         val available = Y2UiTheme.TARGET_HEIGHT_PX - Y2UiTheme.HEADER_HEIGHT_DP - Y2UiTheme.COMPACT_FOOTER_HEIGHT_DP
         val count = Y2UiLogic.visibleRowCount(available, Y2UiTheme.ROW_HEIGHT_DP)
         assertEquals(4, count)
@@ -172,7 +165,6 @@ class Y2UiLogicTest {
         assertEquals("Balanced fallback", Y2UiLogic.dacModeLabel(AudioQualityMode.DIRECT_DAC, false, false))
     }
 
-    /** Visible rows must fit the fixed cache used by drawRows. */
     @Test fun visibleRowCountNeverExceedsTheFixedRowCache() {
         val maxVisibleRows = 12
         val tallPanel = Y2UiLogic.visibleRowCount(availableHeightPx = 2_000f, rowHeightPx = 46f)
@@ -181,8 +173,6 @@ class Y2UiLogicTest {
     }
 
     @Test fun mainMenuRowCalculationRemainsStableForWheelNavigation() {
-        // The playing track lives in the home player pane, not in the menu. The four
-        // primary destinations keep the launcher quick to scan with the wheel.
         assertEquals(4, ScreenContent.rows(AppState()).size)
     }
 

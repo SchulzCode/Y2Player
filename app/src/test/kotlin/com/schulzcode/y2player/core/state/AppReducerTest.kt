@@ -1,11 +1,13 @@
 package com.schulzcode.y2player.core.state
 
+import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.input.HapticLevel
+import com.schulzcode.y2player.playback.CrossfadeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -13,10 +15,6 @@ import org.junit.Before
 import org.junit.Test
 
 class AppReducerTest {
-    /**
-     * The row cache is process-wide, and the artist and album screens are cached
-     * screens, so one test's rows could otherwise satisfy another's lookup.
-     */
     @Before fun clearRowCache() {
         ScreenContent.clearCachedRows()
     }
@@ -55,7 +53,7 @@ class AppReducerTest {
     @Test fun confirmingMusicThenSongsNavigatesToSongs() {
         val music = AppReducer.reduce(AppState(), AppAction.Confirm).state
         assertEquals(Screen.Music, music.currentScreen)
-        assertEquals(Screen.Songs, AppReducer.reduce(music, AppAction.Confirm).state.currentScreen)
+        assertEquals(Screen.Songs, AppReducer.reduce(selectKey(music, "songs"), AppAction.Confirm).state.currentScreen)
     }
 
     @Test fun confirmingTrackEmitsPlayCollection() {
@@ -65,11 +63,6 @@ class AppReducerTest {
         assertEquals(0, effect.startIndex)
     }
 
-    /**
-     * Pressing the row that is already playing should show it, not start it over.
-     * Restarting cost the listening position, and rebuilding the queue from the
-     * visible list discarded the album or queue order being played.
-     */
     @Test fun confirmingTheAlreadyPlayingTrackOnlyOpensNowPlaying() {
         val second = track.copy(id = 2, title = "Second")
         val state = selectTrack(
@@ -80,7 +73,6 @@ class AppReducerTest {
                     status = PlaybackStatus.PLAYING,
                     currentTrackId = 2L,
                     positionMs = 42_000,
-                    // A queue from somewhere else entirely: it must survive the press.
                     queue = listOf(9L, 2L, 7L),
                     currentQueueIndex = 1
                 )
@@ -106,10 +98,6 @@ class AppReducerTest {
         assertTrue(result.effects.isEmpty())
     }
 
-    /**
-     * Idle means the row is only a leftover of what played last — after a reboot,
-     * for instance — so the press has to start it in the normal way.
-     */
     @Test fun confirmingTheLastPlayedTrackWhileIdleStillStartsIt() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Songs)),
@@ -152,10 +140,6 @@ class AppReducerTest {
         assertTrue(result.effects.isEmpty())
     }
 
-    /**
-     * The same track can appear in the queue twice, so the queue screen compares
-     * positions. Pressing the *other* copy has to move playback to it.
-     */
     @Test fun confirmingADuplicateQueueRowPlaysThatPosition() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
@@ -177,11 +161,46 @@ class AppReducerTest {
             screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Album"))),
             library = LibraryState(tracks = listOf(second, track))
         )
-        val firstRow = ScreenContent.rows(state).first() as ScreenRow.TrackRow
+        val onFirstTrack = selectFirstTrackRow(state)
+        val firstRow = ScreenContent.rows(onFirstTrack)[onFirstTrack.selectedIndex] as ScreenRow.TrackRow
         assertEquals(track.id, firstRow.track.id)
-        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        val effect = AppReducer.reduce(onFirstTrack, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
         assertEquals(listOf(1L, 2L), effect.trackIds)
-        assertEquals(Screen.NowPlaying, AppReducer.reduce(state, AppAction.Confirm).state.currentScreen)
+        assertEquals(0, effect.startIndex)
+        assertEquals(Screen.NowPlaying, AppReducer.reduce(onFirstTrack, AppAction.Confirm).state.currentScreen)
+    }
+
+    @Test fun albumOffersShuffleAsTheFirstRow() {
+        val second = track.copy(id = 2, title = "Second", trackNumber = 2)
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Album"))),
+            library = LibraryState(tracks = listOf(second, track))
+        )
+        assertEquals(ScreenContent.COLLECTION_SHUFFLE_KEY, (ScreenContent.rows(state).first() as ScreenRow.Action).key)
+
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        assertTrue(effect.shuffled)
+        assertEquals("every album track goes into the shuffle", setOf(1L, 2L), effect.trackIds.toSet())
+    }
+
+    @Test fun aSingleTrackAlbumHasNoShuffleRow() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Album"))),
+            library = LibraryState(tracks = listOf(track))
+        )
+        assertEquals(1, ScreenContent.rows(state).size)
+        assertTrue(ScreenContent.rows(state).single() is ScreenRow.TrackRow)
+    }
+
+    @Test fun rightOnTheAlbumShuffleRowDoesNothing() {
+        val second = track.copy(id = 2, title = "Second", trackNumber = 2)
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Album"))),
+            library = LibraryState(tracks = listOf(second, track))
+        )
+        val result = AppReducer.reduce(state, AppAction.Right)
+        assertEquals(state.screenStack, result.state.screenStack)
+        assertTrue(result.effects.isEmpty())
     }
 
     @Test fun rightOnTrackOpensTrackOptions() {
@@ -194,12 +213,12 @@ class AppReducerTest {
     @Test fun libraryRefreshRestoresFocusByTrackIdentityAfterReorder() {
         val second = track.copy(id = 2, title = "B")
         val state = AppState(
-            screenStack = listOf(ScreenEntry(Screen.Songs, selectedIndex = 1)),
+            screenStack = listOf(ScreenEntry(Screen.Songs, selectedIndex = 2)),
             library = LibraryState(tracks = listOf(track.copy(title = "A"), second))
         )
         val changed = LibraryState(tracks = listOf(track.copy(title = "Z"), second))
         val result = AppReducer.reduce(state, AppAction.LibraryChanged(changed)).state
-        assertEquals(0, result.selectedIndex)
+        assertEquals(1, result.selectedIndex)
         assertEquals(2L, (ScreenContent.rows(result)[result.selectedIndex] as ScreenRow.TrackRow).track.id)
     }
 
@@ -217,18 +236,15 @@ class AppReducerTest {
     }
 
     @Test fun rightOnAudioEntersTheSelectedChildInsteadOfOpeningNowPlaying() {
-        // Selected by key rather than left at index 0: this used to depend on
-        // Playback happening to be the first row, so reordering the menu broke it
-        // without saying anything about the behaviour under test.
         val state = selectKey(
             AppState(
                 screenStack = listOf(ScreenEntry(Screen.Audio)),
                 playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
             ),
-            "playback"
+            "playback_transitions"
         )
         val result = AppReducer.reduce(state, AppAction.Right)
-        assertEquals(Screen.PlaybackSettings, result.state.currentScreen)
+        assertEquals(Screen.PlaybackTransitions, result.state.currentScreen)
         assertTrue(result.effects.isEmpty())
     }
 
@@ -241,18 +257,20 @@ class AppReducerTest {
         )
         assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(albums, AppAction.Right).state.currentScreen)
 
-        val playlists = AppState(
-            screenStack = listOf(ScreenEntry(Screen.Playlists)),
+        val music = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Music)),
             library = LibraryState(tracks = listOf(track)),
             playback = loaded
         )
-        assertEquals(Screen.Favorites, AppReducer.reduce(playlists, AppAction.Right).state.currentScreen)
+        val favouritesIndex = ScreenContent.rows(music).indexOfFirst { (it as? ScreenRow.Action)?.key == "favorites" }
+        val onFavourites = music.copy(screenStack = listOf(ScreenEntry(Screen.Music, favouritesIndex)))
+        assertEquals(Screen.Favorites, AppReducer.reduce(onFavourites, AppAction.Right).state.currentScreen)
 
         val settings = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.Audio)), playback = loaded),
-            "sound"
+            "sound_effects"
         )
-        assertEquals(Screen.SoundSettings, AppReducer.reduce(settings, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.SoundEffects, AppReducer.reduce(settings, AppAction.Right).state.currentScreen)
 
         val display = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded),
@@ -266,7 +284,7 @@ class AppReducerTest {
         val baseLibrary = LibraryState(tracks = listOf(track))
         val states = listOf(
             selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackTransitions)), playback = loaded), "gapless"),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings)), playback = loaded), "audio_quality"),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.OutputInformation)), playback = loaded), "audio_quality"),
             AppState(screenStack = listOf(ScreenEntry(Screen.SortOrder)), playback = loaded),
             AppState(screenStack = listOf(ScreenEntry(Screen.Bluetooth)), playback = loaded),
             selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded), "keep_screen_on"),
@@ -276,10 +294,10 @@ class AppReducerTest {
             selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.System)), playback = loaded), "android_settings"),
             selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Diagnostics)), playback = loaded), "diag_export"),
             AppState(screenStack = listOf(ScreenEntry(Screen.About)), playback = loaded),
-            AppState(screenStack = listOf(ScreenEntry(Screen.TrackOptions(1))), library = baseLibrary, playback = loaded),
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.TrackOptions(1))), library = baseLibrary, playback = loaded), "track_favorite:1"),
             AppState(screenStack = listOf(ScreenEntry(Screen.AddToPlaylist(1))), library = baseLibrary, playback = loaded),
             AppState(screenStack = listOf(ScreenEntry(Screen.QueueOptions(0))), library = baseLibrary, playback = loaded),
-            AppState(screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions)), library = baseLibrary, playback = loaded)
+            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions)), library = baseLibrary, playback = loaded), "shuffle")
         )
 
         states.forEach { state ->
@@ -291,8 +309,150 @@ class AppReducerTest {
 
     @Test fun favoriteMenuUsesFavoriteCollection() {
         val favorite = track.copy(favorite = true)
-        val state = AppState(screenStack = listOf(ScreenEntry(Screen.Favorites)), library = LibraryState(tracks = listOf(favorite)))
-        assertEquals(listOf(1L), (AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection).trackIds)
+        val state = selectFirstTrackRow(
+            AppState(screenStack = listOf(ScreenEntry(Screen.Favorites)), library = LibraryState(tracks = listOf(favorite)))
+        )
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        assertEquals(listOf(1L), effect.trackIds)
+        assertFalse("picking a track plays the collection in order", effect.shuffled)
+    }
+
+    @Test fun favoritesOfferShuffleAsTheFirstRow() {
+        val favorite = track.copy(favorite = true)
+        val second = track.copy(id = 2, title = "B", favorite = true)
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Favorites)),
+            library = LibraryState(tracks = listOf(favorite, second))
+        )
+        assertEquals(ScreenContent.COLLECTION_SHUFFLE_KEY, (ScreenContent.rows(state).first() as ScreenRow.Action).key)
+
+        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single() as AppEffect.PlayCollection
+        assertTrue(effect.shuffled)
+        assertEquals("every favourite goes into the shuffle", setOf(1L, 2L), effect.trackIds.toSet())
+    }
+
+    @Test fun playlistShuffleRowStartsTheWholePlaylistShuffled() {
+        val second = track.copy(id = 2, title = "Second")
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.PlaylistTracks(5, "Playlist 1"))),
+            library = LibraryState(
+                tracks = listOf(track, second),
+                playlists = listOf(PlaylistSummary(5, "Playlist 1", 2)),
+                playlistTrackIds = mapOf(5L to listOf(1L, 2L))
+            )
+        )
+        assertEquals(ScreenContent.COLLECTION_SHUFFLE_KEY, (ScreenContent.rows(state).first() as ScreenRow.Action).key)
+
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+        val effect = result.effects.single() as AppEffect.PlayCollection
+        assertTrue(effect.shuffled)
+        assertEquals(listOf(1L, 2L), effect.trackIds)
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+    }
+
+    @Test fun shuffleRowIsAbsentWhenTheCollectionIsEmpty() {
+        val state = AppState(screenStack = listOf(ScreenEntry(Screen.Favorites)), library = LibraryState(tracks = listOf(track)))
+        assertTrue(ScreenContent.rows(state).none { (it as? ScreenRow.Action)?.key == ScreenContent.COLLECTION_SHUFFLE_KEY })
+    }
+
+    private fun loadedAt(screen: Screen) = AppState(
+        screenStack = listOf(ScreenEntry(Screen.MainMenu), ScreenEntry(screen)),
+        library = LibraryState(tracks = listOf(track)),
+        playback = PlaybackSnapshot(status = PlaybackStatus.PLAYING, currentTrackId = 1L)
+    )
+
+    @Test fun holdingPlayOpensNowPlayingFromAnyScreen() {
+        for (screen in listOf(Screen.Settings, Screen.Songs, Screen.Display, Screen.Queue)) {
+            val result = AppReducer.reduce(loadedAt(screen), AppAction.ShowNowPlaying)
+            assertEquals(Screen.NowPlaying, result.state.currentScreen)
+            assertTrue("navigation only, never a playback command", result.effects.isEmpty())
+        }
+    }
+
+    @Test fun holdingPlayKeepsTheWayBack() {
+        val result = AppReducer.reduce(loadedAt(Screen.Settings), AppAction.ShowNowPlaying)
+        assertEquals(Screen.Settings, AppReducer.reduce(result.state, AppAction.Back).state.currentScreen)
+    }
+
+    @Test fun holdingPlayOnNowPlayingDoesNothing() {
+        val first = AppReducer.reduce(loadedAt(Screen.Settings), AppAction.ShowNowPlaying).state
+        val second = AppReducer.reduce(first, AppAction.ShowNowPlaying)
+        assertEquals(first.screenStack.size, second.state.screenStack.size)
+        assertEquals(Screen.NowPlaying, second.state.currentScreen)
+    }
+
+    @Test fun holdingPlayWithNothingLoadedDoesNothing() {
+        val idle = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Settings)),
+            library = LibraryState(tracks = listOf(track))
+        )
+        val result = AppReducer.reduce(idle, AppAction.ShowNowPlaying)
+        assertEquals(Screen.Settings, result.state.currentScreen)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    @Test fun holdingPlayDoesNotDisturbPlayback() {
+        val before = loadedAt(Screen.Settings)
+        val result = AppReducer.reduce(before, AppAction.ShowNowPlaying)
+        assertEquals(before.playback, result.state.playback)
+    }
+
+    private fun transitionRows(
+        crossfadeMs: Int,
+        mode: CrossfadeMode = CrossfadeMode.ALWAYS,
+        quality: AudioQualityMode = AudioQualityMode.BALANCED
+    ) = ScreenContent.rows(
+        AppState(
+            screenStack = listOf(ScreenEntry(Screen.PlaybackTransitions)),
+            preferences = PlayerPreferencesState(
+                crossfadeMs = crossfadeMs,
+                crossfadeMode = mode,
+                audioQualityMode = quality
+            )
+        )
+    )
+
+    @Test fun crossfadeModeRowIsHiddenWhileCrossfadeIsOff() {
+        assertTrue(transitionRows(crossfadeMs = 0).none { (it as? ScreenRow.Action)?.key == "crossfade_mode" })
+    }
+
+    @Test fun crossfadeModeRowAppearsOnceADurationIsSet() {
+        val row = transitionRows(crossfadeMs = 4_000)
+            .filterIsInstance<ScreenRow.Action>().single { it.key == "crossfade_mode" }
+        assertEquals("Always", row.subtitle)
+    }
+
+    @Test fun crossfadeModeRowCyclesTheMode() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.PlaybackTransitions)),
+            preferences = PlayerPreferencesState(crossfadeMs = 4_000)
+        )
+        val effect = AppReducer.reduce(selectKey(state, "crossfade_mode"), AppAction.Confirm).effects.single()
+        assertEquals(AppEffect.CycleCrossfadeMode, effect)
+    }
+
+    @Test fun crossfadeModeIsInertUnderTheDirectProfile() {
+        val rows = transitionRows(crossfadeMs = 4_000, quality = AudioQualityMode.DIRECT_DAC)
+        assertTrue(rows.none { (it as? ScreenRow.Action)?.key == "crossfade_mode" })
+        val group = rows.filterIsInstance<ScreenRow.Group>().single { it.key == "crossfade_mode_unavailable" }
+        assertEquals("Disabled by Direct profile", group.subtitle)
+    }
+
+    @Test fun gaplessSubtitleStaysTruthfulInShuffleOnlyMode() {
+        fun gaplessSubtitle(crossfadeMs: Int, mode: CrossfadeMode) = transitionRows(crossfadeMs, mode)
+            .filterIsInstance<ScreenRow.Action>().single { it.key == "gapless" }.subtitle
+
+        assertEquals("On", gaplessSubtitle(0, CrossfadeMode.ALWAYS))
+        assertEquals("Crossfade takes priority", gaplessSubtitle(4_000, CrossfadeMode.ALWAYS))
+        assertEquals(
+            "Crossfade takes priority while shuffling",
+            gaplessSubtitle(4_000, CrossfadeMode.WHILE_SHUFFLING)
+        )
+    }
+
+    private fun selectFirstTrackRow(state: AppState): AppState {
+        val index = ScreenContent.rows(state).indexOfFirst { it is ScreenRow.TrackRow }
+        return state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index))
     }
 
     @Test fun playlistNavigationWorks() {
@@ -301,9 +461,23 @@ class AppReducerTest {
             playlists = listOf(PlaylistSummary(5, "Playlist 1", 1)),
             playlistTrackIds = mapOf(5L to listOf(1L))
         )
-        // Index 2: Favorites and Recently Played smart playlists occupy rows 0 and 1.
-        val state = AppState(screenStack = listOf(ScreenEntry(Screen.Playlists, 2)), library = library)
+        val state = AppState(screenStack = listOf(ScreenEntry(Screen.Playlists, 0)), library = library)
         assertEquals(Screen.PlaylistTracks(5, "Playlist 1"), AppReducer.reduce(state, AppAction.Confirm).state.currentScreen)
+    }
+
+    @Test fun playbackHistoryOpensAScreenRatherThanClearingImmediately() {
+        val library = AppState(screenStack = listOf(ScreenEntry(Screen.LibrarySettings)))
+        val opened = AppReducer.reduce(selectKey(library, "playback_history"), AppAction.Confirm)
+        assertEquals(Screen.PlaybackHistory, opened.state.currentScreen)
+        assertEquals(listOf(AppEffect.RefreshPlaybackHistory), opened.effects)
+
+        val asked = AppReducer.reduce(selectKey(opened.state, "history_clear"), AppAction.Confirm)
+        assertEquals(Screen.ConfirmAction(ConfirmPrompts.CLEAR_HISTORY), asked.state.currentScreen)
+        assertTrue("clearing must ask first", asked.effects.isEmpty())
+
+        val confirmed = AppReducer.reduce(selectKey(asked.state, ScreenContent.CONFIRM_OK_KEY), AppAction.Confirm)
+        assertEquals(listOf(AppEffect.ClearPlaybackHistory), confirmed.effects)
+        assertEquals("stays on the history screen", Screen.PlaybackHistory, confirmed.state.currentScreen)
     }
 
     @Test fun playlistFileMaintenanceLivesUnderLibrarySettings() {
@@ -314,7 +488,7 @@ class AppReducerTest {
 
         val library = AppState(screenStack = listOf(ScreenEntry(Screen.LibrarySettings)))
         assertEquals(
-            listOf("sort", "storage", "playlist_import_m3u", "playlist_export_m3u"),
+            listOf("storage", "sort", "playback_history", "playlist_import_m3u", "playlist_export_m3u"),
             ScreenContent.rows(library).map { (it as ScreenRow.Action).key }
         )
         assertEquals(
@@ -355,9 +529,39 @@ class AppReducerTest {
             ScreenContent.rows(management).map { (it as ScreenRow.Action).key }
         )
 
-        val cleared = AppReducer.reduce(selectKey(management, "queue_clear"), AppAction.Confirm)
+        val asked = AppReducer.reduce(selectKey(management, "queue_clear"), AppAction.Confirm)
+        assertEquals(Screen.ConfirmAction(ConfirmPrompts.CLEAR_QUEUE), asked.state.currentScreen)
+        assertTrue("clearing the queue must ask first", asked.effects.isEmpty())
+
+        val cleared = AppReducer.reduce(selectKey(asked.state, ScreenContent.CONFIRM_OK_KEY), AppAction.Confirm)
         assertEquals(listOf(AppEffect.ClearQueue), cleared.effects)
-        assertEquals(Screen.Queue, cleared.state.currentScreen)
+        assertEquals(Screen.QueueManagement, cleared.state.currentScreen)
+
+        val cancelled = AppReducer.reduce(selectKey(asked.state, ScreenContent.CONFIRM_CANCEL_KEY), AppAction.Confirm)
+        assertTrue("cancelling must not clear", cancelled.effects.isEmpty())
+        assertEquals(Screen.QueueManagement, cancelled.state.currentScreen)
+    }
+
+    @Test fun deletingAPlaylistAsksFirstAndNamesIt() {
+        val library = LibraryState(
+            tracks = listOf(track),
+            playlists = listOf(PlaylistSummary(5, "Road Trip", 1)),
+            playlistTrackIds = mapOf(5L to listOf(1L))
+        )
+        val tracksScreen = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Playlists), ScreenEntry(Screen.PlaylistTracks(5, "Road Trip"))),
+            library = library
+        )
+        val asked = AppReducer.reduce(selectKey(tracksScreen, "playlist_delete:5"), AppAction.Confirm)
+        assertEquals(Screen.ConfirmAction(ConfirmPrompts.DELETE_PLAYLIST + "5"), asked.state.currentScreen)
+        assertTrue("deleting must ask first", asked.effects.isEmpty())
+
+        val prompt = ScreenContent.rows(asked.state).first() as ScreenRow.Group
+        assertTrue("the prompt must name the playlist", prompt.title.contains("Road Trip"))
+
+        val confirmed = AppReducer.reduce(selectKey(asked.state, ScreenContent.CONFIRM_OK_KEY), AppAction.Confirm)
+        assertEquals(listOf(AppEffect.DeletePlaylist(5)), confirmed.effects)
+        assertEquals("returns to the playlist list", Screen.Playlists, confirmed.state.currentScreen)
     }
 
     @Test fun trackMetadataLivesBehindTrackDetails() {
@@ -385,9 +589,11 @@ class AppReducerTest {
             playlists = listOf(PlaylistSummary(5, "Playlist 1", 1)),
             playlistTrackIds = mapOf(5L to listOf(1L))
         )
-        val source = AppState(
-            screenStack = listOf(ScreenEntry(Screen.PlaylistTracks(5, "Playlist 1"))),
-            library = library
+        val source = selectFirstTrackRow(
+            AppState(
+                screenStack = listOf(ScreenEntry(Screen.PlaylistTracks(5, "Playlist 1"))),
+                library = library
+            )
         )
         val options = AppReducer.reduce(source, AppAction.Right).state
         assertEquals(Screen.TrackOptions(1, 5), options.currentScreen)
@@ -465,14 +671,14 @@ class AppReducerTest {
     }
 
     @Test fun playbackSettingsGroupRelatedPersistentPreferences() {
-        val landing = AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackSettings)))
+        val landing = AppState(screenStack = listOf(ScreenEntry(Screen.Audio)))
         assertEquals(
             listOf(
-                "playback_transitions",
-                "playback_seeking",
+                "sound_effects",
                 "playback_volume",
-                "resume_position",
-                "playback_interruptions"
+                "playback_transitions",
+                "playback_interruptions",
+                "output"
             ),
             ScreenContent.rows(landing).map { (it as ScreenRow.Action).key }
         )
@@ -491,10 +697,10 @@ class AppReducerTest {
         assertEquals(AppEffect.CycleCrossfade, effectFor(Screen.PlaybackTransitions, "crossfade"))
         assertEquals(AppEffect.CycleVolumeMode, effectFor(Screen.PlaybackVolume, "volume_mode"))
         assertEquals(AppEffect.CycleReplayGain, effectFor(Screen.PlaybackVolume, "replay_gain"))
-        assertEquals(AppEffect.ToggleResumePosition, effectFor(Screen.PlaybackSettings, "resume_position"))
+        assertEquals(AppEffect.ToggleResumePosition, effectFor(Screen.PlaybackInterruptions, "resume_position"))
 
         val playbackKeys = listOf(
-            Screen.PlaybackSettings,
+            Screen.Audio,
             Screen.PlaybackTransitions,
             Screen.PlaybackSeeking,
             Screen.PlaybackVolume,
@@ -508,10 +714,6 @@ class AppReducerTest {
         assertFalse("live controls belong to Now Playing options", "repeat" in playbackKeys)
     }
 
-    /**
-     * The volume row has to state the current level, otherwise a user who left
-     * the player attenuated has no way to discover why it is quiet.
-     */
     @Test fun volumeRowReportsModeAndLevel() {
         val base = AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackVolume)))
         fun subtitleOf(state: AppState): String? = ScreenContent.rows(state)
@@ -528,10 +730,10 @@ class AppReducerTest {
     }
 
     @Test fun soundSettingsNavigateToDeviceEqualizerBands() {
-        val playback = AppState(screenStack = listOf(ScreenEntry(Screen.Audio)))
-        val soundIndex = ScreenContent.rows(playback).indexOfFirst { (it as? ScreenRow.Action)?.key == "sound" }
+        val audio = AppState(screenStack = listOf(ScreenEntry(Screen.Audio)))
+        val effectsIndex = ScreenContent.rows(audio).indexOfFirst { (it as? ScreenRow.Action)?.key == "sound_effects" }
         val sound = AppReducer.reduce(
-            playback.copy(screenStack = listOf(ScreenEntry(Screen.Audio, soundIndex))),
+            audio.copy(screenStack = listOf(ScreenEntry(Screen.Audio, effectsIndex))),
             AppAction.Confirm
         ).state.copy(
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(
@@ -543,25 +745,12 @@ class AppReducerTest {
                 )
             )
         )
-
-        assertEquals(Screen.SoundSettings, sound.currentScreen)
-        val equalizerIndex = ScreenContent.rows(sound)
-            .indexOfFirst { (it as? ScreenRow.Action)?.key == "equalizer" }
-        val equalizer = AppReducer.reduce(
-            sound.copy(screenStack = sound.screenStack.dropLast(1) + sound.currentEntry.copy(selectedIndex = equalizerIndex)),
-            AppAction.Confirm
-        ).state
+        assertEquals(Screen.SoundEffects, sound.currentScreen)
+        val equalizer = AppReducer.reduce(selectKey(sound, "equalizer"), AppAction.Confirm).state
         assertEquals(Screen.EqualizerSettings, equalizer.currentScreen)
-        val bandIndex = ScreenContent.rows(equalizer).indexOfFirst { (it as? ScreenRow.Action)?.key == "eq_bands" }
-        val bands = AppReducer.reduce(
-            equalizer.copy(
-                screenStack = equalizer.screenStack.dropLast(1) + equalizer.currentEntry.copy(selectedIndex = bandIndex)
-            ),
-            AppAction.Confirm
-        ).state
+        val bands = AppReducer.reduce(selectKey(equalizer, "eq_bands"), AppAction.Confirm).state
         assertEquals(Screen.EqualizerBands, bands.currentScreen)
-        assertEquals(AppEffect.AdjustEqualizerBand(0, -1), AppReducer.reduce(bands, AppAction.Left).effects.single())
-        assertEquals(AppEffect.AdjustEqualizerBand(0, 1), AppReducer.reduce(bands, AppAction.Right).effects.single())
+        assertEquals(3, ScreenContent.rows(bands).size)
     }
 
     @Test fun nowPlayingSeekUsesConfiguredStep() {
@@ -576,11 +765,6 @@ class AppReducerTest {
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
     }
 
-    /**
-     * The Theme row lives on the Display screen, so `confirmDisplay` is the handler
-     * that has to answer for it — putting it on the Settings handler instead leaves
-     * a row that renders and does nothing when pressed.
-     */
     @Test fun theThemeRowOnTheDisplayScreenTogglesTheTheme() {
         val state = selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Display))), "theme")
         assertEquals(
@@ -600,11 +784,6 @@ class AppReducerTest {
         ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>()
             .first { it.key == "theme" }.subtitle
 
-    /**
-     * Haptics and UI sounds are feedback for input, so they live on their own screen
-     * rather than under Display, which is about the panel. These pin the move: the
-    * rows work in their new home and are gone from the old one.
-     */
     @Test fun controlsScreenOwnsHapticsAndUiSounds() {
         val interfaceSettings = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings))),
@@ -624,9 +803,6 @@ class AppReducerTest {
         )
     }
 
-    // ------------------------------------------------ Artists → albums → songs
-
-    /** Two artists sharing an album name, which is what makes the scoping matter. */
     private val artistLibrary = LibraryState(
         tracks = listOf(
             track.copy(id = 1, title = "Aria", artist = "Bowie", album = "Hunky Dory"),
@@ -647,7 +823,6 @@ class AppReducerTest {
         return state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index))
     }
 
-    /** Pressing an artist used to jump straight to every track; now it lists albums. */
     @Test fun pressingAnArtistOpensThatArtistsAlbums() {
         val result = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm)
         assertEquals(Screen.ArtistAlbums("Bowie"), result.state.currentScreen)
@@ -667,11 +842,6 @@ class AppReducerTest {
         assertEquals("the header names the artist", "Bowie", ScreenContent.title(albums))
     }
 
-    /**
-     * The point of the whole change: an album reached through an artist promises
-     * only that artist's tracks. Album names are not unique — two artists with a
-     * "Greatest Hits" is ordinary — and before this the two merged.
-     */
     @Test fun anAlbumReachedThroughAnArtistShowsOnlyThatArtistsTracks() {
         val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
         val songs = AppReducer.reduce(selectGroup(albums, "Greatest Hits"), AppAction.Confirm).state
@@ -680,28 +850,26 @@ class AppReducerTest {
         assertEquals(listOf("Cell"), ScreenContent.rows(songs).map { it.title })
     }
 
-    /**
-     * The global Albums list still merges them, deliberately: keying it by artist
-     * too would split compilations, which is the case that list exists to show.
-     */
     @Test fun theGlobalAlbumsListStillMergesSharedAlbumNames() {
         val albums = AppState(screenStack = listOf(ScreenEntry(Screen.Albums)), library = artistLibrary)
         val songs = AppReducer.reduce(selectGroup(albums, "Greatest Hits"), AppAction.Confirm).state
 
         assertEquals(Screen.AlbumSongs("Greatest Hits", null), songs.currentScreen)
-        assertEquals(listOf("Cell", "Dust"), ScreenContent.rows(songs).map { it.title }.sorted())
+        assertEquals(
+            listOf("Cell", "Dust"),
+            ScreenContent.rows(songs).filterIsInstance<ScreenRow.TrackRow>().map { it.track.title }.sorted()
+        )
     }
 
-    /** The old flat view stays one press away for anyone who preferred it. */
     @Test fun allSongsStillReachesTheFlatArtistList() {
         val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
         val songs = AppReducer.reduce(selectKey(albums, "artist_all_songs"), AppAction.Confirm).state
 
         assertEquals(Screen.ArtistSongs("Bowie"), songs.currentScreen)
-        assertEquals(3, ScreenContent.rows(songs).size)
+        assertEquals(3, ScreenContent.rows(songs).filterIsInstance<ScreenRow.TrackRow>().size)
+        assertEquals(ScreenContent.COLLECTION_SHUFFLE_KEY, (ScreenContent.rows(songs).first() as ScreenRow.Action).key)
     }
 
-    /** Back must retrace the new middle step rather than skipping it. */
     @Test fun backFromAnAlbumReturnsToTheArtistsAlbums() {
         val albums = AppReducer.reduce(selectGroup(atArtists(), "Bowie"), AppAction.Confirm).state
         val songs = AppReducer.reduce(selectGroup(albums, "Hunky Dory"), AppAction.Confirm).state
@@ -710,29 +878,24 @@ class AppReducerTest {
         assertEquals(Screen.Artists, AppReducer.reduce(back, AppAction.Back).state.currentScreen)
     }
 
-    /**
-     * Balance sits above the effects rows on the Sound screen and must stay reachable
-     * when the effect framework is missing, since it is a player gain rather than an
-     * AudioEffect — an accessibility setting cannot depend on firmware luck.
-     */
     @Test fun balanceIsReachableEvenWithoutAudioEffectSupport() {
-        val sound = AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings)))
-        val opened = AppReducer.reduce(selectKey(sound, "balance"), AppAction.Confirm).state
+        val volume = AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackVolume)))
+        val opened = AppReducer.reduce(selectKey(volume, "balance"), AppAction.Confirm).state
         assertEquals(Screen.Balance, opened.currentScreen)
-        assertEquals("Centre · off", soundRowSubtitle(sound, "balance"))
+        assertEquals("Centre · off", soundRowSubtitle(volume, "balance"))
     }
 
     @Test fun choosingABalanceLevelSetsItAndLeavesTheScreen() {
-        val balance = AppState(screenStack = listOf(ScreenEntry(Screen.SoundSettings), ScreenEntry(Screen.Balance)))
+        val balance = AppState(screenStack = listOf(ScreenEntry(Screen.SoundEffects), ScreenEntry(Screen.Balance)))
         val result = AppReducer.reduce(selectKey(balance, "balance:-40"), AppAction.Confirm)
 
         assertEquals(listOf(AppEffect.SetBalance(-40)), result.effects)
-        assertEquals("choosing a level returns to Sound", Screen.SoundSettings, result.state.currentScreen)
+        assertEquals("choosing a level returns to Sound", Screen.SoundEffects, result.state.currentScreen)
     }
 
     @Test fun theSoundRowAndTheBalanceScreenAgreeOnTheCurrentValue() {
         val leaning = AppState(
-            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            screenStack = listOf(ScreenEntry(Screen.PlaybackVolume)),
             preferences = PlayerPreferencesState(balance = -100)
         )
         assertEquals("Left only", soundRowSubtitle(leaning, "balance"))
@@ -743,10 +906,9 @@ class AppReducerTest {
         assertEquals(listOf("Left only"), selected.map { it.title })
     }
 
-    /** Sound stays short by routing detailed controls and facts through submenus. */
     @Test fun theSoundLandingSeparatesControlsFromOutputInformation() {
         val withEffects = AppState(
-            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            screenStack = listOf(ScreenEntry(Screen.SoundEffects)),
             playback = PlaybackSnapshot(
                 audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(
                     available = true,
@@ -756,44 +918,43 @@ class AppReducerTest {
                 )
             )
         )
-        val keys = soundKeys(withEffects)
         assertEquals(
-            listOf("audio_quality", "effects_toggle", "equalizer", "balance", "sound_dynamics", "output_information"),
-            keys
+            listOf("effects_toggle", "equalizer", "bass", "loudness"),
+            soundKeys(withEffects)
         )
 
         val equalizer = AppReducer.reduce(selectKey(withEffects, "equalizer"), AppAction.Confirm).state
         assertEquals(Screen.EqualizerSettings, equalizer.currentScreen)
         assertEquals(listOf("eq_preset", "eq_bands"), soundKeys(equalizer))
 
-        val dynamics = AppReducer.reduce(selectKey(withEffects, "sound_dynamics"), AppAction.Confirm).state
-        assertEquals(Screen.SoundDynamics, dynamics.currentScreen)
-        assertEquals(listOf("bass", "loudness"), soundKeys(dynamics))
-
-        val output = AppReducer.reduce(selectKey(withEffects, "output_information"), AppAction.Confirm).state
-        assertEquals(Screen.OutputInformation, output.currentScreen)
-        assertEquals(listOf("dac_status", "dac_output"), soundKeys(output))
+        assertEquals(AppEffect.CycleBassStrength, AppReducer.reduce(selectKey(withEffects, "bass"), AppAction.Confirm).effects.single())
+        assertEquals(AppEffect.CycleLoudnessGain, AppReducer.reduce(selectKey(withEffects, "loudness"), AppAction.Confirm).effects.single())
     }
 
-    /**
-     * The restructure fixed a second thing: the old version returned early when the
-     * effect framework was missing, which hid the DAC and route rows from exactly the
-     * firmware whose behaviour they explain.
-     */
     @Test fun theDacInformationSurvivesMissingAudioEffectSupport() {
         val noEffects = AppState(
-            screenStack = listOf(ScreenEntry(Screen.SoundSettings)),
+            screenStack = listOf(ScreenEntry(Screen.SoundEffects)),
             playback = PlaybackSnapshot(
                 audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(available = false)
             )
         )
-        val keys = soundKeys(noEffects)
-        assertTrue("the unavailable notice must still appear", "effects_unavailable" in keys)
-        assertTrue("balance must stay reachable", "balance" in keys)
-        assertTrue("output information must stay reachable", "output_information" in keys)
+        assertTrue(
+            "the unavailable notice must still appear",
+            "effects_unavailable" in soundKeys(noEffects)
+        )
 
-        val output = AppReducer.reduce(selectKey(noEffects, "output_information"), AppAction.Confirm).state
-        assertTrue("the DAC status must not be hidden with it", "dac_status" in soundKeys(output))
+        val audio = AppState(screenStack = listOf(ScreenEntry(Screen.Audio)), playback = noEffects.playback)
+        val audioKeys = soundKeys(audio)
+        assertTrue("volume must stay reachable", "playback_volume" in audioKeys)
+        assertTrue("output must stay reachable", "output" in audioKeys)
+
+        val output = AppReducer.reduce(selectKey(audio, "output"), AppAction.Confirm).state
+        assertEquals(Screen.OutputInformation, output.currentScreen)
+        assertTrue("the DAC status must not be hidden", "dac_status" in soundKeys(output))
+        assertTrue("the profile must be adjustable here", "audio_quality" in soundKeys(output))
+
+        val volume = AppReducer.reduce(selectKey(audio, "playback_volume"), AppAction.Confirm).state
+        assertTrue("balance must stay reachable", "balance" in soundKeys(volume))
     }
 
     private fun soundKeys(state: AppState): List<String> = ScreenContent.rows(state).map {
@@ -815,10 +976,6 @@ class AppReducerTest {
         )
     }
 
-    /**
-     * The row has to state the consequence, not just the state. Someone enabling it
-     * is giving up the protection that stops a pocket pressing play.
-     */
     @Test fun theScreenOffWheelRowStatesWhatItCosts() {
         val controls = AppState(screenStack = listOf(ScreenEntry(Screen.Controls)))
         fun subtitle(state: AppState) = ScreenContent.rows(state)
@@ -830,7 +987,6 @@ class AppReducerTest {
         )
     }
 
-    /** Only worth surfacing in the Settings summary when it is on. */
     @Test fun theControlsSummaryMentionsTheScreenOffWheelOnlyWhenEnabled() {
         val base = AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)))
         assertFalse(controlsSubtitle(base)!!.contains("screen-off"))
@@ -847,18 +1003,34 @@ class AppReducerTest {
             device = DeviceState(hapticsAvailable = true)
         )
         val keys = ScreenContent.rows(display).filterIsInstance<ScreenRow.Action>().map { it.key }
-        assertEquals(listOf("brightness", "theme", "timeout", "keep_screen_on"), keys)
+        assertEquals(listOf("brightness", "theme", "timeout", "keep_screen_on", "extra_track_info"), keys)
+        assertFalse("haptics" in keys)
+        assertFalse("ui_sounds" in keys)
     }
 
-    /** One preference, one home: it was on Playback and Display under two names. */
+    @Test fun extraTrackInfoIsOffByDefaultAndTogglesFromDisplay() {
+        val display = AppState(screenStack = listOf(ScreenEntry(Screen.Display)))
+        val row = ScreenContent.rows(display)
+            .filterIsInstance<ScreenRow.Action>().single { it.key == "extra_track_info" }
+        assertEquals("Off", row.subtitle)
+
+        val effect = AppReducer.reduce(selectKey(display, "extra_track_info"), AppAction.Confirm).effects.single()
+        assertEquals(AppEffect.ToggleExtraTrackInfo, effect)
+
+        val on = display.copy(preferences = display.preferences.copy(extraTrackInfo = true))
+        assertEquals(
+            "On · year, bitrate and genre",
+            ScreenContent.rows(on).filterIsInstance<ScreenRow.Action>().single { it.key == "extra_track_info" }.subtitle
+        )
+    }
+
     @Test fun keepScreenOnLivesOnlyOnTheDisplayScreen() {
         fun keys(screen: Screen) = ScreenContent.rows(AppState(screenStack = listOf(ScreenEntry(screen))))
             .filterIsInstance<ScreenRow.Action>().map { it.key }
         assertTrue("keep_screen_on" in keys(Screen.Display))
-        assertFalse("keep_screen_on" in keys(Screen.PlaybackSettings))
+        assertFalse("keep_screen_on" in keys(Screen.PlaybackTransitions))
     }
 
-    /** The Settings row summarises both values, the way the Display row does. */
     @Test fun theControlsRowSummarisesBothSettings() {
         val base = AppState(
             screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)),
@@ -878,7 +1050,6 @@ class AppReducerTest {
         )
     }
 
-    /** No motor means no haptics row, so the summary must not promise one. */
     @Test fun theControlsRowOmitsHapticsWithoutAMotor() {
         val noMotor = AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)))
         assertEquals("Sounds off", controlsSubtitle(noMotor))
@@ -888,7 +1059,6 @@ class AppReducerTest {
         ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>()
             .first { it.key == "controls" }.subtitle
 
-    /** Selects a track by id, so a test does not depend on the screen's sort order. */
     private fun selectTrack(state: AppState, trackId: Long): AppState {
         val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.TrackRow)?.track?.id == trackId }
         require(index >= 0) { "Missing track $trackId on ${state.currentScreen}" }
@@ -904,5 +1074,4 @@ class AppReducerTest {
             screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index)
         )
     }
-
 }

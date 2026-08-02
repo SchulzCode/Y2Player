@@ -14,8 +14,6 @@ class LibraryScannerTest {
     })
 
     @Test fun scanBatchStaysBelowApi19SqliteVariableLimit() {
-        // Fingerprint SELECT binds volume + paths; seen-token UPDATE binds token,
-        // volume + paths. The latter is the limiting statement.
         assertTrue(LibraryScanner.BATCH_SIZE + 2 < 999)
     }
 
@@ -44,19 +42,10 @@ class LibraryScannerTest {
             )
             assertTrue(outcome.cancelled)
             assertFalse(outcome.complete)
-            // Cancelling is not a coverage fault, so it must not raise the alert.
             assertNull(outcome.coverageGap)
         } finally { root.deleteRecursively() }
     }
 
-    /**
-     * The reported bug: a card with one zero-byte file reported every rescan as
-     * incomplete forever, so "Library needs attention" could never be cleared —
-     * and `finishScan` never ran, so deleted files also stayed in the library.
-     *
-     * A file-level problem is recoverable. It must be counted and skipped, and the
-     * volume's verdict must stay clean.
-     */
     @Test fun zeroByteFileIsRecoverableAndDoesNotSpoilTheVerdict() {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-empty-file-${System.nanoTime()}")
         val music = File(root, "Music").apply { mkdirs() }
@@ -75,15 +64,6 @@ class LibraryScannerTest {
         } finally { root.deleteRecursively() }
     }
 
-    /**
-     * Copying an album from macOS leaves an AppleDouble sidecar per track:
-     * `._01. Foreword.flac` beside `01. Foreword.flac`. They end in `.flac` but are
-     * a few KB of extended attributes, so indexing them produced a duplicate album
-     * with no metadata that failed at `setDataSource` — invisible on the desktop and
-     * on the device, so undeletable, and immune to reindexing.
-     *
-     * They must be skipped outright, and not counted as errors: nothing went wrong.
-     */
     @Test fun appleDoubleSidecarsAreNotIndexed() {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-appledouble-${System.nanoTime()}")
         val album = File(root, "Music/Meteora").apply { mkdirs() }
@@ -99,18 +79,12 @@ class LibraryScannerTest {
 
             assertTrue(batches.isEmpty())
             assertEquals(0, outcome.processedFiles)
-            // Skipping a hidden file is not a fault, so it must not be counted as one.
             assertEquals(0, outcome.recoverableErrors)
             assertTrue(outcome.complete)
             assertTrue("A hidden .m3u must not be imported either", outcome.playlistFiles.isEmpty())
         } finally { root.deleteRecursively() }
     }
 
-    /**
-     * Writes [count] files that look like audio but are not, so the metadata read is
-     * attempted and fails fast. What is under test is the accounting and the pacing
-     * around that read, not the read itself.
-     */
     private fun volumeOf(count: Int, bytes: Int = 1_024): File {
         val root = File(System.getProperty("java.io.tmpdir"), "y2-cost-${System.nanoTime()}")
         File(root, "Music").apply { mkdirs() }.let { dir ->
@@ -124,7 +98,6 @@ class LibraryScannerTest {
         playbackActive = { playing }
     )
 
-    /** Nothing is playing, so there is nothing to yield to and the scan runs flat out. */
     @Test fun noBackOffWhenNothingIsPlaying() {
         val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * 2)
         try {
@@ -135,12 +108,6 @@ class LibraryScannerTest {
         } finally { root.deleteRecursively() }
     }
 
-    /**
-     * The reported symptom at ~10k tracks was choppy audio for the whole scan. The
-     * back-off existed, but fired once per 64-file database batch, which left about
-     * three seconds of uninterrupted extraction between gaps. It has to be driven by
-     * a count of its own, well below BATCH_SIZE.
-     */
     @Test fun backsOffOncePerFileIntervalRatherThanOncePerBatch() {
         val groups = 3
         val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * groups)
@@ -155,7 +122,6 @@ class LibraryScannerTest {
         } finally { root.deleteRecursively() }
     }
 
-    /** A partial group must not yield, or the interval would mean nothing. */
     @Test fun aPartialGroupDoesNotBackOff() {
         val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL - 1)
         try {
@@ -172,7 +138,6 @@ class LibraryScannerTest {
         } finally { root.deleteRecursively() }
     }
 
-    /** An unchanged library reads no metadata, so the back-off costs it nothing. */
     @Test fun unchangedFilesAreNeitherReadNorPacedAgainst() {
         val root = volumeOf(LibraryScanner.YIELD_FILE_INTERVAL * 2)
         try {

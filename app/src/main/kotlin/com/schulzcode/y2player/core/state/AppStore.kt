@@ -15,15 +15,6 @@ class AppStore(
         fun onEffect(effect: AppEffect)
     }
 
-    /**
-     * Observes every reduced action and the state it produced.
-     *
-     * Exists for diagnostics only: it deliberately hands over the action and the
-     * *resulting* state rather than a diff, so a listener can record a name and a
-     * screen without the store knowing anything about logging. Keeping this
-     * separate from [StateListener] means the renderer is never woken by an
-     * action that produced no visible change.
-     */
     fun interface ActionListener {
         fun onAction(action: AppAction, state: AppState)
     }
@@ -32,7 +23,6 @@ class AppStore(
     private val stateListeners = CopyOnWriteArraySet<StateListener>()
     private val effectListeners = CopyOnWriteArraySet<EffectListener>()
     private val actionListeners = CopyOnWriteArraySet<ActionListener>()
-    // Main-thread-confined re-entrancy queue.
     private val pendingActions = java.util.ArrayDeque<AppAction>()
     private var dispatching = false
 
@@ -45,9 +35,6 @@ class AppStore(
             mainHandler.post { dispatch(action) }
             return
         }
-        // Actions dispatched re-entrantly (a state or effect listener dispatching from
-        // inside its callback) are queued and applied after the current reduction
-        // completes, so every listener observes states and effects in dispatch order.
         pendingActions.addLast(action)
         if (dispatching) return
         dispatching = true

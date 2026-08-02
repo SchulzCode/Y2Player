@@ -6,18 +6,6 @@ data class LibraryScanProgress(
     val processedFiles: Int = 0
 )
 
-/**
- * Immutable derived lookups for one track list.
- *
- * Built once, on a background thread, whenever the track list actually changes and
- * then shared by reference across [LibraryState] copies. This keeps an ordinary
- * `copy()` — including a recently-played bump on each track transition — from
- * discarding and rebuilding a 30k-entry map on whichever thread touches the state
- * next (usually the UI thread).
- *
- * Identity equality is intentional: two indexes are interchangeable only if they are
- * the same object, which also keeps `LibraryState.equals` cheap.
- */
 class LibraryIndex private constructor(val tracks: List<Track>) {
     val byId: Map<Long, Track>
     val availableTracks: List<Track>
@@ -49,16 +37,6 @@ class LibraryIndex private constructor(val tracks: List<Track>) {
     }
 }
 
-/**
- * Revisions:
- * - [revision] bumps on any library change (playlists, recently played, tracks).
- * - [tracksRevision] bumps only when the track list itself changes (scan reload,
- *   favorite flag, volume removal). Screens derived purely from tracks key their row
- *   caches on this, so recently-played bookkeeping at every track transition does not
- *   invalidate and re-sort a 30k-row screen on the main thread.
- * - [availabilityRevision] bumps when the set of playable track ids changes; the
- *   playback service reconciles its queue against it.
- */
 data class LibraryState(
     val revision: Long = 0,
     val tracksRevision: Long = 0,
@@ -68,12 +46,12 @@ data class LibraryState(
     val playlists: List<PlaylistSummary> = emptyList(),
     val playlistTrackIds: Map<Long, List<Long>> = emptyMap(),
     val recentlyPlayedIds: List<Long> = emptyList(),
+    val audiobookProgress: Map<String, AudiobookProgress> = emptyMap(),
     val isScanning: Boolean = false,
     val scanProgress: LibraryScanProgress = LibraryScanProgress(),
     val lastScanAt: Long? = null,
     val errorMessage: String? = null
 ) {
-    /** Convenience constructor for tests and callers that start from a plain track list. */
     constructor(
         tracks: List<Track>,
         playlists: List<PlaylistSummary> = emptyList(),

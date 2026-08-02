@@ -22,27 +22,10 @@ import com.schulzcode.y2player.storage.UsbStateMonitor
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
-    /**
-     * One log worker thread for the whole process, shared by the human-readable
-     * and structured logs. Each keeps its own bounded queue; only the thread is
-     * shared. See [com.schulzcode.y2player.diagnostics.LogWriter].
-     */
     private val logWriter = LogWriter()
 
     val logger: DiagnosticLogger by lazy { DiagnosticLogger(appContext, logWriter) }
 
-    /**
-     * Structured NDJSON log.
-     *
-     * The primary destination is app-internal storage, which is always mounted;
-     * the removable card is a best-effort mirror so a field report can also be
-     * collected by pulling the card out of a device that will not boot.
-     *
-     * The card must not be primary. Enabling USB mass storage unmounts it, so a
-     * card-primary log stops recording precisely during the transition it would
-     * be needed to explain. The mirror directory is therefore re-resolved on
-     * every write rather than captured once.
-     */
     val eventLog: EventLog by lazy {
         EventLog(
             primaryDirectory = File(appContext.filesDir, "logs"),
@@ -60,7 +43,6 @@ class AppContainer(context: Context) {
     val libraryRepository: LibraryRepository by lazy {
         LibraryRepository(appContext, database, logger = logger, eventLog = eventLog)
     }
-    /** Read-only USB gadget reporting. Cannot and does not switch USB modes. */
     val usbStateMonitor: UsbStateMonitor by lazy { UsbStateMonitor(appContext, eventLog) }
     val diagnosticsRepository: DiagnosticsRepository by lazy { DiagnosticsRepository(logger, eventLog) }
     val appStore: AppStore by lazy { AppStore() }
@@ -70,34 +52,14 @@ class AppContainer(context: Context) {
     private val bluetoothControllerLazy = lazy { BluetoothController(appContext, logger, eventLog) }
     val bluetoothController: BluetoothController by bluetoothControllerLazy
 
-    /**
-     * The Bluetooth controller only if something already built it.
-     *
-     * Teardown must not be the thing that constructs it: touching
-     * [bluetoothController] from a shutdown path would create a controller,
-     * register its receiver and open a profile proxy purely in order to close
-     * them again.
-     */
     fun bluetoothControllerOrNull(): BluetoothController? =
         if (bluetoothControllerLazy.isInitialized()) bluetoothControllerLazy.value else null
 
-    /**
-     * Process-wide artwork loader shared by the Now Playing view and the
-     * RemoteControlClient adapter. Both request the same 256 px decode, so one cache
-     * entry and one lazy FFmpeg artwork extraction serve both per track change.
-     * Never shut down: it lives for the process.
-     */
     private val artworkLoaderLazy = lazy { AlbumArtworkLoader() }
     val artworkLoader: AlbumArtworkLoader by artworkLoaderLazy
 
-    /** Returns the process cache without constructing it during memory pressure. */
     fun artworkLoaderOrNull(): AlbumArtworkLoader? =
         if (artworkLoaderLazy.isInitialized()) artworkLoaderLazy.value else null
 
-    /**
-     * Measured hardware facts, resolved once. Y2Application warms this on a
-     * background thread at startup so the sysfs read never lands on the main
-     * thread; `by lazy` keeps it correct if something reads it earlier.
-     */
     val deviceProfile: DeviceProfile by lazy { DeviceProfileLoader.load(appContext) }
 }

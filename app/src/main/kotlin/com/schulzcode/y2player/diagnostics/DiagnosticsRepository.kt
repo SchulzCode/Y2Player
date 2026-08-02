@@ -17,15 +17,6 @@ class DiagnosticsRepository(
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * Every state mutation runs here, in order. Two reasons:
-     * - `logger.recentLines()` reads the log file (and briefly waits for the
-     *   writer to flush). Several publishers call in from the main thread
-     *   (probe status, idle summary), and file I/O must never run there.
-     * - Applying the transform on one thread makes concurrent publishers
-     *   (USB executor, main thread, export worker) serialize instead of
-     *   losing updates to a read-copy-write race.
-     */
     private val stateExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "y2-diagnostics-state").apply { isDaemon = true }
     }
@@ -39,31 +30,22 @@ class DiagnosticsRepository(
 
     fun removeListener(listener: Listener) { listeners -= listener }
 
-    /**
-     * Last published state. `recentLines` is as fresh as the latest publish
-     * rather than re-read here — reading the log file on the caller's thread is
-     * exactly what this class exists to avoid.
-     */
     fun snapshot(): DiagnosticsState = state
 
     fun setError(message: String) = publish { it.copy(lastError = message) }
 
     fun refresh() = publish { it }
 
-    /** Read-only USB status for the Diagnostics screen. Published only on change. */
+    fun setPlaybackHistory(sessions: Int, bytes: Long) {
+        if (state.historySessions == sessions && state.historyBytes == bytes) return
+        publish { it.copy(historySessions = sessions, historyBytes = bytes) }
+    }
+
     fun setUsbState(usb: UsbState) {
         if (state.usb == usb) return
         publish { it.copy(usb = usb) }
     }
 
-    /**
-     * Exports both logs: the human-readable text report and every retained
-     * NDJSON event file. A support bundle is useless if it contains only one of
-     * them — the text log explains, the event log proves.
-     *
-     * Blocking; callers run it off the main thread (MainActivity uses its
-     * background executor).
-     */
     fun export(): Result<File> = runCatching {
         val preferred = Y2StoragePaths.roots.firstOrNull { it.id == "internal" && it.directory.canWrite() }
             ?: Y2StoragePaths.availableRoots().firstOrNull()
@@ -71,7 +53,6 @@ class DiagnosticsRepository(
         val destination = File(preferred.directory, "Y2Player/diagnostics")
         val output = logger.exportTo(destination)
 
-        // Flush pending events first, then copy the rotated set beside the report.
         var eventFiles = 0
         eventLog?.let { log ->
             log.flush()
@@ -82,8 +63,6 @@ class DiagnosticsRepository(
             }
         }
         publish { it.copy(exportedPath = output.absolutePath, lastError = null) }
-        // Recorded after the copy so the exported bundle itself does not contain
-        // the record of its own export, which would always be the last line.
         eventLog?.info(
             Sub.DIAG, Ev.DIAGNOSTICS_EXPORT,
             "destination" to destination.path,

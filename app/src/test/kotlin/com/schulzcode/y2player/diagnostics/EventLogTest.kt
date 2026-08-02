@@ -8,21 +8,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
-/**
- * Tests for the log destination model.
- *
- * The property under test throughout is that **the internal destination is the
- * one that must never fail**. The removable card is a convenience mirror, and
- * every test here that removes it asserts that logging continued — because the
- * important scenario logging must survive is stock firmware
- * unmounting the card at the exact moment something goes wrong.
- *
- * Nothing here waits on real time or touches a device. Events are flushed
- * synchronously through [EventLog.flush], which the writer thread honours
- * immediately rather than waiting out its batching window.
- */
 class EventLogTest {
-
     @get:Rule val temporaryFolder = TemporaryFolder()
 
     private fun readAll(directory: File): String =
@@ -57,7 +43,6 @@ class EventLogTest {
 
     @Test fun internalStorageIsPrimaryAndDoesNotDependOnTheMirror() {
         val internal = temporaryFolder.newFolder("internal")
-        // A mirror that is never available, exactly as while stock UMS owns it.
         val log = newLog(internal, mirror = { null })
 
         log.warn(Sub.STORAGE, Ev.SCAN_ERROR, "code" to "unmount-failed")
@@ -90,7 +75,6 @@ class EventLogTest {
         log.warn(Sub.STORAGE, Ev.STORAGE_BROADCAST, "stage" to "before_unmount")
         log.flush()
 
-        // The card goes away while stock firmware exposes it to the host.
         cardAvailable = false
         log.warn(Sub.STORAGE, Ev.STORAGE_BROADCAST, "stage" to "while_absent")
         log.flush()
@@ -122,8 +106,6 @@ class EventLogTest {
 
         val cardText = readAll(card)
         assertTrue("mirroring resumed", cardText.contains("after_remount"))
-        // Deliberately not replayed: a backlog would be unbounded, and the
-        // internal log already holds the complete record.
         assertFalse("no unbounded backlog is replayed", cardText.contains("while_absent"))
         assertTrue("internal log is complete", readAll(internal).contains("while_absent"))
     }
@@ -153,8 +135,6 @@ class EventLogTest {
 
         val text = readAll(internal)
         assertFalse("debug is suppressed when verbose is off", text.contains("debug_event"))
-        // Essential lifecycle/storage events are INFO, and a first device test
-        // cannot depend on the user having found a toggle.
         assertTrue("info survives a disabled verbose toggle", text.contains("info_event"))
         assertTrue("warn survives a disabled verbose toggle", text.contains("warn_event"))
     }
@@ -164,13 +144,6 @@ class EventLogTest {
         val log = newLog(internal)
         val padding = "x".repeat(400)
 
-        // Enough bytes to force several rotations: at ~460 bytes/event and a
-        // 512 KiB file, a few thousand events cross the ceiling many times over.
-        //
-        // Flushed in blocks smaller than the queue so the writer actually
-        // persists everything. Without this the bounded queue drops most of a
-        // tight burst before it reaches disk, only one file is ever written, and
-        // the test measures the queue's back-pressure instead of rotation.
         val block = EventLog.QUEUE_CAPACITY / 2
         var written = 0
         repeat(12) {
@@ -185,13 +158,11 @@ class EventLogTest {
             files.size <= EventLog.BACKUP_COUNT + 1
         )
         val total = files.sumOf { it.length() }
-        // Projecting the incoming write keeps every file within MAX_FILE_BYTES.
         val ceiling = EventLog.MAX_FILE_BYTES * (EventLog.BACKUP_COUNT + 1)
         assertTrue("total size $total exceeds the $ceiling ceiling", total <= ceiling)
     }
 
     @Test fun anUnwritableDestinationDoesNotCrashTheCaller() {
-        // A path whose parent is a regular file: mkdirs can never succeed.
         val blocker = temporaryFolder.newFile("not-a-directory")
         val log = newLog(File(blocker, "logs"))
 
@@ -199,8 +170,6 @@ class EventLogTest {
         log.info(Sub.APP, Ev.APP_START)
         log.flush()
 
-        // Reaching here at all is the assertion: diagnostics must never become
-        // a second fault.
         assertTrue("logging to an unwritable destination is survivable", true)
     }
 
@@ -221,23 +190,12 @@ class EventLogTest {
         val log = newLog(internal)
 
         val burst = EventLog.QUEUE_CAPACITY * 4
-        // Far more than the bounded queue holds, published faster than the
-        // writer can drain. Some may be dropped; none may be dropped silently.
         repeat(burst) { index ->
             log.warn(Sub.DIAG, Ev.ACTION, "index" to index)
         }
 
-        // A sentinel emitted after the burst. log() evicts the oldest entry to
-        // make room, so the sentinel always enqueues; once the burst stops
-        // nothing else is offered, so the writer is guaranteed to drain it. Its
-        // serialization carries any accumulated dropped count, closing the race
-        // where a drop after the final write would go unrecorded.
         log.warn(Sub.DIAG, Ev.CRASH, "marker" to "sentinel")
 
-        // Poll until the sentinel reaches disk rather than trusting a single
-        // flush(): flush() offers a marker that it cannot enqueue while the
-        // queue is still full, so it can return before the writer has caught up.
-        // The writer runs continuously, so a bounded wait is deterministic.
         var text = ""
         for (attempt in 0 until 100) {
             log.flush()
@@ -248,9 +206,6 @@ class EventLogTest {
 
         assertTrue("something was written", text.isNotEmpty())
         assertTrue("the sentinel was recorded", text.contains("sentinel"))
-        // The contract, stated directly: if any events are missing, the loss
-        // must be visible as a dropped count. A machine fast enough to lose
-        // nothing satisfies the left side and never reaches the right.
         val lines = text.lines().count { it.contains("\"ev\":\"action\"") }
         assertTrue(
             "either every event survived or the gap is recorded",

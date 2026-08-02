@@ -5,14 +5,13 @@ import com.schulzcode.y2player.core.model.AudioQualityMode
 
 enum class RowVisualState { FOCUSED, FOCUSED_ACTIVE, ACTIVE, NORMAL, UNAVAILABLE }
 enum class ArtworkVisual { EMBEDDED, FALLBACK }
-enum class EmptyStateKind { SCANNING, STORAGE_MISSING, NO_MUSIC, EMPTY_QUEUE, EMPTY_FAVORITES, EMPTY_RECENT, EMPTY_PLAYLIST }
+enum class EmptyStateKind { SCANNING, STORAGE_MISSING, NO_MUSIC, EMPTY_QUEUE, EMPTY_FAVORITES, EMPTY_RECENT, EMPTY_PLAYLIST, EMPTY_AUDIOBOOKS, EMPTY_LIST }
 enum class EmptyStateAction { NONE, OPEN_STORAGE, GO_BACK }
 enum class RouteIcon { HEADPHONES, BLUETOOTH, SPEAKER, DISCONNECTED, UNKNOWN }
 enum class PlayerLayout { WIDE, TALL }
 
 data class RoutePresentation(val label: String, val icon: RouteIcon, val warning: Boolean = false)
 
-/** Pure UI decisions shared by the renderer and local unit tests. */
 object Y2UiLogic {
     private val wiredRoute = RoutePresentation("Wired", RouteIcon.HEADPHONES)
     private val bluetoothRoute = RoutePresentation("Bluetooth", RouteIcon.BLUETOOTH)
@@ -36,10 +35,6 @@ object Y2UiLogic {
         return (positionMs.toDouble() / durationMs.toDouble()).coerceIn(0.0, 1.0).toFloat()
     }
 
-    /**
-     * Uses the existing index as a rescan baseline without pretending it is an
-     * exact total when this is the first scan or newly discovered files exceed it.
-     */
     fun scanProgressFraction(processedFiles: Int, expectedFiles: Int): Float? {
         if (expectedFiles <= 0 || processedFiles > expectedFiles) return null
         return (processedFiles.coerceAtLeast(0).toFloat() / expectedFiles).coerceIn(0f, 1f)
@@ -92,6 +87,41 @@ object Y2UiLogic {
         AudioOutputRoute.UNKNOWN -> unknownRoute
     }
 
+    fun technicalLine(
+        codec: String,
+        sampleRate: Int?,
+        bitDepth: Int?,
+        bitrate: Long? = null,
+        genre: String? = null
+    ): String {
+        val parts = ArrayList<String>(5)
+        parts += codec
+        sampleRate?.takeIf { it > 0 }
+            ?.let { parts += if (it % 1000 == 0) "${it / 1000} kHz" else "${it / 1000.0} kHz" }
+        bitDepth?.takeIf { it > 0 }?.let { parts += "$it-bit" }
+        bitrate?.takeIf { it > 0 }?.let { parts += "${(it + 500) / 1000} kbps" }
+        genre?.trim()?.takeIf { it.isNotEmpty() }?.let { parts += it }
+        return parts.joinToString(" · ")
+    }
+
+    // Now Playing reuses the same three cached lines for both media types: the
+    // title slot carries the chapter, the artist slot the book, the album slot the
+    // chapter position. No second drawing path.
+    fun audiobookArtistLine(bookName: String, narrator: String?): String =
+        narrator?.trim()?.takeIf { it.isNotEmpty() }?.let { "$bookName · $it" } ?: bookName
+
+    fun audiobookChapterLine(chapterNumber: Int?, chapterCount: Int): String = when {
+        chapterNumber == null || chapterCount <= 0 -> ""
+        chapterCount == 1 -> ""
+        else -> "Chapter $chapterNumber of $chapterCount"
+    }
+
+    fun albumLine(album: String, artist: String, year: Int?, includeYear: Boolean): String {
+        if (album.isEmpty() || album == artist) return ""
+        val validYear = year?.takeIf { it > 0 }
+        return if (includeYear && validYear != null) "$album ($validYear)" else album
+    }
+
     fun artworkVisual(hasArtwork: Boolean): ArtworkVisual = if (hasArtwork) ArtworkVisual.EMBEDDED else ArtworkVisual.FALLBACK
 
     fun emptyState(
@@ -100,22 +130,27 @@ object Y2UiLogic {
         queueScreen: Boolean,
         favoritesScreen: Boolean,
         playlistScreen: Boolean,
-        recentScreen: Boolean = false
+        recentScreen: Boolean = false,
+        audiobooksScreen: Boolean = false,
+        drilldownScreen: Boolean = false
     ): EmptyStateKind = when {
         scanning -> EmptyStateKind.SCANNING
         !storageAvailable -> EmptyStateKind.STORAGE_MISSING
+        audiobooksScreen -> EmptyStateKind.EMPTY_AUDIOBOOKS
         queueScreen -> EmptyStateKind.EMPTY_QUEUE
         favoritesScreen -> EmptyStateKind.EMPTY_FAVORITES
         recentScreen -> EmptyStateKind.EMPTY_RECENT
         playlistScreen -> EmptyStateKind.EMPTY_PLAYLIST
+        drilldownScreen -> EmptyStateKind.EMPTY_LIST
         else -> EmptyStateKind.NO_MUSIC
     }
 
     fun emptyStateAction(kind: EmptyStateKind): EmptyStateAction = when (kind) {
         EmptyStateKind.SCANNING -> EmptyStateAction.NONE
-        EmptyStateKind.STORAGE_MISSING, EmptyStateKind.NO_MUSIC -> EmptyStateAction.OPEN_STORAGE
+        EmptyStateKind.STORAGE_MISSING, EmptyStateKind.NO_MUSIC,
+        EmptyStateKind.EMPTY_AUDIOBOOKS -> EmptyStateAction.OPEN_STORAGE
         EmptyStateKind.EMPTY_QUEUE, EmptyStateKind.EMPTY_FAVORITES, EmptyStateKind.EMPTY_RECENT,
-        EmptyStateKind.EMPTY_PLAYLIST -> EmptyStateAction.GO_BACK
+        EmptyStateKind.EMPTY_PLAYLIST, EmptyStateKind.EMPTY_LIST -> EmptyStateAction.GO_BACK
     }
 
     fun statusMessageTimeoutMs(message: String?): Long = when {

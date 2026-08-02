@@ -19,29 +19,12 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Owns every storage- and power-related system broadcast.
- *
- * Three distinct signals, deliberately kept apart because they have very
- * different costs and frequencies:
- *  - **mount events** (rare, expensive): full [snapshot] including StatFs.
- *  - **content events** (rare, no snapshot): a file transfer finished, so the
- *    library may be stale — see [ContentListener].
- *  - **battery events** (frequent, must be nearly free): updated straight from
- *    the broadcast intent, with no filesystem access and no listener dispatch
- *    unless the user-visible value actually changed.
- */
 class StorageMonitor(
     context: Context,
     private val eventLog: EventLog? = null
 ) {
     fun interface Listener { fun onStorageChanged(state: DeviceState) }
 
-    /**
-     * Raised when external storage *content* may have changed without a mount
-     * transition — the classic case being an MTP transfer from a PC, which
-     * never unmounts anything. Consumers trigger an incremental rescan.
-     */
     fun interface ContentListener { fun onExternalContentChanged(reason: String) }
 
     private val appContext = context.applicationContext
@@ -54,9 +37,6 @@ class StorageMonitor(
     }
     private val refreshQueued = AtomicBoolean(false)
     private val deferredPublish = Runnable(::publish)
-    // Written by the snapshot executor and by updateBattery on the main thread.
-    // An interleaving can drop one battery delta; the next ACTION_BATTERY_CHANGED
-    // (frequent) repairs it, so no synchronization is added for it.
     @Volatile private var latest = DeviceState()
     @Volatile private var contentReason = REASON_TRANSFER
 
@@ -67,13 +47,7 @@ class StorageMonitor(
 
     private val storageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            // Playback and the snapshot path share short-lived mount caches.
-            // A broadcast is an authoritative transition, so make the next
-            // reader probe the new state instead of retaining the pre-event
-            // verdict until its ordinary expiry.
             Y2StoragePaths.invalidateMountCaches()
-            // Recorded before debouncing: correlating a stock-UMS remount needs
-            // the raw broadcast order, which the coalesced snapshot loses.
             eventLog?.info(
                 Sub.STORAGE, Ev.STORAGE_BROADCAST,
                 "action" to intent?.action,
@@ -84,18 +58,10 @@ class StorageMonitor(
         }
     }
 
-    /**
-     * MTP writes files into mounted storage without any mount transition, so the
-     * only reliable hints that new music arrived are the platform media scanner
-     * finishing and the USB cable being unplugged. Both are debounced into one
-     * notification; the library scan they trigger is incremental, so a false
-     * positive costs a directory walk, not a metadata re-read.
-     */
     private val contentReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
             if (action == ACTION_USB_STATE) {
-                // Only a completed (disconnected) transfer is interesting.
                 if (intent.getBooleanExtra(EXTRA_USB_CONNECTED, false)) return
                 contentReason = REASON_USB
             } else {
@@ -137,8 +103,6 @@ class StorageMonitor(
                 addDataScheme("file")
             }
             appContext.registerReceiver(storageReceiver, storageFilter)
-            // MEDIA_SCANNER_FINISHED carries a file:// data URI; USB_STATE does not,
-            // so they cannot share one filter.
             appContext.registerReceiver(
                 contentReceiver,
                 IntentFilter(Intent.ACTION_MEDIA_SCANNER_FINISHED).apply { addDataScheme("file") }
@@ -160,11 +124,6 @@ class StorageMonitor(
         registered = false
     }
 
-    /**
-     * Requests a full device snapshot. Concurrent requests are **coalesced, not
-     * dropped**: the queued flag is cleared before the snapshot runs, so a
-     * mount event arriving mid-refresh always schedules a fresh pass.
-     */
     fun publish() {
         if (!refreshQueued.compareAndSet(false, true)) return
         executor.execute {
@@ -177,11 +136,6 @@ class StorageMonitor(
         }
     }
 
-    /**
-     * One event per volume whose availability actually flipped. Transitions
-     * only: a snapshot that changed nothing is not an event, and battery-driven
-     * refreshes must not fill the log with unchanged mount state.
-     */
     private fun logVolumeChanges(previous: DeviceState, current: DeviceState) {
         val log = eventLog ?: return
         current.storageVolumes.forEach { volume ->
@@ -199,13 +153,6 @@ class StorageMonitor(
         }
     }
 
-    /**
-     * Battery fast path: reads the values out of the broadcast itself (no sticky
-     * re-read, no StatFs) and dispatches only when a user-visible value changed.
-     * ACTION_BATTERY_CHANGED also fires for voltage and temperature, which the
-     * UI never shows; dispatching on those would cost two StatFs calls and a
-     * full-screen repaint every few seconds, so they are ignored here.
-     */
     private fun updateBattery(intent: Intent?) {
         val current = latest
         if (current.storageVolumes.isEmpty()) {
@@ -221,16 +168,6 @@ class StorageMonitor(
 
     private data class BatteryReading(val percent: Int?, val charging: Boolean)
 
-    /**
-     * The single place ACTION_BATTERY_CHANGED is interpreted.
-     *
-     * This process registers exactly one receiver for it; [UsbStateMonitor]
-     * deliberately does not, because it only needs the charging *transitions*
-     * that ACTION_POWER_CONNECTED/DISCONNECTED already deliver. Battery
-     * broadcasts fire every few seconds for voltage and temperature, so a second
-     * receiver deriving the same boolean was a wake-up per broadcast for a fact
-     * this process already had.
-     */
     private fun batteryReading(intent: Intent?): BatteryReading {
         val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
@@ -243,9 +180,6 @@ class StorageMonitor(
     }
 
     fun snapshot(): DeviceState {
-        // Resolved once and passed down. Y2StoragePaths.roots probes the
-        // filesystem on every access, and this method used to evaluate it four
-        // times to build two volumes.
         val roots = Y2StoragePaths.roots
         val internal = roots.first { it.id == "internal" }
         val removable = roots.first { it.id == "sdcard" }
@@ -295,11 +229,9 @@ class StorageMonitor(
 
     companion object {
         private const val STORAGE_DEBOUNCE_MS = 600L
-        // Long enough to absorb a burst of scanner-finished broadcasts and to let
-        // the filesystem settle after an unplug, short enough to feel automatic.
         private const val CONTENT_DEBOUNCE_MS = 2_500L
-        // Framework constants that are @hide on API 19; the string values are stable.
         private const val ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE"
+        // @hide on API 19; the string values are stable.
         private const val EXTRA_USB_CONNECTED = "connected"
         private const val REASON_USB = "USB disconnected"
         private const val REASON_TRANSFER = "media scanner finished"

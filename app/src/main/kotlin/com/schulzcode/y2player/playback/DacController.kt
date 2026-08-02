@@ -7,11 +7,6 @@ import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import java.io.File
 
-/**
- * Reports the verified limits of the Y2's MediaTek/CS43131 audio path.
- * Raw CS43131 PCM access and the old vendor parameter are unavailable on the
- * audited stock HAL, so this class never performs speculative hardware I/O.
- */
 class DacController(context: Context, private val logger: DiagnosticLogger) {
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val policy by lazy(LazyThreadSafetyMode.NONE) { readPolicyCapabilities() }
@@ -25,7 +20,6 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         directMode = enabled
         lastAppliedDirectMode = enabled
         hiFiRequestAccepted = false
-        // The reported state just changed, so the memoised snapshot is stale.
         cached = null
         logger.info(
             "audio",
@@ -37,16 +31,6 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         )
     }
 
-    /**
-     * Describes the audio route for the UI.
-     *
-     * Memoised on the only input that varies at runtime — the source sample rate
-     * of the current track — because this is called from every playback snapshot,
-     * which includes every one-second progress tick. Before that it made a native
-     * `getProperty` call, scanned the advertised format strings four times and
-     * allocated a comparison list on each tick, all on the thread responsible for
-     * firing crossfade transitions on time.
-     */
     fun snapshot(track: Track?): DacState {
         val sourceRate = track?.sampleRate
         cached?.let { if (cachedSourceRate == sourceRate) return it }
@@ -77,10 +61,6 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
     @Volatile private var cached: DacState? = null
     @Volatile private var cachedSourceRate: Int? = null
 
-    /**
-     * The advertised output rate, read once. It comes from the audio policy, not
-     * from the stream, so it does not change while the process runs.
-     */
     private val cachedOutputRate: Int? by lazy(LazyThreadSafetyMode.NONE) {
         frameworkOutputRate()?.takeIf { it > 0 } ?: policy.sampleRates.firstOrNull()
     }
@@ -94,10 +74,6 @@ class DacController(context: Context, private val logger: DiagnosticLogger) {
         val sampleRates: List<Int>,
         val formats: List<String>
     ) {
-        /**
-         * The firmware advertises nothing beyond stock 44.1 kHz / 16-bit. Derived
-         * once here rather than re-scanned on every snapshot.
-         */
         val stockRateOnly: Boolean = sampleRates.size == 1 && sampleRates.firstOrNull() == 44_100 &&
             formats.none {
                 it.contains("24") || it.contains("32") || it.contains("FLOAT") || it.contains("DSD")

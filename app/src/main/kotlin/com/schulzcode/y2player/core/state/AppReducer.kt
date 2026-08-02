@@ -15,8 +15,8 @@ object AppReducer {
         AppAction.WheelCounterClockwise -> moveSelection(state, -1)
         AppAction.Confirm -> confirm(state)
         AppAction.ConfirmLong -> confirmLong(state)
+        AppAction.ShowNowPlaying -> showNowPlaying(state)
         AppAction.Back -> back(state)
-        // Idempotent by design: pressing HOME on the home screen is a no-op.
         AppAction.NavigateHome -> Reduction(
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) state
             else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
@@ -33,10 +33,10 @@ object AppReducer {
         AppAction.SeekForwardLong -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong()))) else Reduction(state)
         is AppAction.LibraryChanged -> Reduction(preserveSelection(state, state.copy(library = action.library)))
         is AppAction.PlaybackChanged -> Reduction(playbackChanged(state, action.playback))
-        is AppAction.DeviceChanged -> Reduction(state.copy(device = action.device))
+        is AppAction.DeviceChanged -> Reduction(preserveSelection(state, state.copy(device = action.device)))
         is AppAction.BluetoothChanged -> Reduction(preserveSelection(state, state.copy(bluetooth = action.bluetooth)))
         is AppAction.DisplayChanged -> Reduction(state.copy(display = action.display))
-        is AppAction.PreferencesChanged -> Reduction(state.copy(preferences = action.preferences))
+        is AppAction.PreferencesChanged -> Reduction(preserveSelection(state, state.copy(preferences = action.preferences)))
         is AppAction.DiagnosticsChanged -> Reduction(preserveSelection(state, state.copy(diagnostics = action.diagnostics)))
         is AppAction.SafeModeChanged -> Reduction(state.copy(safeMode = action.enabled))
         is AppAction.ShowMessage -> Reduction(state.copy(transientMessage = action.message))
@@ -68,9 +68,13 @@ object AppReducer {
         return when (val screen = state.currentScreen) {
             Screen.MainMenu -> confirmMainMenu(state, row)
             Screen.Music -> confirmMusic(state, row)
-            Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed -> playSelected(state)
-            is Screen.AlbumSongs, is Screen.ArtistSongs ->
-                if ((row as? Action)?.key == "collection_play") playWholeCollection(state) else playSelected(state)
+            Screen.Audiobooks -> confirmAudiobook(state, row)
+            is Screen.AudiobookOptions -> confirmAudiobookOptions(state, screen, row)
+            is Screen.AudiobookChapters -> confirmAudiobookChapter(state, screen, row)
+            Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed,
+            is Screen.ArtistSongs, is Screen.AlbumSongs ->
+                if ((row as? Action)?.key == ScreenContent.COLLECTION_SHUFFLE_KEY) shuffleCollection(state)
+                else playSelected(state)
             is Screen.ArtistAlbums -> confirmArtistAlbums(state, screen, row)
             Screen.Albums -> (row as? Group)?.key?.let { push(state, Screen.AlbumSongs(it)) } ?: Reduction(state)
             Screen.Artists -> (row as? Group)?.key?.let { push(state, Screen.ArtistAlbums(it)) } ?: Reduction(state)
@@ -80,33 +84,35 @@ object AppReducer {
                 else -> Reduction(state)
             }
             Screen.Playlists -> confirmPlaylists(state, row)
-            is Screen.PlaylistTracks -> if (row is TrackRow) playSelected(state) else confirmPlaylistAction(state, screen, row)
+            is Screen.PlaylistTracks -> when {
+                row is TrackRow -> playSelected(state)
+                (row as? Action)?.key == ScreenContent.COLLECTION_SHUFFLE_KEY -> shuffleCollection(state)
+                else -> confirmPlaylistAction(state, screen, row)
+            }
             is Screen.TrackOptions -> confirmTrackOptions(state, screen, row)
             is Screen.TrackBrowse -> confirmTrackBrowse(state, screen, row)
             is Screen.TrackDetails -> Reduction(state)
             is Screen.AddToPlaylist -> confirmAddToPlaylist(state, screen.trackId, row)
             is Screen.QueueOptions -> confirmQueueOptions(state, row)
             Screen.QueueManagement -> confirmQueueManagement(state, row)
-            // Compared by queue position, not track id: the same track can sit in
-            // the queue twice, and only one of those rows is the one playing.
             Screen.Queue ->
                 if (state.selectedIndex == state.playback.currentQueueIndex &&
                     isTrackLoaded(state, state.playback.currentTrackId)
-                ) Reduction(pushState(state, Screen.NowPlaying))
-                else Reduction(pushState(state, Screen.NowPlaying), listOf(PlayQueueIndex(state.selectedIndex)))
+                ) Reduction(toNowPlaying(state))
+                else Reduction(toNowPlaying(state), listOf(PlayQueueIndex(state.selectedIndex)))
             Screen.NowPlayingOptions -> confirmNowPlayingOptions(state, row)
             Screen.Audio -> confirmAudio(state, row)
             Screen.Settings -> confirmSettings(state, row)
-            Screen.PlaybackSettings -> confirmPlaybackSettings(state, row)
             Screen.PlaybackTransitions, Screen.PlaybackSeeking, Screen.PlaybackVolume,
             Screen.PlaybackInterruptions -> confirmPlaybackPreference(state, row)
-            Screen.SoundSettings -> confirmSoundSettings(state, row)
+            Screen.SoundEffects -> confirmSoundEffects(state, row)
             Screen.EqualizerSettings -> confirmEqualizerSettings(state, row)
-            Screen.SoundDynamics -> confirmSoundDynamics(state, row)
-            Screen.OutputInformation -> Reduction(state)
+            Screen.OutputInformation -> confirmOutput(state, row)
             Screen.EqualizerBands -> confirmEqualizerBands(state, row)
             Screen.SortOrder -> confirmSortOrder(state, row)
             Screen.Bluetooth -> confirmBluetooth(state, row)
+            is Screen.BluetoothDevice -> confirmBluetoothDevice(state, row)
+            is Screen.ConfirmAction -> confirmConfirmAction(state, screen, row)
             Screen.InterfaceSettings -> confirmInterfaceSettings(state, row)
             Screen.LibrarySettings -> confirmLibrarySettings(state, row)
             Screen.Display -> confirmDisplay(state, row)
@@ -115,8 +121,10 @@ object AppReducer {
             Screen.Brightness -> confirmBrightness(state, row)
             Screen.ScreenTimeout -> confirmTimeout(state, row)
             Screen.Storage -> confirmStorage(state, row)
+            Screen.PlaybackHistory -> confirmPlaybackHistory(state, row)
             Screen.System -> confirmSystem(state, row)
             Screen.Diagnostics -> confirmDiagnostics(state, row)
+            Screen.Reset -> confirmReset(state, row)
             Screen.About -> Reduction(state)
             Screen.NowPlaying -> Reduction(state, listOf(TogglePlayback))
         }
@@ -126,8 +134,10 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "music" -> push(state, Screen.Music)
-            "shuffle_all" -> Reduction(pushState(state, Screen.NowPlaying), listOf(ShuffleAll))
-            "audio" -> push(state, Screen.Audio)
+            "audiobooks" -> Reduction(pushState(state, Screen.Audiobooks), listOf(RefreshAudiobooks))
+            "now_playing" -> if (state.playback.currentTrackId != null) Reduction(toNowPlaying(state))
+                else Reduction(toNowPlaying(state), listOf(PlayQueueIndex(state.playback.currentQueueIndex ?: 0)))
+            "shuffle_all" -> Reduction(toNowPlaying(state), listOf(ShuffleAll))
             "settings" -> push(state, Screen.Settings)
             else -> Reduction(state)
         }
@@ -136,10 +146,13 @@ object AppReducer {
     private fun confirmMusic(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
+            "shuffle_all" -> Reduction(toNowPlaying(state), listOf(ShuffleAll))
             "songs" -> push(state, Screen.Songs)
             "albums" -> push(state, Screen.Albums)
             "artists" -> push(state, Screen.Artists)
             "playlists" -> push(state, Screen.Playlists)
+            "favorites" -> push(state, Screen.Favorites)
+            "recent" -> push(state, Screen.RecentlyPlayed)
             "folders" -> push(state, Screen.Folders())
             else -> Reduction(state)
         }
@@ -148,10 +161,6 @@ object AppReducer {
     private fun confirmPlaylists(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when {
-            // Favorites and Recently Played are playlists in the user's mental model;
-            // they live here instead of occupying home rows.
-            key == "playlist_favorites" -> push(state, Screen.Favorites)
-            key == "playlist_recent" -> push(state, Screen.RecentlyPlayed)
             key == "playlist_create" -> Reduction(state, listOf(CreatePlaylist))
             key.startsWith("playlist:") -> {
                 val id = key.substringAfter(':').toLongOrNull() ?: return Reduction(state)
@@ -164,7 +173,11 @@ object AppReducer {
 
     private fun confirmPlaylistAction(state: AppState, screen: Screen.PlaylistTracks, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
-        return if (key.startsWith("playlist_delete:")) Reduction(pop(state), listOf(DeletePlaylist(screen.playlistId))) else Reduction(state)
+        return if (key.startsWith("playlist_delete:")) push(
+            state,
+            Screen.ConfirmAction(ConfirmPrompts.DELETE_PLAYLIST + screen.playlistId),
+            selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+        ) else Reduction(state)
     }
 
     private fun confirmTrackOptions(state: AppState, screen: Screen.TrackOptions, row: ScreenRow): Reduction {
@@ -191,15 +204,13 @@ object AppReducer {
         val track = state.library.byId[screen.trackId] ?: return Reduction(state)
         return when {
             key.startsWith("track_album:") -> push(state, Screen.AlbumSongs(track.displayAlbum))
-            key.startsWith("track_artist:") -> push(state, Screen.ArtistSongs(track.displayArtist))
+            key.startsWith("track_artist:") -> push(state, Screen.ArtistSongs(track.primaryArtist))
             else -> Reduction(state)
         }
     }
 
     private fun confirmAddToPlaylist(state: AppState, trackId: Long, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
-        // Leaving Add to Playlist pops both it and the Track Options screen that
-        // opened it, landing back on the originating list.
         fun closeAddToPlaylist(): AppState = state.screenStack.dropLast(2)
             .let { state.copy(screenStack = it.ifEmpty { listOf(ScreenEntry(Screen.MainMenu)) }) }
         return when {
@@ -216,7 +227,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         fun index() = key.substringAfter(':', "-1").toIntOrNull() ?: -1
         return when {
-            key.startsWith("queue_play:") -> Reduction(pushState(pop(state), Screen.NowPlaying), listOf(PlayQueueIndex(index())))
+            key.startsWith("queue_play:") -> Reduction(toNowPlaying(pop(state)), listOf(PlayQueueIndex(index())))
             key.startsWith("queue_up:") -> Reduction(pop(state), listOf(MoveQueueItem(index(), -1)))
             key.startsWith("queue_down:") -> Reduction(pop(state), listOf(MoveQueueItem(index(), 1)))
             key.startsWith("queue_remove:") -> Reduction(pop(state), listOf(RemoveQueueIndex(index())))
@@ -231,9 +242,11 @@ object AppReducer {
             "queue_clear_upcoming" -> Reduction(state.screenStack.dropLast(2).let {
                 state.copy(screenStack = it.ifEmpty { listOf(ScreenEntry(Screen.MainMenu)) })
             }, listOf(ClearUpcoming))
-            "queue_clear" -> Reduction(state.screenStack.dropLast(2).let {
-                state.copy(screenStack = it.ifEmpty { listOf(ScreenEntry(Screen.MainMenu)) })
-            }, listOf(ClearQueue))
+            "queue_clear" -> push(
+                state,
+                Screen.ConfirmAction(ConfirmPrompts.CLEAR_QUEUE),
+                selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+            )
             else -> Reduction(state)
         }
     }
@@ -241,8 +254,11 @@ object AppReducer {
     private fun confirmAudio(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
-            "playback" -> push(state, Screen.PlaybackSettings)
-            "sound" -> push(state, Screen.SoundSettings)
+            "output" -> push(state, Screen.OutputInformation)
+            "playback_transitions" -> push(state, Screen.PlaybackTransitions)
+            "playback_volume" -> push(state, Screen.PlaybackVolume)
+            "sound_effects" -> push(state, Screen.SoundEffects)
+            "playback_interruptions" -> push(state, Screen.PlaybackInterruptions)
             else -> Reduction(state)
         }
     }
@@ -250,9 +266,12 @@ object AppReducer {
     private fun confirmSettings(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
+            "audio" -> push(state, Screen.Audio)
             "bluetooth" -> push(state, Screen.Bluetooth)
             "interface" -> push(state, Screen.InterfaceSettings)
-            "library_settings" -> push(state, Screen.LibrarySettings)
+            // The Listening History subtitle is read here, so the count has to be
+            // fetched on the way in rather than when that row is pressed.
+            "library_settings" -> Reduction(pushState(state, Screen.LibrarySettings), listOf(RefreshPlaybackHistory))
             "system" -> push(state, Screen.System)
             else -> Reduction(state)
         }
@@ -263,6 +282,7 @@ object AppReducer {
         return when (key) {
             "display" -> push(state, Screen.Display)
             "controls" -> push(state, Screen.Controls)
+            "extra_track_info" -> Reduction(state, listOf(ToggleExtraTrackInfo))
             else -> Reduction(state)
         }
     }
@@ -272,6 +292,7 @@ object AppReducer {
         return when (key) {
             "sort" -> push(state, Screen.SortOrder)
             "storage" -> push(state, Screen.Storage)
+            "playback_history" -> Reduction(pushState(state, Screen.PlaybackHistory), listOf(RefreshPlaybackHistory))
             "playlist_import_m3u" -> Reduction(state, listOf(ImportM3uPlaylists))
             "playlist_export_m3u" -> Reduction(state, listOf(ExportM3uPlaylists))
             else -> Reduction(state)
@@ -282,20 +303,9 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "diagnostics" -> push(state, Screen.Diagnostics)
+            "reset" -> push(state, Screen.Reset)
             "android_settings" -> Reduction(state, listOf(OpenAndroidSettings))
             "about" -> push(state, Screen.About)
-            else -> Reduction(state)
-        }
-    }
-
-    private fun confirmPlaybackSettings(state: AppState, row: ScreenRow): Reduction {
-        val key = (row as? Action)?.key ?: return Reduction(state)
-        return when (key) {
-            "playback_transitions" -> push(state, Screen.PlaybackTransitions)
-            "playback_seeking" -> push(state, Screen.PlaybackSeeking)
-            "playback_volume" -> push(state, Screen.PlaybackVolume)
-            "resume_position" -> Reduction(state, listOf(ToggleResumePosition))
-            "playback_interruptions" -> push(state, Screen.PlaybackInterruptions)
             else -> Reduction(state)
         }
     }
@@ -306,6 +316,7 @@ object AppReducer {
             "pause_disconnect" -> Reduction(state, listOf(TogglePauseOnDisconnect))
             "gapless" -> Reduction(state, listOf(ToggleGapless))
             "crossfade" -> Reduction(state, listOf(CycleCrossfade))
+            "crossfade_mode" -> Reduction(state, listOf(CycleCrossfadeMode))
             "pause_fade" -> Reduction(state, listOf(CyclePauseFade))
             "seek_step" -> Reduction(state, listOf(CycleSeekStep))
             "long_seek_step" -> Reduction(state, listOf(CycleLongSeekStep))
@@ -313,20 +324,33 @@ object AppReducer {
             "duck_focus" -> Reduction(state, listOf(ToggleDuckOnFocusLoss))
             "volume_mode" -> Reduction(state, listOf(CycleVolumeMode))
             "replay_gain" -> Reduction(state, listOf(CycleReplayGain))
+            "balance" -> push(state, Screen.Balance)
+            "resume_position" -> Reduction(state, listOf(ToggleResumePosition))
             else -> Reduction(state)
         }
     }
 
-
-    private fun confirmSoundSettings(state: AppState, row: ScreenRow): Reduction {
+    private fun confirmSoundEffects(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
-            "audio_quality" -> Reduction(state, listOf(CycleAudioQuality))
             "effects_toggle" -> Reduction(state, listOf(ToggleAudioEffects))
             "equalizer" -> push(state, Screen.EqualizerSettings)
-            "balance" -> push(state, Screen.Balance)
-            "sound_dynamics" -> push(state, Screen.SoundDynamics)
-            "output_information" -> push(state, Screen.OutputInformation)
+            "bass" -> Reduction(state, listOf(CycleBassStrength))
+            "loudness" -> Reduction(state, listOf(CycleLoudnessGain))
+            else -> Reduction(state)
+        }
+    }
+
+    private fun confirmOutput(state: AppState, row: ScreenRow): Reduction =
+        if ((row as? Action)?.key == "audio_quality") Reduction(state, listOf(CycleAudioQuality))
+        else Reduction(state)
+
+    private fun confirmReset(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return when (key) {
+            "reset_queue" -> push(state, Screen.ConfirmAction(ConfirmPrompts.CLEAR_QUEUE), selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX)
+            "reset_library" -> push(state, Screen.ConfirmAction(ConfirmPrompts.RESET_LIBRARY), selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX)
+            "reset_safe_mode" -> Reduction(state, listOf(if (state.safeMode) ExitSafeMode else EnterSafeMode))
             else -> Reduction(state)
         }
     }
@@ -336,15 +360,6 @@ object AppReducer {
         return when (key) {
             "eq_preset" -> Reduction(state, listOf(CycleEqualizerPreset))
             "eq_bands" -> push(state, Screen.EqualizerBands)
-            else -> Reduction(state)
-        }
-    }
-
-    private fun confirmSoundDynamics(state: AppState, row: ScreenRow): Reduction {
-        val key = (row as? Action)?.key ?: return Reduction(state)
-        return when (key) {
-            "bass" -> Reduction(state, listOf(CycleBassStrength))
-            "loudness" -> Reduction(state, listOf(CycleLoudnessGain))
             else -> Reduction(state)
         }
     }
@@ -376,24 +391,103 @@ object AppReducer {
         }
     }
 
+    private fun confirmAudiobook(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        if (!key.startsWith(ScreenContent.AUDIOBOOK_KEY_PREFIX)) return Reduction(state)
+        val entry = ScreenContent.audiobookEntry(state, key.substringAfter(':')) ?: return Reduction(state)
+        if (entry.chapterIds.isEmpty()) return Reduction(state)
+        return Reduction(toNowPlaying(state), listOf(PlayCollection(entry.chapterIds, entry.startIndex)))
+    }
+
+    private fun confirmAudiobookOptions(
+        state: AppState,
+        screen: Screen.AudiobookOptions,
+        row: ScreenRow
+    ): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        val folderKey = screen.folderKey
+        return when {
+            key.startsWith(ScreenContent.AUDIOBOOK_CHAPTERS_KEY) ->
+                push(state, Screen.AudiobookChapters(folderKey), selectedIndex = currentChapterIndex(state, folderKey))
+            key.startsWith(ScreenContent.AUDIOBOOK_RESTART_KEY) -> {
+                val entry = ScreenContent.audiobookEntry(state, folderKey) ?: return Reduction(state)
+                if (entry.chapterIds.isEmpty()) return Reduction(state)
+                Reduction(toNowPlaying(state), listOf(PlayCollection(entry.chapterIds, 0, fromStart = true)))
+            }
+            key.startsWith(ScreenContent.AUDIOBOOK_CLEAR_KEY) -> push(
+                state,
+                Screen.ConfirmAction(ConfirmPrompts.CLEAR_AUDIOBOOK + folderKey),
+                selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+            )
+            else -> Reduction(state)
+        }
+    }
+
+    private fun confirmAudiobookChapter(
+        state: AppState,
+        screen: Screen.AudiobookChapters,
+        row: ScreenRow
+    ): Reduction {
+        val track = (row as? TrackRow)?.track ?: return Reduction(state)
+        val entry = ScreenContent.audiobookEntry(state, screen.folderKey) ?: return Reduction(state)
+        val index = entry.chapterIds.indexOf(track.id)
+        if (index < 0) return Reduction(state)
+        return Reduction(toNowPlaying(state), listOf(PlayCollection(entry.chapterIds, index, fromStart = true)))
+    }
+
+    private fun currentChapterIndex(state: AppState, folderKey: String): Int =
+        ScreenContent.audiobookEntry(state, folderKey)?.let { it.chapterNumber?.minus(1) } ?: 0
+
+    private fun confirmBluetoothDevice(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return when {
+            key.startsWith("bt_device_activate:") ->
+                Reduction(pop(state), listOf(ActivateBluetoothDevice(key.substringAfter(':'))))
+            key.startsWith("bt_device_forget:") -> push(
+                state,
+                Screen.ConfirmAction(ConfirmPrompts.FORGET_DEVICE + key.substringAfter(':')),
+                selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+            )
+            else -> Reduction(state)
+        }
+    }
+
+    private fun confirmConfirmAction(state: AppState, screen: Screen.ConfirmAction, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return when (key) {
+            ScreenContent.CONFIRM_CANCEL_KEY -> Reduction(pop(state))
+            ScreenContent.CONFIRM_OK_KEY -> confirmedAction(state, screen.key)
+            else -> Reduction(state)
+        }
+    }
+
+    private fun confirmedAction(state: AppState, actionKey: String): Reduction = when {
+        actionKey.startsWith(ConfirmPrompts.FORGET_DEVICE) ->
+            Reduction(pop(state, 2), listOf(ForgetBluetoothDevice(actionKey.substringAfter(':'))))
+        actionKey.startsWith(ConfirmPrompts.CLEAR_AUDIOBOOK) ->
+            Reduction(pop(state, 2), listOf(ClearAudiobookProgress(actionKey.substringAfter(':'))))
+        actionKey == ConfirmPrompts.CLEAR_QUEUE -> Reduction(pop(state), listOf(ClearQueue))
+        actionKey == ConfirmPrompts.RESET_LIBRARY -> Reduction(pop(state), listOf(ResetLibrary))
+        actionKey == ConfirmPrompts.CLEAR_HISTORY -> Reduction(pop(state), listOf(ClearPlaybackHistory))
+        actionKey.startsWith(ConfirmPrompts.DELETE_PLAYLIST) -> {
+            val id = actionKey.substringAfter(':').toLongOrNull()
+            if (id == null) Reduction(pop(state)) else Reduction(pop(state, 2), listOf(DeletePlaylist(id)))
+        }
+        else -> Reduction(pop(state))
+    }
+
     private fun confirmDisplay(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "brightness" -> push(state, Screen.Brightness)
             "timeout" -> push(state, Screen.ScreenTimeout)
             "keep_screen_on" -> Reduction(state, listOf(ToggleKeepScreenOn))
+            "extra_track_info" -> Reduction(state, listOf(ToggleExtraTrackInfo))
             "theme" -> Reduction(state, listOf(ToggleLightTheme))
             else -> Reduction(state)
         }
     }
 
-    /**
-     * Albums carry the artist forward so the album screen filters on both.
-     *
-     * Album names are not unique across a library — two artists with a "Greatest
-     * Hits" are ordinary — and reaching an album *through* an artist is a promise
-     * that only that artist's tracks are behind it.
-     */
     private fun confirmArtistAlbums(state: AppState, screen: Screen.ArtistAlbums, row: ScreenRow): Reduction = when {
         (row as? Action)?.key == "artist_all_songs" -> push(state, Screen.ArtistSongs(screen.artist))
         row is Group -> push(state, Screen.AlbumSongs(row.key, screen.artist))
@@ -410,6 +504,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "ui_sounds" -> Reduction(state, listOf(ToggleUiSoundEffects))
+            "playback_seeking" -> push(state, Screen.PlaybackSeeking)
             "haptics" -> Reduction(state, listOf(CycleHapticLevel))
             "screen_off_keys" -> Reduction(state, listOf(ToggleLocalKeysWhileScreenOff))
             else -> Reduction(state)
@@ -439,26 +534,33 @@ object AppReducer {
         }
     }
 
+    private fun confirmPlaybackHistory(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return if (key == "history_clear") push(
+            state,
+            Screen.ConfirmAction(ConfirmPrompts.CLEAR_HISTORY),
+            selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+        ) else Reduction(state)
+    }
+
     private fun confirmDiagnostics(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "diag_export" -> Reduction(state, listOf(ExportDiagnostics))
-            "diag_reset_queue" -> Reduction(state, listOf(ClearQueue))
-            "diag_reset_library" -> Reduction(state, listOf(ResetLibrary))
             "diag_verbose" -> Reduction(state, listOf(ToggleVerboseDiagnostics))
-            "diag_safe_mode" -> Reduction(state, listOf(if (state.safeMode) ExitSafeMode else EnterSafeMode))
             else -> Reduction(state)
         }
     }
 
-    /**
-     * Hold-center = contextual options everywhere: the Now Playing menu on the
-     * playback screen, and the same context menu a Right-press opens on list rows.
-     * One gesture, one meaning.
-     */
     private fun confirmLong(state: AppState): Reduction = when (state.currentScreen) {
         Screen.NowPlaying -> push(state, Screen.NowPlayingOptions)
         else -> right(state)
+    }
+
+    private fun showNowPlaying(state: AppState): Reduction = when {
+        state.currentScreen == Screen.NowPlaying -> Reduction(state)
+        state.playback.currentTrackId == null && state.playback.queue.isEmpty() -> Reduction(state)
+        else -> Reduction(toNowPlaying(state))
     }
 
     private fun confirmNowPlayingOptions(state: AppState, row: ScreenRow): Reduction {
@@ -470,7 +572,6 @@ object AppReducer {
             key == "queue" -> push(state, Screen.Queue, selectedIndex = state.playback.currentQueueIndex ?: 0)
             key.startsWith("np_favorite:") -> {
                 val id = key.substringAfter(':').toLongOrNull() ?: return Reduction(state)
-                // Stay on the menu; the row label flips when the library updates.
                 Reduction(state, listOf(ToggleFavorite(id)))
             }
             key.startsWith("np_playlist:") -> {
@@ -487,35 +588,22 @@ object AppReducer {
 
     private fun playSelected(state: AppState): Reduction {
         val selection = ScreenContent.selectedTrackCollection(state) ?: return Reduction(state)
-        // Music first: starting playback lands on Now Playing; Back returns to the list.
         if (isTrackLoaded(state, selection.first.getOrNull(selection.second))) {
-            return Reduction(pushState(state, Screen.NowPlaying))
+            return Reduction(toNowPlaying(state))
         }
-        return Reduction(pushState(state, Screen.NowPlaying), listOf(PlayCollection(selection.first, selection.second)))
+        return Reduction(toNowPlaying(state), listOf(PlayCollection(selection.first, selection.second)))
     }
 
-    /**
-     * Whether this track is the one the engine already has open.
-     *
-     * Pressing the row that is already playing reads as "show me this", not "start
-     * it over": restarting loses the listening position, and rebuilding the queue
-     * around the visible list would also discard the album or queue order being
-     * played. So that press only navigates — position, queue and pause state are
-     * left untouched.
-     *
-     * Gated on the track actually being loaded. When playback is idle or errored
-     * the row is only a leftover of what played last, and pressing it should start
-     * it in the normal way.
-     */
     private fun isTrackLoaded(state: AppState, trackId: Long?): Boolean =
         trackId != null && state.playback.currentTrackId == trackId &&
             (state.playback.status == PlaybackStatus.PLAYING || state.playback.status == PlaybackStatus.PAUSED)
 
-    private fun playWholeCollection(state: AppState): Reduction {
+    private fun shuffleCollection(state: AppState): Reduction {
         val ids = ScreenContent.playableTrackIds(state)
         return if (ids.isEmpty()) Reduction(state)
-        else Reduction(pushState(state, Screen.NowPlaying), listOf(PlayCollection(ids, 0)))
+        else Reduction(toNowPlaying(state), listOf(PlayCollection(ids, 0, shuffled = true)))
     }
+
 
     private fun confirmEmptyScreen(state: AppState): Reduction {
         if (state.library.isScanning) return Reduction(state)
@@ -523,11 +611,16 @@ object AppReducer {
         return when {
             !storageAvailable -> push(state, Screen.Storage)
             state.currentScreen == Screen.Songs || state.currentScreen == Screen.Albums ||
-                state.currentScreen == Screen.Artists -> push(state, Screen.Storage)
+                state.currentScreen == Screen.Artists ||
+                state.currentScreen == Screen.Audiobooks -> push(state, Screen.Storage)
             state.currentScreen == Screen.Queue || state.currentScreen == Screen.Favorites ||
                 state.currentScreen == Screen.RecentlyPlayed || state.currentScreen is Screen.PlaylistTracks ||
-                state.currentScreen is Screen.Folders -> back(state)
-            else -> Reduction(state)
+                state.currentScreen is Screen.Folders || state.currentScreen is Screen.AlbumSongs ||
+                state.currentScreen is Screen.ArtistSongs || state.currentScreen is Screen.ArtistAlbums ||
+                state.currentScreen is Screen.AudiobookChapters -> back(state)
+            // Confirm must never be inert on an empty screen: the empty state always
+            // offers an action, so leaving is the safe default.
+            else -> back(state)
         }
     }
 
@@ -538,20 +631,25 @@ object AppReducer {
     }
 
     private fun right(state: AppState): Reduction = when (val screen = state.currentScreen) {
-        // Home's right pane IS the player; Right steps into it when something is loaded.
-        Screen.MainMenu -> if (state.playback.currentTrackId != null) push(state, Screen.NowPlaying) else Reduction(state)
+        Screen.MainMenu -> if (state.playback.currentTrackId != null) Reduction(toNowPlaying(state)) else Reduction(state)
         Screen.NowPlaying -> Reduction(state, listOf(NextTrack))
         Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, 1)))
         Screen.Queue -> if (state.playback.queue.isEmpty()) Reduction(state) else push(state, Screen.QueueOptions(state.selectedIndex), selectedIndex = 1)
         Screen.Bluetooth -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? Action
             val key = row?.key.orEmpty()
-            if (key.startsWith("bt_device:")) Reduction(state, listOf(ForgetBluetoothDevice(key.substringAfter(':'))))
+            if (key.startsWith("bt_device:")) push(state, Screen.BluetoothDevice(key.substringAfter(':')), selectedIndex = 1)
             else Reduction(state)
         }
-        Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs, is Screen.ArtistSongs -> {
+        Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs,
+        is Screen.ArtistSongs, is Screen.AudiobookChapters -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
             if (row == null) deeperNavigation(state) else push(state, Screen.TrackOptions(row.track.id))
+        }
+        Screen.Audiobooks -> {
+            val key = (ScreenContent.rows(state).getOrNull(state.selectedIndex) as? Action)?.key
+            if (key == null || !key.startsWith(ScreenContent.AUDIOBOOK_KEY_PREFIX)) Reduction(state)
+            else push(state, Screen.AudiobookOptions(key.substringAfter(':')))
         }
         is Screen.Folders -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex)
@@ -564,13 +662,6 @@ object AppReducer {
         else -> deeperNavigation(state)
     }
 
-    /**
-     * Right means "enter the selected child", never "activate this row". Reuse
-     * Confirm's screen mapping, but accept only a pure push to a non-player
-     * screen. Settings toggles, destructive actions and other leaf rows remain
-     * untouched. Now Playing is intentionally reachable by Right only from the
-     * split home screen handled above.
-     */
     private fun deeperNavigation(state: AppState): Reduction {
         val candidate = confirm(state)
         val pushedChild = candidate.state.screenStack.size > state.screenStack.size
@@ -593,7 +684,17 @@ object AppReducer {
         Reduction(pushState(state, screen, selectedIndex))
     private fun pushState(state: AppState, screen: Screen, selectedIndex: Int = 0): AppState =
         state.copy(screenStack = state.screenStack + ScreenEntry(screen, selectedIndex))
-    private fun pop(state: AppState): AppState = if (state.screenStack.size <= 1) state else state.copy(screenStack = state.screenStack.dropLast(1))
+    private fun pop(state: AppState, count: Int = 1): AppState {
+        val keep = (state.screenStack.size - count).coerceAtLeast(1)
+        return if (keep == state.screenStack.size) state else state.copy(screenStack = state.screenStack.take(keep))
+    }
+
+    private fun toNowPlaying(state: AppState): AppState {
+        if (state.currentScreen == Screen.NowPlaying) return state
+        val existing = state.screenStack.indexOfLast { it.screen == Screen.NowPlaying }
+        return if (existing < 0) pushState(state, Screen.NowPlaying)
+        else state.copy(screenStack = state.screenStack.take(existing + 1))
+    }
     private fun setSelected(state: AppState, index: Int): AppState = state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index))
     private fun normalizeSelection(state: AppState): AppState {
         val count = ScreenContent.rows(state).size

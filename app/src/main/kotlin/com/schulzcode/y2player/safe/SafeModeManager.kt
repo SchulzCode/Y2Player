@@ -11,7 +11,6 @@ class SafeModeManager(
     @Volatile private var safeMode = false
     @Volatile private var uiStartupActive = false
 
-    /** Reads persisted state without marking a service-only process start as a launcher failure. */
     @Synchronized
     fun initializeProcess(): Boolean {
         val failures = safeInt(KEY_FAILURES, 0).coerceAtLeast(0)
@@ -21,7 +20,6 @@ class SafeModeManager(
         return safeMode
     }
 
-    /** Call only when the launcher Activity starts. */
     @Synchronized
     fun beginUiStartup(): Boolean {
         if (uiStartupActive) return safeMode

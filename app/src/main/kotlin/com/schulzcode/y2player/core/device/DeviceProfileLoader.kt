@@ -8,16 +8,7 @@ import android.view.WindowManager
 import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.io.File
 
-/**
- * Performs the one-time I/O behind [DeviceProfile].
- *
- * Called once per process, off the main thread (see Y2Application). The work is
- * one small sysfs read plus a handful of Build/WindowManager lookups, but it is
- * still kept off the UI thread on principle: this device has slow storage and
- * startup latency is user-visible.
- */
 object DeviceProfileLoader {
-
     fun load(context: Context): DeviceProfile {
         val appContext = context.applicationContext
 
@@ -47,20 +38,15 @@ object DeviceProfileLoader {
         )
     }
 
-    // defaultDisplay/getMetrics are deprecated in modern SDKs; they are the only
-    // display query that exists on API 19.
     @Suppress("DEPRECATION")
     private fun readDisplayMetrics(context: Context): DisplayMetrics? = runCatching {
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         DisplayMetrics().also { windowManager.defaultDisplay.getMetrics(it) }
     }.getOrNull()
 
-    /** Reads the framebuffer geometry node; null when absent or unreadable. */
     private fun readVirtualSize(): String? = runCatching {
         val file = File(DeviceProfiles.SYSFS_VIRTUAL_SIZE)
         if (!file.isFile || !file.canRead()) return@runCatching null
-        // The node is a few bytes; bound the read anyway so a pathological
-        // sysfs entry cannot allocate an unbounded string.
         file.inputStream().use { stream ->
             val buffer = ByteArray(64)
             val count = stream.read(buffer)
@@ -68,10 +54,6 @@ object DeviceProfileLoader {
         }
     }.getOrNull()
 
-    /**
-     * DisplayMetrics is authoritative for layout; the sysfs value is used for
-     * identification and is de-buffered against the metrics height.
-     */
     private fun resolvePanel(rawVirtualSize: String?, metrics: DisplayMetrics?): PanelGeometry {
         val parsed = DeviceProfiles.parseVirtualSize(rawVirtualSize)
         if (parsed != null) {
@@ -89,11 +71,9 @@ object DeviceProfileLoader {
         return PanelGeometry(0, 0, PanelSource.UNKNOWN)
     }
 
-    // VIBRATOR_SERVICE is deprecated in favour of VibratorManager (API 31).
     @Suppress("DEPRECATION")
     private fun hasVibrator(context: Context): Boolean = runCatching {
         val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return@runCatching false
-        // hasVibrator() is API 11; safe on 19.
         vibrator.hasVibrator()
     }.getOrDefault(false)
 

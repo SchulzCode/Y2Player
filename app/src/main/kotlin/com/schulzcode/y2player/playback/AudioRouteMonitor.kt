@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
 
-/** API-19 route wrapper. It stays registered for the complete service lifetime. */
 @Suppress("DEPRECATION")
 class AudioRouteMonitor(
     context: Context,
@@ -45,13 +44,6 @@ class AudioRouteMonitor(
                 BluetoothAdapter.ACTION_STATE_CHANGED -> if (
                     intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) == BluetoothAdapter.STATE_OFF
                 ) routes.copy(bluetooth = false) else routes
-                // BOND_STATE_CHANGED is deliberately NOT a route signal: unpairing
-                // fires for ANY device, including old bonds being cleaned up from
-                // the Bluetooth screen while audio streams to a different device.
-                // Forcing bluetooth=false there made the safety policy pause
-                // playback for a device that was never the audio route. Genuine
-                // link loss of the active device always arrives as A2DP
-                // CONNECTION_STATE_CHANGED (and AUDIO_BECOMING_NOISY), both handled.
                 else -> routes
             }
             latest = routes
@@ -79,16 +71,6 @@ class AudioRouteMonitor(
         registered = false
     }
 
-    /**
-     * The last known route state, with no call into the audio server.
-     *
-     * Routes only change when one of the broadcasts above arrives, and this class
-     * receives all of them — so the remembered value is exact, not a cache with a
-     * staleness window. It is read on every playback progress tick, and querying
-     * there put two native AudioPolicyService calls per second on the thread that
-     * has to fire crossfade transitions punctually, especially while a library
-     * scan is already consuming CPU and storage bandwidth.
-     */
     @Volatile private var latest = PrivateRouteSnapshot()
 
     fun snapshot(): PrivateRouteSnapshot = latest

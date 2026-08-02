@@ -4,10 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The hint strings come from StorageMonitor; the mapping is deliberately loose
- * so a wording change degrades to MANUAL instead of crashing or mislabeling.
- */
 class ScanReasonTest {
     @Test
     fun usbHintsMapToUsbDisconnected() {

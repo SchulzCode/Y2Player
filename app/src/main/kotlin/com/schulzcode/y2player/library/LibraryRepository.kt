@@ -32,15 +32,6 @@ class LibraryRepository(
 ) {
     fun interface Listener { fun onLibraryChanged(state: LibraryState) }
 
-    /**
-     * Threading model:
-     * - [stateExecutor] owns every mutation of [current] and all small user-facing DB
-     *   writes (favorites, playlists, recently played). It must stay responsive.
-     * - [scanExecutor] runs the multi-minute filesystem walk and its batched DB writes.
-     *   Keeping scans separate prevents filesystem work from delaying user-facing writes.
-     * Scan results are handed back to the state thread for publishing, so `current`,
-     * `revision`, `tracksRevision` and `availabilityRevision` remain single-threaded.
-     */
     private val stateExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread({
             try {
@@ -50,25 +41,6 @@ class LibraryRepository(
             }
         }, "y2-library").apply { isDaemon = true }
     }
-    /**
-     * The scan thread runs in the background scheduling class.
-     *
-     * It was the only thread in the app doing sustained work at default
-     * priority, competing with playback on four weak cores. Two things make that
-     * worse than it sounds on this device: the scan reads audio headers from the
-     * same card the native decoder is streaming from. The FFmpeg metadata probe
-     * now runs directly on this thread, so its background priority also constrains
-     * the extractor CPU work rather than depending on a remote media service.
-     *
-     * [Process.setThreadPriority] rather than `Thread.setPriority`: only the
-     * former moves the thread into the background cgroup, which is the part that
-     * actually caps its CPU share on Android. The cost is a slower scan while
-     * something else wants the CPU, which is the trade being made deliberately —
-     * an idle device still gives this thread everything.
-     *
-     * [stateExecutor] is deliberately left at default priority: it serves
-     * user-facing writes (favourites, playlists) that must stay responsive.
-     */
     private val scanExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
@@ -90,16 +62,13 @@ class LibraryRepository(
     private val cachedLoadRequested = AtomicBoolean(false)
     private val playlistFiles = PlaylistFileManager(database)
     @Volatile private var cancellation: ScanCancellation? = null
-    /** Set when a request arrives mid-scan; one follow-up pass runs afterwards. */
     @Volatile private var pendingReason: ScanReason? = null
     @Volatile private var activeReason: ScanReason = ScanReason.MANUAL
     @Volatile private var scanStartedAtMs = 0L
     @Volatile private var current = LibraryState()
-    // State-thread-confined counters.
     private var revision = 0L
     private var tracksRevision = 0L
     private var availabilityRevision = 0L
-    // Scan-thread-confined throttle.
     private var lastProgressPublishAt = 0L
 
     fun addListener(listener: Listener, emitImmediately: Boolean = true) {
@@ -126,27 +95,9 @@ class LibraryRepository(
 
     fun scan() = scan(ScanReason.MANUAL)
 
-    /**
-     * Starts an incremental scan, recording *why*.
-     *
-     * Two behaviours matter here and neither is cosmetic:
-     *
-     * - **Coalescing.** A request arriving while a scan runs is not dropped.
-     *   It sets [pendingReason], and one further pass runs when the current one
-     *   finishes. This keeps files copied over MTP mid-scan from staying invisible
-     *   until some unrelated trigger, while bounding the work: the worst case is
-     *   exactly one extra incremental pass, never a queue of them, because repeated
-     *   requests collapse into the same single flag.
-     * - **Attribution.** The reason is logged at start and repeated in the
-     *   completion summary, so a support log answers "why did it rescan?"
-     *   without guesswork.
-     */
     fun scan(reason: ScanReason) {
-        // Mount-triggered and Safe-Mode-exit scans also satisfy the one process-start scan.
         initialScanRequested.set(true)
         if (!scanning.compareAndSet(false, true)) {
-            // Keep the most specific pending reason; MANUAL never downgrades a
-            // storage-driven one that is already queued.
             if (pendingReason == null || reason != ScanReason.MANUAL) pendingReason = reason
             eventLog?.debug(Sub.SCANNER, Ev.RESCAN_REQUESTED, "reason" to reason.code, "queued" to true)
             return
@@ -165,12 +116,7 @@ class LibraryRepository(
         executeScan {
             var failure: Throwable? = null
             var allVolumesComplete = false
-            // First gap encountered, so the message can name what actually went
-            // wrong instead of a generic "incomplete" the user cannot act on.
             var coverageGap: CoverageGap? = null
-            // Aggregate counters. Deliberately totals, never per-file events: a
-            // full card is tens of thousands of files and one event each would
-            // evict every other event from the bounded queue.
             var totalProcessed = 0L
             var totalErrors = 0L
             var volumesScanned = 0
@@ -233,8 +179,6 @@ class LibraryRepository(
                             "scan ${root.id} files=${outcome.processedFiles} cancelled=${outcome.cancelled} " +
                                 "complete=${outcome.complete} errors=${outcome.recoverableErrors} ${costSummary(outcome.cost)}"
                         )
-                        // Per-volume totals, so a scan that stalls on one card is
-                        // distinguishable from one that found nothing anywhere.
                         eventLog?.debug(
                             Sub.SCANNER, Ev.SCAN_COMPLETE,
                             "volume" to root.id,
@@ -243,8 +187,6 @@ class LibraryRepository(
                             "complete" to outcome.complete,
                             "gap" to outcome.coverageGap?.name,
                             "cancelled" to outcome.cancelled,
-                            // Per-volume so a slow card is distinguishable from a
-                            // slow library. See ScanCost for why bytes are here.
                             "read" to outcome.cost.filesRead,
                             "readMs" to outcome.cost.metadataMs,
                             "readKb" to outcome.cost.bytesRead / 1024,
@@ -286,10 +228,6 @@ class LibraryRepository(
                         lastScanAt = if (complete && !cancelled) System.currentTimeMillis() else current.lastScanAt,
                         profiler = profiler
                     ).let { state ->
-                        // Only a genuine coverage gap raises the alert. Cancelling is
-                        // not a fault — nothing was lost and the next scan picks it
-                        // up — so it stays silent rather than leaving behind a
-                        // warning the user has no way to clear.
                         val gap = if (complete || cancelled) null else coverageGapMessage(localGap)
                         if (gap == null) state else state.copy(errorMessage = gap)
                     }
@@ -328,7 +266,6 @@ class LibraryRepository(
             )
             cancellation = null
             scanning.set(false)
-            // Run at most one follow-up pass for requests that arrived mid-scan.
             val queued = pendingReason
             pendingReason = null
             if (queued != null && !cancelled) scan(queued)
@@ -351,11 +288,6 @@ class LibraryRepository(
         }
     }
 
-    /**
-     * A scan must keep the CPU running after the display sleeps. A fixed timeout
-     * would recreate the bug for sufficiently large or slow cards, so ownership
-     * is bounded by the scan task's `finally` block instead.
-     */
     @SuppressLint("WakelockTimeout")
     private fun acquireScanWakeLock(): Boolean = try {
         scanWakeLock.acquire()
@@ -374,14 +306,6 @@ class LibraryRepository(
         }
     }
 
-    /**
-     * Told by the playback service whether audio is playing, so a running scan
-     * can back off its I/O while it is.
-     *
-     * A push rather than a pull: the service already depends on this repository,
-     * and the alternative would mean the library reaching into playback state.
-     * Writing a volatile boolean is cheap enough to do on every material publish.
-     */
     fun setPlaybackActive(active: Boolean) { playbackActive = active }
 
     @Volatile private var playbackActive = false
@@ -404,8 +328,6 @@ class LibraryRepository(
                 revision += 1
                 tracksRevision += 1
                 availabilityRevision += 1
-                // Unavailable tracks leave RAM entirely; SQLite keeps their metadata and
-                // the next successful scan of the remounted volume restores them.
                 val remaining = current.tracks.filterNot { it.volumeId == volumeId }
                 publish(current.copy(
                     revision = revision,
@@ -417,28 +339,12 @@ class LibraryRepository(
         }
     }
 
-    /**
-     * Remembers that this device could not decode a track.
-     *
-     * Called from the playback thread when the framework attributed a failure to
-     * the media itself, so a file the firmware cannot handle is discovered the
-     * hard way exactly once instead of on every selection.
-     */
     fun recordPlaybackFailure(trackId: Long, reason: String) = updatePlaybackError(trackId, reason)
 
-    /**
-     * Forgets a recorded failure, called when the track does eventually play.
-     *
-     * This is what lets a vendor codec correct the record: if the firmware turns
-     * out to decode something the platform is not documented to support, the
-     * label disappears the first time it succeeds.
-     */
     fun clearPlaybackFailure(trackId: Long) = updatePlaybackError(trackId, null)
 
     private fun updatePlaybackError(trackId: Long, reason: String?) = stateExecutor.execute {
         val track = current.byId[trackId] ?: database.findTrack(trackId) ?: return@execute
-        // Nothing to write in the common case, which is what keeps this off the
-        // per-track-change write path.
         if (track.playbackError == reason) return@execute
         database.setPlaybackError(trackId, reason)
         logger.info("Library", "track=$trackId playbackError=${reason ?: "cleared"}")
@@ -447,8 +353,6 @@ class LibraryRepository(
         if (updatedTracks === current.tracks) {
             publish(current.copy(revision = revision))
         } else {
-            // Bumping tracksRevision is what makes the row label appear: screens
-            // key their row caches on it.
             tracksRevision += 1
             publish(current.copy(
                 revision = revision,
@@ -456,6 +360,16 @@ class LibraryRepository(
                 index = LibraryIndex.of(updatedTracks)
             ))
         }
+    }
+
+    fun refreshAudiobookProgress() = stateExecutor.execute {
+        val progress = runCatching { database.loadAllAudiobookProgress() }.getOrElse { error ->
+            logger.warn("Library", "audiobook progress unavailable (${error.javaClass.simpleName})")
+            return@execute
+        }
+        if (progress == current.audiobookProgress) return@execute
+        revision += 1
+        publish(current.copy(revision = revision, audiobookProgress = progress))
     }
 
     fun toggleFavorite(trackId: Long) = stateExecutor.execute {
@@ -466,7 +380,6 @@ class LibraryRepository(
         revision += 1
         val updatedTracks = replaceTrack(current.tracks, track.copy(favorite = favorite))
         if (updatedTracks === current.tracks) {
-            // Track is not resident (unavailable volume); DB flag is enough.
             publish(current.copy(revision = revision))
         } else {
             tracksRevision += 1
@@ -551,12 +464,9 @@ class LibraryRepository(
         mainHandler.post { onComplete(result) }
     }
 
-
     fun recordRecentlyPlayed(trackId: Long) = stateExecutor.execute {
         database.recordRecentlyPlayed(trackId)
         val ids = listOf(trackId) + current.recentlyPlayedIds.filterNot { it == trackId }.take(99)
-        // Deliberately bumps only `revision`, not `tracksRevision`: this runs at every
-        // track transition and must not invalidate the sorted rows of track screens.
         revision += 1
         publish(current.copy(revision = revision, recentlyPlayedIds = ids))
     }
@@ -600,7 +510,10 @@ class LibraryRepository(
         val allPlaylistTracks = database.loadAllPlaylistTrackIds()
         val totalIndexedTracks = database.countTracks()
         val recentlyPlayedIds = database.loadRecentlyPlayedIds()
-        val state = LibraryState(
+        // copy, not a fresh LibraryState: anything this function does not query is
+        // carried over rather than silently reset to its default. Audiobook progress
+        // is loaded on demand and was being wiped by every scan.
+        val state = current.copy(
             revision = revision,
             tracksRevision = tracksRevision,
             availabilityRevision = availabilityRevision,
@@ -618,31 +531,14 @@ class LibraryRepository(
         return state
     }
 
-    /**
-     * The alert text for a scan that could not cover a volume.
-     *
-     * Named per cause: the previous single "Storage scan incomplete" message gave a
-     * user reporting a stuck alert nothing to act on, and gave us nothing to ask
-     * about either.
-     */
     private fun coverageGapMessage(gap: CoverageGap?): String = when (gap) {
         CoverageGap.ROOT_UNREADABLE -> "Storage could not be read; existing tracks were kept"
         CoverageGap.DIRECTORY_UNREADABLE -> "Some folders could not be read; existing tracks were kept"
         CoverageGap.FILE_LIMIT ->
             "More than ${LibraryScanner.MAX_AUDIO_FILES} audio files; the rest were skipped"
-        // Reachable only when no volume was mounted to scan at all, since every
-        // other not-complete path now carries a gap or was cancelled.
         null -> "No storage was available to scan; existing tracks were kept"
     }
 
-    /**
-     * Metadata cost, for the human-readable log.
-     *
-     * Per-file milliseconds and per-file kilobytes together answer the question a
-     * stutter report cannot: extraction is meant to read a bounded header, so if
-     * cost tracks bytes rather than file count, the FFmpeg probe is reading
-     * file bodies and that is what to fix next.
-     */
     private fun costSummary(cost: ScanCost): String {
         if (cost.filesRead == 0) return "read=0"
         return "read=${cost.filesRead} readMs=${cost.metadataMs} " +
@@ -650,7 +546,6 @@ class LibraryRepository(
             "yieldMs=${cost.yieldMs} yields=${cost.yields}"
     }
 
-    /** Emits bounded end-of-scan aggregates: one event per phase, never per file. */
     private fun emitScanProfile(
         profiler: ScanProfiler,
         nativeProfile: LongArray,
@@ -722,7 +617,6 @@ class LibraryRepository(
     private fun percentageBasisPoints(part: Long, whole: Long): Long =
         if (whole <= 0L) 0L else ((part.coerceAtLeast(0L) * 10_000L) / whole).coerceAtMost(10_000L)
 
-    /** Scan-history note. Recoverable errors are worth recording even on success. */
     private fun scanNote(outcome: ScanOutcome): String? {
         val parts = ArrayList<String>(2)
         outcome.coverageGap?.let { parts += it.name.lowercase() }

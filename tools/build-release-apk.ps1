@@ -490,9 +490,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Pass "zipalign 4-byte aligned"
 
-# ---------------------------------------------------------------------------
 # Verify APK signature
-# ---------------------------------------------------------------------------
 
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
@@ -535,9 +533,7 @@ $verifyText
 
 Pass "v1 JAR signature valid"
 
-# ---------------------------------------------------------------------------
 # Read signing certificate
-# ---------------------------------------------------------------------------
 
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"

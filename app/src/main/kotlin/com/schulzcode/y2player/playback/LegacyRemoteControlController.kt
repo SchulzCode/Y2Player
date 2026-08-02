@@ -1,6 +1,3 @@
-// File-level: the RemoteControlClient *import* itself triggers the deprecation
-// warning, and RemoteControlClient is the only lock-screen/remote metadata API
-// on API 19 (MediaSession arrived in API 21).
 @file:Suppress("DEPRECATION")
 
 package com.schulzcode.y2player.playback
@@ -14,22 +11,37 @@ import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.RemoteControlClient
 import com.schulzcode.y2player.artwork.AlbumArtworkLoader
+import com.schulzcode.y2player.core.model.AudioOutputRoute
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 
-/**
- * API 19 RemoteControlClient owns applied artwork and recycles the previous
- * bitmap. Always give it a detached copy so cached UI artwork remains valid.
- */
 internal inline fun <T> publishDetachedArtwork(
     source: T,
     copy: (T) -> T?,
     publish: (T) -> Unit
 ) {
+    // RemoteControlClient recycles the bitmap it was given, so cached UI artwork
+    // must never be handed over directly.
     val detached = copy(source) ?: return
     publish(detached)
+}
+
+internal fun putLegacyRemoteMetadata(
+    track: Track?,
+    durationMs: Long,
+    putString: (Int, String) -> Unit,
+    putLong: (Int, Long) -> Unit
+) {
+    val artist = track?.displayArtist ?: ""
+    putString(MediaMetadataRetriever.METADATA_KEY_TITLE, track?.title ?: "Y2 Player")
+    putString(MediaMetadataRetriever.METADATA_KEY_ARTIST, artist)
+    // The Y2's stock AVRCP reads the artist from key 13, not key 2. Both are set so
+    // ordinary Android remotes stay correct as well.
+    putString(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST, artist)
+    putString(MediaMetadataRetriever.METADATA_KEY_ALBUM, track?.displayAlbum ?: "")
+    putLong(MediaMetadataRetriever.METADATA_KEY_DURATION, durationMs)
 }
 
 class LegacyRemoteControlController(
@@ -37,7 +49,6 @@ class LegacyRemoteControlController(
     private val logger: DiagnosticLogger,
     private val positionProvider: () -> Long,
     private val onSeekRequested: (Long) -> Unit,
-    // Shared process-wide loader (AppContainer); this class must not shut it down.
     private val artworkLoader: AlbumArtworkLoader
 ) {
     private val appContext = context.applicationContext
@@ -49,6 +60,7 @@ class LegacyRemoteControlController(
     private var registered = false
     private var lastMetadataTrackId: Long? = null
     private var lastMetadataDurationMs = -1L
+    private var lastMetadataOutputRoute = AudioOutputRoute.UNKNOWN
     @Volatile private var artworkPath: String? = null
 
     init {
@@ -70,15 +82,25 @@ class LegacyRemoteControlController(
 
     fun update(snapshot: PlaybackSnapshot, track: Track?) {
         if (!registered) register()
-        if (track?.id != lastMetadataTrackId || snapshot.durationMs != lastMetadataDurationMs) {
+        if (track?.id != lastMetadataTrackId ||
+            snapshot.durationMs != lastMetadataDurationMs ||
+            snapshot.outputRoute != lastMetadataOutputRoute
+        ) {
+            val editor = remoteControlClient.editMetadata(true)
+            putLegacyRemoteMetadata(
+                track = track,
+                durationMs = snapshot.durationMs,
+                putString = { key, value -> editor.putString(key, value) },
+                putLong = { key, value -> editor.putLong(key, value) }
+            )
+            editor.apply()
             lastMetadataTrackId = track?.id
             lastMetadataDurationMs = snapshot.durationMs
-            val editor = remoteControlClient.editMetadata(true)
-            editor.putString(MediaMetadataRetriever.METADATA_KEY_TITLE, track?.title ?: "Y2 Player")
-            editor.putString(MediaMetadataRetriever.METADATA_KEY_ARTIST, track?.displayArtist ?: "")
-            editor.putString(MediaMetadataRetriever.METADATA_KEY_ALBUM, track?.displayAlbum ?: "")
-            editor.putLong(MediaMetadataRetriever.METADATA_KEY_DURATION, snapshot.durationMs)
-            editor.apply()
+            lastMetadataOutputRoute = snapshot.outputRoute
+            logger.info(
+                "RemoteControl",
+                "metadata published track=${track?.id} route=${snapshot.outputRoute} duration=${snapshot.durationMs}"
+            )
         }
         val path = track?.absolutePath
         if (path != null && path != artworkPath) {
@@ -129,8 +151,6 @@ class LegacyRemoteControlController(
     }
 
     companion object {
-        // Kept in sync with Y2PlayerView.SHARED_ARTWORK_SIZE_PX so both consumers hit
-        // the same cache entry.
         private const val REMOTE_ARTWORK_SIZE_PX = 256
     }
 }

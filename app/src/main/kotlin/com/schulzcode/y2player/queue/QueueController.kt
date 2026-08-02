@@ -26,26 +26,23 @@ class QueueController(
     private var cachedPlayOrder: List<Int> = emptyList()
 
     @Synchronized
+    // Clears shuffle. replaceShuffled is the deliberate opposite.
     fun replace(newItems: List<Long>, startIndex: Int = 0) {
         items.clear()
         items.addAll(newItems.take(MAX_QUEUE_ITEMS))
         touchItems()
         currentIndex = startIndex.takeIf { it in items.indices }
+        shuffleEnabled = false
         shuffleSeed = System.nanoTime()
         rebuildOrderKeepingCurrent()
     }
 
-    /**
-     * Starts a complete Shuffle All session at the first entry of a fresh
-     * permutation. Repeat All is intentional: after every complete pass a new
-     * permutation is generated instead of stopping or replaying the same order.
-     */
     @Synchronized
-    fun replaceShuffled(newItems: List<Long>) {
+    fun replaceShuffled(newItems: List<Long>, repeatAll: Boolean = true) {
         items.clear()
         items.addAll(newItems.take(MAX_QUEUE_ITEMS))
         touchItems()
-        repeatMode = RepeatMode.ALL
+        if (repeatAll) repeatMode = RepeatMode.ALL
         shuffleEnabled = true
         shuffleSeed = System.nanoTime()
         playOrder = buildPlayOrder()
@@ -96,11 +93,6 @@ class QueueController(
         return null
     }
 
-    /**
-     * Returns the next logical queue entry without applying Repeat ONE or
-     * wrapping Repeat ALL. Sleep-timer boundaries use this to finish the
-     * current pass through the queue predictably.
-     */
     @Synchronized
     fun peekNextInCurrentPass(): Long? {
         val currentCursor = cursor ?: return playOrder.firstOrNull()?.let(items::getOrNull)
@@ -108,7 +100,6 @@ class QueueController(
         return if (nextCursor < playOrder.size) items.getOrNull(playOrder[nextCursor]) else null
     }
 
-    /** Advances once in the current logical play order, without repeat rules. */
     @Synchronized
     fun nextInCurrentPass(): Long? {
         val currentCursor = cursor ?: return first()
@@ -167,7 +158,6 @@ class QueueController(
         items.add(insertAt, trackId)
         touchItems()
 
-        // Logical indices at and after the insertion point shift by one.
         for (index in playOrder.indices) {
             if (playOrder[index] >= insertAt) playOrder[index] = playOrder[index] + 1
         }
@@ -220,7 +210,6 @@ class QueueController(
         return removed
     }
 
-
     @Synchronized
     fun moveItem(index: Int, delta: Int): Boolean {
         val target = index + delta
@@ -240,10 +229,6 @@ class QueueController(
         return true
     }
 
-    /**
-     * Explicit skips and error advances must move on even when automatic
-     * completion repeats one track.
-     */
     @Synchronized
     fun nextIgnoringRepeatOne(): Long? {
         if (repeatMode != RepeatMode.ONE) return next()
@@ -252,7 +237,6 @@ class QueueController(
         return try { next() } finally { repeatMode = original }
     }
 
-    /** Explicit previous commands must navigate even when Repeat ONE is active. */
     @Synchronized
     fun previousIgnoringRepeatOne(): Long? {
         if (repeatMode != RepeatMode.ONE) return previous()
@@ -270,8 +254,6 @@ class QueueController(
             return
         }
 
-        // Keep exactly the logical history and current entry. This matters in shuffle mode:
-        // physical queue order and playback order are intentionally different.
         val keptOrder = playOrder.take(currentCursor + 1)
         val keptIndices = keptOrder.toHashSet()
         val oldToNew = HashMap<Int, Int>(keptIndices.size)
@@ -346,6 +328,17 @@ class QueueController(
     }
 
     @Synchronized
+    fun applyOrderedPlayback(): Boolean {
+        val shuffleChanged = shuffleEnabled
+        val repeatChanged = repeatMode != RepeatMode.OFF
+        if (!shuffleChanged && !repeatChanged) return false
+        shuffleEnabled = false
+        repeatMode = RepeatMode.OFF
+        if (shuffleChanged) rebuildOrderKeepingCurrent()
+        return true
+    }
+
+    @Synchronized
     fun snapshot(): QueueSnapshot = QueueSnapshot(
         items = immutableItems(),
         currentIndex = currentIndex,
@@ -415,7 +408,6 @@ class QueueController(
         return order
     }
 
-    /** The next pass is predictable to peek/preload but changes when committed. */
     private fun nextShuffleOrder(): MutableList<Int> =
         buildShuffleOrder(nextShuffleSeed(), avoidFirstIndex = currentIndex)
 

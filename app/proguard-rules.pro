@@ -1,9 +1,5 @@
-# Android entry points are referenced from the manifest and retained by R8.
-#
-# Persisted enums are written as their stable `storageId`, but `fromStorage`
-# also accepts `Enum.name` as a fallback. Keeping the names makes that fallback
-# mean what it says under R8; without it the comparison would be against
-# obfuscated names and would silently never match.
+# fromStorage falls back to Enum.name. Without these the fallback compares
+# against obfuscated names and silently never matches.
 -keepnames enum com.schulzcode.y2player.core.model.RepeatMode
 -keepnames enum com.schulzcode.y2player.core.model.TrackSortOrder
 -keepclassmembers enum * {
@@ -11,9 +7,9 @@
     public static ** valueOf(java.lang.String);
 }
 
-# JNI_OnLoad registers the minimal native boundary by this exact class name.
+# JNI_OnLoad registers by this exact class name.
 -keep class com.schulzcode.y2player.playback.NativeAudio { *; }
-# Constructed directly from the registered native metadata method.
+# Constructed from native code.
 -keep class com.schulzcode.y2player.library.FfmpegMetadata {
     <init>(...);
 }

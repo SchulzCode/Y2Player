@@ -12,10 +12,6 @@ import org.junit.Before
 import org.junit.Test
 
 class ScreenContentTest {
-    /**
-     * The row cache is process-wide and keyed partly on identity hashes, so one
-     * test's rows could otherwise satisfy another's lookup when the keys coincide.
-     */
     @Before fun clearRowCache() {
         ScreenContent.clearCachedRows()
     }
@@ -36,10 +32,6 @@ class ScreenContentTest {
         modifiedAt = 1
     )
 
-    /**
-     * Builds an album track whose title sorts nothing like its position, which is
-     * what made the ordering bug visible in the first place.
-     */
     private fun albumTrack(position: Int, title: String, number: Int?): Track = track.copy(
         id = position.toLong(),
         absolutePath = "/storage/sdcard0/Music/Meteora/%02d. %s.flac".format(position, title),
@@ -50,19 +42,14 @@ class ScreenContentTest {
         discNumber = null
     )
 
+    // These tests are about track order, so the leading Shuffle row is not part of the answer.
     private fun albumRowTitles(tracks: List<Track>): List<String> = ScreenContent.rows(
         AppState(
             screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Meteora"))),
             library = LibraryState(tracks = tracks)
         )
-    ).map { it.title }
+    ).filterIsInstance<ScreenRow.TrackRow>().map { it.title }
 
-    /**
-     * The reported bug: an album where only some files carried a track number listed
-     * as 5, 1, 2, 6, 3, 4 — the numbered tracks in order, then the rest dumped at the
-     * end. Numbering that covers half a folder is not trustworthy, so the filenames
-     * decide instead.
-     */
     @Test fun partiallyNumberedAlbumFallsBackToFilenameOrder() {
         val tracks = listOf(
             albumTrack(1, "Foreword", null),
@@ -87,7 +74,6 @@ class ScreenContentTest {
         assertEquals(listOf("Zebra", "Apple", "Mango"), albumRowTitles(tracks.shuffled()))
     }
 
-    /** A fully numbered album must still be driven by its tags, not its filenames. */
     @Test fun fullyNumberedAlbumStillUsesTrackNumbers() {
         val tracks = listOf(
             albumTrack(1, "Third", 3),
@@ -97,7 +83,6 @@ class ScreenContentTest {
         assertEquals(listOf("First", "Second", "Third"), albumRowTitles(tracks))
     }
 
-    /** Ten or more tracks is where a plain string compare on filenames breaks. */
     @Test fun filenameOrderTreatsEmbeddedNumbersAsNumbers() {
         val tracks = (1..12).map { albumTrack(it, "Track $it", null) }
         assertEquals(tracks.map { it.title }, albumRowTitles(tracks.shuffled()))
@@ -128,7 +113,6 @@ class ScreenContentTest {
         assertEquals(0, NaturalOrder.compare("", ""))
     }
 
-    /** Queue rows must stay 1:1 with queue indices even when a queued id is unknown. */
     @Test fun queueRowsKeepIndexAlignmentForMissingTracks() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
@@ -139,12 +123,10 @@ class ScreenContentTest {
         assertEquals(2, rows.size)
         assertTrue("missing id renders as a placeholder, not dropped", rows[0] is ScreenRow.Group)
         assertTrue(rows[1] is ScreenRow.TrackRow)
-        // Confirm on the selected row must address the real queue position.
         val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single()
         assertEquals(AppEffect.PlayQueueIndex(1), effect)
     }
 
-    /** Recently-played bookkeeping (revision-only bump) must not rebuild track rows. */
     @Test fun recentlyPlayedBumpReusesCachedTrackRows() {
         val library = LibraryState(tracks = listOf(track))
         val first = AppState(screenStack = listOf(ScreenEntry(Screen.Songs)), library = library)
@@ -155,7 +137,6 @@ class ScreenContentTest {
         assertSame(rows, ScreenContent.rows(second))
     }
 
-    /** A real track change (new index + tracksRevision) must rebuild the rows. */
     @Test fun tracksRevisionBumpRebuildsTrackRows() {
         val library = LibraryState(tracks = listOf(track))
         val first = AppState(screenStack = listOf(ScreenEntry(Screen.Songs)), library = library)

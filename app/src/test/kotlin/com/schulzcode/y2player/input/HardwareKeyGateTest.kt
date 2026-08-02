@@ -116,11 +116,6 @@ class HardwareKeyGateTest {
         KeyEvent.KEYCODE_HEADSETHOOK
     )
 
-    /**
-     * The Y2's own play button emits KEYCODE_MEDIA_PLAY_PAUSE. Enabling headset
-     * stem control previously enabled it too, so the player could be started
-     * from a pocket.
-     */
     @Test fun screenOffLocalKeypadTransportIsBlocked() {
         listOf(HardwareKeyGate.Source.Y2_BROADCAST, HardwareKeyGate.Source.MEDIA_BROADCAST).forEach { source ->
             transportKeys.forEach { keyCode ->
@@ -138,14 +133,6 @@ class HardwareKeyGateTest {
         }
     }
 
-    /**
-     * The opt-in that reverses the rule above.
-     *
-     * Users asked to keep the wheel usable in a pocket. It has to clear the
-     * keyguard test as well as the screen test: on this device the screen going off
-     * puts the keyguard into restricted input mode, so relaxing only `screenOn`
-     * would have produced a setting that changed nothing.
-     */
     @Test fun screenOffLocalKeypadTransportIsAllowedWhenOptedIn() {
         listOf(HardwareKeyGate.Source.Y2_BROADCAST, HardwareKeyGate.Source.MEDIA_BROADCAST).forEach { source ->
             transportKeys.forEach { keyCode ->
@@ -164,7 +151,6 @@ class HardwareKeyGateTest {
         }
     }
 
-    /** The wheel itself, which is the whole point of the setting. */
     @Test fun screenOffWheelAndNavigationFollowTheSameOptIn() {
         val wheelAndButtons = intArrayOf(
             KeyEvent.KEYCODE_DPAD_UP,
@@ -191,7 +177,6 @@ class HardwareKeyGateTest {
         }
     }
 
-    /** Default off, so an untouched install behaves exactly as it does today. */
     @Test fun theOptInDefaultsToOff() {
         assertFalse(
             HardwareKeyGate.isInputAllowed(
@@ -204,7 +189,6 @@ class HardwareKeyGateTest {
         )
     }
 
-    /** Bluetooth remotes were never gated, and the setting must not change that. */
     @Test fun remoteTransportIsUnaffectedByTheOptIn() {
         listOf(false, true).forEach { optIn ->
             assertTrue(
@@ -221,7 +205,6 @@ class HardwareKeyGateTest {
         }
     }
 
-    /** The same button must still work normally with the UI up. */
     @Test fun screenOnLocalKeypadTransportStillWorks() {
         assertTrue(
             HardwareKeyGate.isInputAllowed(
@@ -234,12 +217,6 @@ class HardwareKeyGateTest {
         )
     }
 
-    /**
-     * The counterpart: a headset must keep working while the screen is off, on
-     * *either* channel. The vendor rebroadcasts AVRCP on its own action as well
-     * as ACTION_MEDIA_BUTTON, so keying the rule on the source blocked the
-     * headset — the regression this pair of tests exists to prevent.
-     */
     @Test fun screenOffHeadsetTransportIsAllowedOnBothChannels() {
         listOf(HardwareKeyGate.Source.MEDIA_BROADCAST, HardwareKeyGate.Source.Y2_BROADCAST).forEach { source ->
             transportKeys.forEach { keyCode ->

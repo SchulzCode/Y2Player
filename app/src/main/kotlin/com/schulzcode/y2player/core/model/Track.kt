@@ -36,36 +36,138 @@ data class Track(
     val replayGainAlbumPeak: Float? = null,
     val addedAt: Long = modifiedAt,
     val favorite: Boolean = false,
-    /**
-     * Why this device failed to decode the file, or null if it never has.
-     *
-     * Set only from failures the framework blamed on the media itself, never
-     * from a transient fault. Cleared when the file changes on disk, and when it
-     * does eventually play — so a firmware that turns out to support the codec
-     * corrects the record itself.
-     */
     val playbackError: String? = null
 ) {
     val displayArtist: String get() = artist?.takeIf { it.isNotBlank() } ?: "Unknown artist"
     val displayAlbum: String get() = album?.takeIf { it.isNotBlank() } ?: "Unknown album"
+
+    val primaryArtist: String get() = ArtistCredit.primary(displayArtist)
+
+    val featuredArtist: String? get() = ArtistCredit.featured(displayArtist)
+
+    val albumArtistName: String get() = albumArtist?.takeIf { it.isNotBlank() } ?: primaryArtist
+
+    // Album membership answers to the album artist tag first, so one "feat." track
+    // cannot break an album apart when browsing by artist.
+    fun isCreditedTo(name: String): Boolean =
+        albumArtistName == name || ArtistCredit.credits(displayArtist, name)
+
     val extension: String get() = absolutePath.substringAfterLast('.', "").lowercase()
 
-    /**
-     * Name on disk.
-     *
-     * Album files are conventionally named with their position — `01. Foreword.flac`
-     * — which makes this the best available recovery of the intended order when the
-     * tags do not carry a track number.
-     */
     val fileName: String get() = relativePath.substringAfterLast('/')
 
-    /**
-     * True when this device has already proven it cannot decode the file.
-     *
-     * Stronger evidence than [AudioCodecSupport], which only reasons about what
-     * the platform is documented to support: this is what actually happened here.
-     */
     val decodeFailed: Boolean get() = playbackError != null
+
+    val audiobookFolderKey: String? get() = AudiobookIdentity.folderKey(volumeId, relativePath)
+
+    val isAudiobookChapter: Boolean get() = audiobookFolderKey != null
+}
+
+object ArtistCredit {
+
+    // Only an explicit feature word splits a credit. Ampersand, comma and plus are
+    // never separators because they live inside real names: Earth, Wind & Fire.
+    private val BARE_MARKERS = arrayOf("featuring", "feat.", "feat", "ft.", "ft")
+
+    // "with" is only a marker inside brackets, as in "(with X)". Bare it would cut
+    // Sleeping with Sirens in half.
+    private const val BRACKETED_MARKER = "with"
+
+    fun primary(credit: String): String {
+        val at = markerStart(credit)
+        if (at < 0) return credit
+        val head = credit.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
+        return head.ifEmpty { credit }
+    }
+
+    fun featured(credit: String): String? {
+        val at = markerStart(credit)
+        if (at < 0) return null
+        val length = markerLengthAt(credit, at)
+        if (length <= 0) return null
+        val tail = credit.substring(at + length).trim().trim(')', ']').trim()
+        return tail.ifEmpty { null }
+    }
+
+    fun credits(credit: String, name: String): Boolean {
+        val at = markerStart(credit)
+        if (at < 0) return credit == name
+        return primary(credit) == name || featured(credit) == name
+    }
+
+    // Scans without allocating; the overwhelming majority of credits have no marker.
+    private fun markerStart(credit: String): Int {
+        for (index in credit.indices) {
+            if (markerLengthAt(credit, index) > 0) return index
+        }
+        return -1
+    }
+
+    private fun markerLengthAt(credit: String, index: Int): Int {
+        if (index == 0) return 0
+        val before = credit[index - 1]
+        val bracketed = before == '(' || before == '['
+        if (!bracketed && before != ' ') return 0
+        BARE_MARKERS.forEach { marker ->
+            if (matches(credit, index, marker)) return marker.length
+        }
+        if (bracketed && matches(credit, index, BRACKETED_MARKER)) return BRACKETED_MARKER.length
+        return 0
+    }
+
+    private fun matches(credit: String, index: Int, marker: String): Boolean {
+        if (!credit.regionMatches(index, marker, 0, marker.length, ignoreCase = true)) return false
+        val after = index + marker.length
+        if (after >= credit.length) return false
+        // A marker must be a whole word, so "ft" never matches inside "ftfoo".
+        return credit[after] == ' '
+    }
+}
+
+object AudiobookIdentity {
+    const val ROOT_SEGMENT = "AUDIOBOOKS"
+
+    private const val KEY_SEPARATOR = '|'
+
+    fun folderKey(volumeId: String, relativePath: String): String? {
+        val segments = segmentsOf(relativePath) ?: return null
+        if (segments.size < 2) return null
+        val rootIndex = segments.indexOfFirst { it.equals(ROOT_SEGMENT, ignoreCase = true) }
+        if (rootIndex < 0) return null
+        val fileIndex = segments.lastIndex
+        if (rootIndex >= fileIndex) return null
+        var bookIndex = fileIndex - 1
+        // Stops one folder below the marker: the book itself may be named "Part 1".
+        while (bookIndex > rootIndex + 1 && isDiscFolder(segments[bookIndex])) {
+            bookIndex -= 1
+        }
+        val endExclusive = if (bookIndex > rootIndex) bookIndex + 1 else segments.size
+        return buildString {
+            append(volumeId)
+            append(KEY_SEPARATOR)
+            for (index in 0 until endExclusive) {
+                if (index > 0) append('/')
+                append(segments[index])
+            }
+        }
+    }
+
+    private fun isDiscFolder(segment: String): Boolean =
+        DISC_FOLDER.matches(segment.trim())
+
+    // Narrow on purpose. Splitting one book loses a place; merging two loses both
+    // positions. "book" is omitted because "Book 1" is a plausible title.
+    private val DISC_FOLDER = Regex(
+        "^(disc|disk|cd|part|pt|vol|volume|tape|side)[\\s._-]*\\d+$",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun segmentsOf(relativePath: String): List<String>? {
+        val segments = relativePath.replace('\\', '/')
+            .split('/')
+            .filter { it.isNotEmpty() && it != "." }
+        return if (segments.any { it == ".." }) null else segments
+    }
 }
 
 data class TrackDraft(
@@ -100,13 +202,15 @@ data class TrackDraft(
     val replayGainTrackPeak: Float? = null,
     val replayGainAlbumDb: Float? = null,
     val replayGainAlbumPeak: Float? = null,
-    /** Transient scan diagnostic; never written to the tracks table. */
     val metadataBytesRead: Long = 0,
-    /**
-     * Set when the scan could prove the file is not the format its name claims,
-     * so the row is labelled unplayable without waiting for a failed press.
-     */
     val playbackError: String? = null
+)
+
+data class AudiobookProgress(
+    val folderKey: String,
+    val trackId: Long,
+    val positionMs: Long,
+    val updatedAt: Long
 )
 
 data class PlaylistSummary(
@@ -115,10 +219,6 @@ data class PlaylistSummary(
     val trackCount: Int
 )
 
-/**
- * Turns stored FFmpeg codec identifiers into the names
- * a listener actually recognizes. Falls back to the uppercased file extension.
- */
 object AudioCodecLabels {
     fun label(codec: String?, extension: String): String {
         val cleaned = codec?.trim()?.lowercase()?.substringAfter('/')?.removePrefix("x-")
@@ -128,8 +228,6 @@ object AudioCodecLabels {
             "mpeg", "mp3" -> "MP3"
             "mp2" -> "MP2"
             "mp4", "m4a", "aac", "mp4a-latm" -> "AAC"
-            // Distinguished from AAC now that the MP4 reader can see the sample
-            // entry: both live in a .m4a, only one of them plays here.
             "alac" -> "ALAC"
             "flac" -> "FLAC"
             "wav", "wave" -> "WAV"
@@ -150,55 +248,17 @@ object AudioCodecLabels {
     }
 }
 
-/**
- * Whether the pinned FFmpeg build can decode a track.
- *
- * The verdict is taken from the **codec**, not the file extension, because the
- * two disagree in the case that matters: an ALAC and an AAC file are both
- * `.m4a`. FFmpeg reads the real codec out of the container, so this
- * can answer honestly where an extension list could not.
- *
- * ### What changed with the FFmpeg migration
- *
- * This used to describe what AOSP shipped at API 19 - "ALAC arrived in API 31,
- * Opus in API 21". That stopped being the constraint the moment playback left
- * MediaPlayer: nothing in the playback path consults the platform any more. The
- * real constraint is the `--enable-decoder` / `--enable-demuxer` allowlist in
- * `tools/native/build-ffmpeg.sh`, and the two had already drifted: `aiff` was
- * reported unsupported while its big-endian PCM decoders were being built, only
- * the demuxer was missing.
- *
- * So [UNSUPPORTED] no longer means "this device cannot". It means "this build
- * carries no decoder for it" - a decision, reversible by one token on the
- * configure line.
- *
- * [DECODERS] and [DEMUXERS] mirror that configure line and are checked against
- * it by `FfmpegBuildCapabilitiesTest`, so they cannot drift again in silence.
- *
- * Still three-valued: [UNKNOWN] covers a codec this build has no opinion about,
- * where either answer would be a guess. The label stays advisory - nothing here
- * prevents an attempt.
- */
 enum class CodecSupport { SUPPORTED, UNSUPPORTED, UNKNOWN }
 
 object AudioCodecSupport {
-
-    /** Mirrors `--enable-decoder` in tools/native/build-ffmpeg.sh. */
     val DECODERS: Set<String> = setOf(
         "aac", "alac", "flac", "mp3", "opus", "vorbis",
         "pcm_f32le", "pcm_f64le", "pcm_s8", "pcm_s16be", "pcm_s16le",
         "pcm_s24be", "pcm_s24le", "pcm_s32be", "pcm_s32le", "pcm_u8"
     )
 
-    /**
-     * Mirrors `--enable-demuxer`.
-     *
-     * A decoder is only reachable through a demuxer, so this is half of the
-     * capability answer and was previously not modelled at all.
-     */
     val DEMUXERS: Set<String> = setOf("aac", "aiff", "asf", "flac", "mov", "mp3", "ogg", "wav")
 
-    /** Stored codec identifiers that map onto an enabled decoder. */
     private val SUPPORTED_CODECS = setOf(
         "mpeg", "mp3",
         "mp4a-latm", "aac",
@@ -209,7 +269,6 @@ object AudioCodecSupport {
         "aiff", "aiff-c"
     )
 
-    /** Stored codec identifiers this build deliberately carries no decoder for. */
     private val UNSUPPORTED_CODECS = setOf(
         "amr", "amr-wb",
         "mp2",
@@ -220,24 +279,6 @@ object AudioCodecSupport {
         "ac3", "eac3"
     )
 
-    /**
-     * Container extensions, consulted only when the stored codec is unknown.
-     *
-     * Kept apart from the codec sets on purpose: `m4a` and `mp4` are containers,
-     * not codecs, and listing them among codecs is what let a container name
-     * stand in for a decoding verdict.
-     */
-    /**
-     * Container extensions this build can play, used only when the stored codec
-     * is unknown.
-     *
-     * `internal` so `FfmpegBuildCapabilitiesTest` can assert the invariant that
-     * matters: anything labelled playable here must also be indexed by
-     * `LibraryScanner`, or the label describes a file the user can never see.
-     *
-     * `mp4` is absent on purpose — it is a video container, and the scanner does
-     * not index it. Audio in an MP4 wrapper arrives as `m4a`/`m4r`.
-     */
     internal val SUPPORTED_EXTENSIONS = setOf(
         "mp3", "m4a", "m4r", "alac", "aac", "flac",
         "wav", "wave", "ogg", "oga", "opus", "aif", "aiff", "aifc"

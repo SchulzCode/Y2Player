@@ -22,6 +22,7 @@ import com.schulzcode.y2player.core.model.AudioOutputRouteResolver
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.DacState
 import com.schulzcode.y2player.core.model.PauseReason
+import com.schulzcode.y2player.core.model.PlaybackExitReason
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
@@ -32,6 +33,8 @@ import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
+import com.schulzcode.y2player.diagnostics.PlaybackHistory
+import com.schulzcode.y2player.diagnostics.PlaybackSession
 import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
@@ -57,17 +60,31 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun removeListener(listener: Listener) = this@PlaybackService.removeListener(listener)
         fun snapshot(): PlaybackSnapshot = snapshot
 
-        fun playCollection(trackIds: List<Long>, startIndex: Int) = post {
+        fun playCollection(
+            trackIds: List<Long>,
+            startIndex: Int,
+            shuffled: Boolean = false,
+            fromStart: Boolean = false
+        ) = post {
+            if (trackIds.isEmpty()) return@post
+            releaseCurrentTrack(PlaybackExitReason.QUEUE_REPLACED)
             beginExplicitPlaybackRequest()
-            queue.replace(trackIds, startIndex)
+            if (shuffled) queue.replaceShuffled(trackIds, repeatAll = false)
+            else queue.replace(trackIds, startIndex)
             currentRetryCount = 0
             consecutiveErrors = 0
-            prepareCurrent(autoPlay = true, positionMs = 0)
+            syncReplayGain()
+            syncTransition()
+            prepareCurrent(autoPlay = true, positionMs = prepareAudiobookStart(ignoreSavedPosition = fromStart))
         }
 
-        /** Shuffle All: every library track once per pass, then a fresh pass. */
+        fun clearAudiobookProgress(folderKey: String) = post {
+            submitPersistence("audiobook progress cleared") { database.deleteAudiobookProgress(folderKey) }
+        }
+
         fun playCollectionShuffled(trackIds: List<Long>) = post {
             if (trackIds.isEmpty()) return@post
+            releaseCurrentTrack(PlaybackExitReason.QUEUE_REPLACED)
             beginExplicitPlaybackRequest()
             queue.replaceShuffled(trackIds)
             currentRetryCount = 0
@@ -76,11 +93,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
 
         fun playQueueIndex(index: Int) = post {
+            releaseCurrentTrack(PlaybackExitReason.MANUAL_SELECT)
             if (queue.moveToQueueIndex(index) != null) {
                 beginExplicitPlaybackRequest()
                 currentRetryCount = 0
                 consecutiveErrors = 0
-                prepareCurrent(autoPlay = true, positionMs = 0)
+                prepareCurrent(autoPlay = true, positionMs = prepareAudiobookStart(forceOrdered = false))
             }
         }
 
@@ -101,7 +119,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
         fun clearQueue() = post(::clearQueueInternal)
 
-        /** Inserts a track directly after the current one. */
         fun playNext(trackId: Long) = post {
             queue.addNext(trackId)
             afterQueueMutation()
@@ -129,11 +146,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             normalizeSystemVolumeForAppControl()
         }
 
-        /**
-         * Transfers volume ownership without a loudness spike. Entering app
-         * control attenuates engine PCM before raising the Android stream;
-         * leaving it lowers the Android stream before removing app attenuation.
-         */
         fun applyVolumeModeTransition(value: PlayerPreferencesState, systemVolumeIndex: Int) = post {
             applyVolumeModeTransitionInternal(value, systemVolumeIndex)
         }
@@ -141,6 +153,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun reconcileAvailability(availableTrackIds: Set<Long>) = post {
             reconcileAvailabilityInternal(availableTrackIds)
         }
+
+        internal fun historySummary(): PlaybackHistory.Summary = this@PlaybackService.historySummary()
+
+        fun clearHistory(): Boolean = this@PlaybackService.clearHistory()
 
         fun setSafeMode(enabled: Boolean) = post {
             if (enabled) enterSafeModeInternal() else exitSafeModeInternal()
@@ -184,7 +200,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     @Volatile private var currentTrack: Track? = null
     @Volatile private var shuttingDown = false
     @Volatile private var boundClients = 0
-    /** Last start id Android delivered; see [stopSelfIfIdle]. */
     @Volatile private var lastStartId = 0
     private var requestedPreferences = PlayerPreferencesState()
     private var currentPreferences = PlayerPreferencesState()
@@ -192,38 +207,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var pendingPositionMs = 0L
     private var pendingAutoPlay = false
     private var duckedForFocus = false
-    /** True only while a volume ramp is running on the playback thread. */
     private var fadeInProgress = false
     private var currentRetryCount = 0
     private var preloadRetryCount = 0
-    /**
-     * The current request a preload was actually *attempted* for.
-     *
-     * Set only once an eligible next track has been chosen and handed to the
-     * engine, never merely because the engine asked. Without this, an exhausted
-     * preload failure loops: the failure cleanup calls `engine.clearNext()`,
-     * which re-opens the engine's request latch, which makes the engine ask
-     * again on the next decode block (~93 ms), which resets [preloadRetryCount]
-     * and starts the same failing sequence over — hundreds of blocking native
-     * opens on the engine thread while the current track is still playing.
-     */
     private var preloadAttemptedForRequestId = 0L
-    /**
-     * The next-track identity the last revalidation resolved, so a genuine
-     * change can be told apart from a repeated notification. Only a change
-     * re-opens the engine's request latch.
-     */
     private var lastEligibleNextTrackId: Long? = null
-    /**
-     * The request the engine has promoted but whose audio is not yet at the
-     * playback head.
-     *
-     * [onTransitioned] is gated on this rather than on [preloadedRequestId],
-     * because ownership has already moved by then and any intervening pause or
-     * queue edit is free to clear the preload bookkeeping.
-     */
     private var lastPromotedRequestId = 0L
     private var consecutiveErrors = 0
+    private var lastReleasedRequestId = 0L
+    private lateinit var playbackHistory: PlaybackHistory
+    private var listeningSession: ListeningSession? = null
+
+    private var appliedCrossfadeMs = -1L
+    private var appliedGapless: Boolean? = null
     private var lastPeriodicPersistedPositionMs = Long.MIN_VALUE
     private var lastPublishedProgressSecond = -1L
     private var currentPreparationRecorded = false
@@ -231,9 +227,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var activeRequestId = 0L
     private var preloadedRequestId: Long? = null
     private var preloadedTrack: Track? = null
-    // Written on the playback thread (start/transition paths) and on the main
-    // thread (updateNotificationIfNeeded). The race is accepted: the worst
-    // outcome is one redundant notify() with identical content.
     private var lastNotificationKey: NotificationKey? = null
     @Volatile private var lastPersistedQueueItems: List<Long>? = null
     private var queuePersistScheduled = false
@@ -242,18 +235,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         flushQueuePersist()
     }
     private var currentWatchdogRequest: Long? = null
-    /**
-     * Set while a start has been asked for but [onStarted] has not confirmed it.
-     * Only used to name the failure if the watchdog has to fire.
-     */
     private var awaitingStartRequest: Long? = null
     private var nextWatchdogRequest: Long? = null
-    /**
-     * Effects attach to the audio *session*, not to a player, and the session id
-     * is fixed for the life of the engine. Re-applying on every prepare rewrote
-     * every band and rebuilt three description lists once per track change for
-     * no behavioural gain; this reapplies once per engine session instead.
-     */
     private var audioEffectsSessionApplied = false
     private val fadeGeneration = GenerationGuard()
     private var outputVolume = 1f
@@ -280,6 +263,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         logger = container.logger
         eventLog = container.eventLog
         dacController = DacController(this, logger)
+        playbackHistory = PlaybackHistory(
+            directoryProvider = {
+                Y2StoragePaths.availableRoots().firstOrNull()?.let { File(it.directory, "Y2Player") }
+            },
+            appVersion = com.schulzcode.y2player.BuildConfig.VERSION_NAME,
+            onWarning = { message -> logger.warn("History", message) }
+        )
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -290,23 +280,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         storageMonitor.addListener(storageListener)
 
         post {
-            // Vendor Hi-Fi routing goes through AudioSystem.setParameters, a
-            // synchronous call into the audio HAL. An MT6582 HAL that is slow to
-            // answer an undocumented parameter would stall the main thread at
-            // every service start, so it is requested from the playback thread.
             dacController.applyDirectMode(requestedPreferences.audioQualityMode == AudioQualityMode.DIRECT_DAC)
             engine = runCatching<PlaybackEngine> { FfmpegPlaybackEngine(this, logger) }
                 .onFailure(::logEngineInitializationFailure)
                 .getOrElse { UnavailablePlaybackEngine("FFmpeg audio engine is unavailable") }
                 .also { it.setListener(this) }
-            // Restore the persisted app gain before normalizing the system layer.
-            // This order also makes a reboot into in-app mode free of a volume spike.
             setOutputVolume(effectiveVolume())
             normalizeSystemVolumeForAppControl()
-            engine.configureTransition(
-                gaplessEnabled = currentPreferences.gaplessEnabled,
-                crossfadeMs = currentPreferences.crossfadeMs.toLong()
-            )
             audioFocus = AudioFocusController(this, this)
             audioEffectsController = AudioEffectsController(this, engine.audioSessionId, logger)
             audioEffectsState = audioEffectsController.apply(currentPreferences)
@@ -320,6 +300,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             )
             queue = QueueController()
             restorePersistedState(skipQueue = safeModeManager.isSafeMode())
+            // After restorePersistedState, which settles the shuffle state the effective
+            // crossfade depends on, and outside it, since it returns early in safe mode.
+            syncTransition()
             syncReplayGain()
             publishSnapshot()
         }
@@ -362,8 +345,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         boundClients = (boundClients - 1).coerceAtLeast(0)
         logger.info("Playback", "client unbound count=$boundClients")
         post(::stopSelfIfIdle)
-        // Returning true makes Android call onRebind for later clients, keeping
-        // boundClients accurate when an activity is recreated.
         return true
     }
 
@@ -374,13 +355,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Recorded so stopSelfIfIdle can pass it back. See there for why.
         lastStartId = startId
         if (intent?.action == ACTION_MEDIA_BUTTON) {
             val keyCode = intent.getIntExtra(EXTRA_MEDIA_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN)
-            // The non-exported service trusts the receiver's source-scoped key
-            // mapping and edge normalization; repeating either gate here would
-            // block valid DOWN-only or UP-only API-19 vendor delivery.
             if (keyCode != KeyEvent.KEYCODE_UNKNOWN) handleMediaKey(keyCode)
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
@@ -392,8 +369,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onDestroy() {
         shuttingDown = true
-        // Released first: a service torn down mid-playback would otherwise leave
-        // the scanner throttling itself for nothing, with no one left to clear it.
         if (::libraryRepository.isInitialized) libraryRepository.setPlaybackActive(false)
         if (::routeMonitor.isInitialized) routeMonitor.stop()
         if (::storageMonitor.isInitialized) storageMonitor.removeListener(storageListener)
@@ -403,10 +378,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             playbackHandler.removeCallbacksAndMessages(null)
             persistenceExecutor.queue.clear()
             val cleanup = Runnable {
+                runCatching { releaseCurrentTrack(PlaybackExitReason.SERVICE_SHUTDOWN) }
                 if (::queue.isInitialized) runCatching {
-                    // Flush any debounced queue write synchronously into the executor
-                    // before it shuts down; otherwise up to QUEUE_PERSIST_DEBOUNCE_MS
-                    // of queue edits would be lost at service destruction.
                     playbackHandler.removeCallbacks(queuePersistRunnable)
                     queuePersistScheduled = false
                     if (queue.snapshot().items === lastPersistedQueueItems) persistSession() else flushQueuePersist()
@@ -415,11 +388,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (::remoteControl.isInitialized) remoteControl.release()
                 if (::audioEffectsController.isInitialized) audioEffectsController.release()
                 if (::engine.isInitialized) engine.release()
-                // Same reason as onCreate: this reaches the audio HAL, so it must
-                // not run on the main thread during teardown. If the post below
-                // fails the looper is already gone and this is skipped; the next
-                // service start constructs a fresh DacController that applies the
-                // configured mode unconditionally, so the vendor flag self-corrects.
                 if (::dacController.isInitialized) dacController.applyDirectMode(false)
             }
             if (Looper.myLooper() == playbackThread.looper) {
@@ -450,20 +418,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // TRIM levels are not ordered by memory pressure: TRIM_MEMORY_UI_HIDDEN (20)
-        // only means no UI is visible and fires with zero pressure, yet it is numerically
-        // above TRIM_MEMORY_RUNNING_LOW (10). Releasing the preloaded next player there
-        // would break gapless during background listening, the primary use case.
         if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) return
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
             releaseTransientPlaybackResources("trim memory level=$level")
         }
     }
 
-    /**
-     * Drops the second player and any running transition under memory pressure.
-     * The current track keeps playing; only what can be rebuilt is released.
-     */
     private fun releaseTransientPlaybackResources(reason: String) = post {
         cancelVolumeFade()
         clearPreload()
@@ -478,12 +438,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             onError(requestId, "Track has no playable duration")
             return@post
         }
-        // The first prepared player is the earliest point at which API-19
-        // vendor stacks are guaranteed to have a live playback path for the
-        // session, so persisted settings are applied once here rather than
-        // remaining attached only to the idle player that allocated the session
-        // ID. Every later track reuses that same session id, so re-applying per
-        // track only rewrote settings that were already in force.
         if (!audioEffectsSessionApplied) {
             audioEffectsState = audioEffectsController.apply(currentPreferences)
             audioEffectsSessionApplied = true
@@ -503,11 +457,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         val focusGranted = !wantedAutoPlay || audioFocus.request()
         val playRequested = wantedAutoPlay && focusGranted && safetyPolicy.canAutomaticallyStart()
         if (playRequested) {
-            // Entering the foreground, recording the play and publishing PLAYING
-            // all wait for onStarted, which the engine fires once decoded PCM
-            // has actually reached the output. The status stays PREPARING for
-            // the one pump turn in between; the watchdog covers a start that
-            // never arrives.
             awaitingStartRequest = requestId
             startEngineWithFade()
             scheduleCurrentWatchdog(requestId)
@@ -545,16 +494,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    /**
-     * The engine has confirmed that audio is flowing for [requestId].
-     *
-     * This is the only place playback is published as PLAYING, because it is the
-     * only point at which that is known to be true.
-     */
     override fun onStarted(requestId: Long) = post {
         if (!PlaybackRequestGate.accepts(requestId, activeRequestId)) return@post
         cancelCurrentWatchdog(requestId)
         awaitingStartRequest = null
+        listeningSession?.resume()
         val fadeMs = currentPreferences.pauseResumeFadeMs.toLong()
         if (fadeMs > 0) fadeOutputGain(1f, fadeMs)
         else setTransientOutputGain(1f)
@@ -580,21 +524,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    /**
-     * The engine is near the end of the current track and needs the next one.
-     *
-     * This replaces the service polling its own position four times a second to
-     * work out something the engine already knew to the frame.
-     */
     override fun onNextTrackNeeded(currentRequestId: Long) = post {
         if (!PlaybackRequestGate.accepts(currentRequestId, activeRequestId)) return@post
         if (preloadedRequestId != null) return@post
-        // One attempt sequence per current track. The engine re-asks whenever its
-        // request latch is cleared, and the failure cleanup clears it, so without
-        // this the retry sequence would restart every decode block.
         if (preloadAttemptedForRequestId == currentRequestId) return@post
-        // Declining because nothing is eligible must NOT count as an attempt, or
-        // [revalidatePreload] could never re-open the question later.
         val nextTrack = eligibleNextTrack() ?: return@post
         preloadAttemptedForRequestId = currentRequestId
         preloadRetryCount = 0
@@ -613,16 +546,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    // Always delivered from the engine's own thread, never from this service's,
-    // so there is no in-line fast path to take.
-    /**
-     * The engine has changed decoders. Move ownership now; say nothing yet.
-     *
-     * Everything the listener can see — notification, foreground state, the
-     * published snapshot, the recorded play — waits for [onTransitioned], which
-     * fires when the new track is actually audible. Only the bookkeeping that
-     * must not be able to disagree with the engine moves here.
-     */
     override fun onTrackPromoted(
         previousRequestId: Long,
         promotedRequestId: Long,
@@ -637,6 +560,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
         val promotedTrack = preloadedTrack ?: return@post
         cancelNextWatchdog(promotedRequestId)
+        releaseCurrentTrack(PlaybackExitReason.COMPLETED)
 
         val advanced = when (sleepTimerMode) {
             SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.nextInCurrentPass()
@@ -670,14 +594,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         handleTransitioned(requestId, durationMs)
     }
 
-    /**
-     * The promoted track is now audible. Ownership already moved in
-     * [onTrackPromoted]; this is only what the listener perceives.
-     *
-     * Gated on [lastPromotedRequestId], not on [preloadedRequestId], which the
-     * promotion cleared and which a pause between the two callbacks would have
-     * cleared anyway.
-     */
     private fun handleTransitioned(requestId: Long, durationMs: Long) {
         if (requestId <= 0L || requestId != lastPromotedRequestId) {
             logger.warn(
@@ -716,8 +632,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             stopForSleepTimer()
             return@post
         }
-        // A prepared next track is joined by the engine itself, so reaching here
-        // means there genuinely was nothing to join to.
         nextInternal(userInitiated = false)
     }
 
@@ -739,13 +653,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "retry" to currentRetryCount,
             "message" to message
         )
-        // A failed player is the one case where the effect backend may have been
-        // torn down with it, so allow one re-application on the next prepare.
         audioEffectsSessionApplied = false
 
-        // Remembered only when the framework blamed the media. Retrying a file
-        // the decoder has rejected is pointless, so that case skips the retry as
-        // well as recording the verdict.
         if (failure == PlaybackFailure.UNSUPPORTED && track != null) {
             libraryRepository.recordPlaybackFailure(track.id, message)
             logger.warn("Playback", "track=${track.id} marked undecodable: $message")
@@ -763,6 +672,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             return@post
         }
 
+        releaseCurrentTrack(PlaybackExitReason.ERROR)
         consecutiveErrors += 1
         if (consecutiveErrors < queue.snapshot().items.size.coerceAtLeast(1) && moveToNextAvailable(ignoreRepeatOne = true)) {
             currentRetryCount = 0
@@ -784,9 +694,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             preloadRetryCount += 1
             preloadTrack(failedTrack)
         } else {
-            // Retries exhausted for this target. Keep the guard so the engine's
-            // next request — which the clearNext() inside here provokes — is
-            // declined instead of restarting the same failing sequence.
             clearPreload(preserveAttemptGuard = true)
             refreshSnapshot()
             publishSnapshot()
@@ -859,12 +766,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             PlaybackStatus.PREPARING -> pauseInternal(PauseReason.USER)
             PlaybackStatus.PAUSED -> {
                 beginExplicitPlaybackRequest()
-                // Re-read rather than reuse: the held Track is an immutable copy
-                // taken when the session was restored, which on a cold boot is
-                // before the card has finished mounting. Reusing it made a
-                // restored session that failed once fail forever, because every
-                // later press re-tested the same stale object. One indexed
-                // lookup per play press is not a cost worth that.
                 val restored = queue.currentTrackId()?.let(libraryRepository::findTrack)
                 val track = restored ?: currentTrack ?: return
                 currentTrack = track
@@ -924,36 +825,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun startEngineWithFade() {
-        // Re-assert media-button ownership. On API 19 the last registrant wins,
-        // so any other media app used since startup silently captures AVRCP
-        // buttons (AirPods stem presses, car controls). One cheap AudioManager
-        // call at every engine start returns them to this player exactly when
-        // the user demonstrates intent to control it.
+        // Re-asserted on every start: on API 19 the last registrant wins.
         MediaButtonReceiver.register(this, logger)
         cancelVolumeFade()
         setOutputVolume(effectiveVolume())
-        // This gate lives on AudioTrack rather than in newly decoded PCM, so it
-        // also covers the old buffered frames retained across pause/resume.
         if (currentPreferences.pauseResumeFadeMs > 0) setTransientOutputGain(0f)
         engine.start()
     }
 
-    /**
-     * The steps every stop path owes, in one fixed order.
-     *
-     * Six paths — pause, queue end, sleep timer, storage loss, clear queue and
-     * safe mode — each opened with their own subset of these, in their own
-     * order, and the differences were not all deliberate: `finishQueue` and
-     * `stopForSleepTimer` both left a volume fade running against a player they
-     * had just paused, so the next resume began at whatever gain the abandoned
-     * ramp had reached.
-     *
-     * Deliberately *not* a single `halt(reason)`. What each caller does to the
-     * queue, the snapshot, persistence and the event log genuinely differs, and
-     * folding that into one branching function is how an ordinary pause quietly
-     * becomes a full cancellation. This is the agreed part; the callers keep
-     * their own meaning.
-     */
     private fun releasePlaybackResources(
         cancelPreparation: Boolean,
         abandonFocus: Boolean = true,
@@ -961,8 +840,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     ) {
         pendingAutoPlay = false
         awaitingStartRequest = null
-        // Ducking must survive a focus-loss pause, which is the one caller that
-        // intends to resume by itself.
         if (abandonFocus) duckedForFocus = false
         if (cancelFade) cancelVolumeFade()
         playbackHandler.removeCallbacks(progressRunnable)
@@ -983,26 +860,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         releasePlaybackResources(
             cancelPreparation = preparing,
             abandonFocus = abandonFocus,
-            // For a loaded track, freeze first and restore the transient gate
-            // afterwards so a cancelled resume ramp cannot briefly jump louder.
             cancelFade = preparing
         )
 
         if (!preparing && ::engine.isInitialized) {
             cancelVolumeFade(resetOutputGain = false)
-            // A paused track holds no second decoder — except mid-transition,
-            // where the crossfade is frozen rather than thrown away: the engine
-            // keeps its mix position and the prepared decoder, so resuming
-            // continues the fade instead of snapping the outgoing track back to
-            // full gain.
             if (!engine.isTransitioning) clearPreload()
-            // Pause immediately. A fade-out necessarily consumes song content
-            // while becoming inaudible, which made resume sound like a skip.
             engine.pause()
             setTransientOutputGain(1f)
             setOutputVolume(effectiveVolume())
         }
+        listeningSession?.pause()
         snapshot = buildSnapshot(PlaybackStatus.PAUSED, position, duration, reason, errorMessage)
+        currentTrack?.let { saveAudiobookProgress(it, position, duration) }
         persistSession(positionOverride = position)
         eventLog.info(
             Sub.PLAYBACK, Ev.PLAYBACK_PAUSE,
@@ -1031,9 +901,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             publishSnapshot()
             return
         }
-        // Seeking the outgoing track invalidates a crossfade; the engine drops
-        // its own transition state when the seek command runs, so this only has
-        // to release the service's preload bookkeeping.
         if (engine.isTransitioning) clearPreload()
         engine.seekTo(target)
         snapshot = buildSnapshot(snapshot.status, target, duration, snapshot.pauseReason, snapshot.errorMessage)
@@ -1042,28 +909,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    /**
-     * Skip back, or restart the current track if it is already past the
-     * configured threshold.
-     *
-     * Every caller is a user pressing something — the left key, or a headset's
-     * triple press — so this starts playback the same way [nextInternal] does
-     * for a user-initiated skip. It previously took its autoplay decision from
-     * `status == PLAYING`, which meant skip-forward from a paused player started
-     * the track while skip-back silently loaded it and stayed silent. On a
-     * headset, where there is nothing to look at, that is indistinguishable from
-     * the button not working.
-     */
     private fun previousInternal() {
+        releaseCurrentTrack(PlaybackExitReason.MANUAL_PREVIOUS)
         beginExplicitPlaybackRequest()
         consecutiveErrors = 0
         currentRetryCount = 0
         val autoPlay = safetyPolicy.canAutomaticallyStart()
         val threshold = currentPreferences.previousRestartThresholdMs.toLong()
         if (threshold > 0 && engine.currentPositionMs() > threshold) {
-            // Already playing: seeking is cheaper than tearing down the player
-            // and re-preparing the same file. Paused (including after the queue
-            // ran out) has no live position to seek, so it re-prepares.
             if (snapshot.status == PlaybackStatus.PLAYING) seekAbsoluteInternal(0)
             else prepareCurrent(autoPlay, 0)
             return
@@ -1074,6 +927,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun nextInternal(userInitiated: Boolean) {
+        releaseCurrentTrack(
+            if (userInitiated) PlaybackExitReason.MANUAL_NEXT else PlaybackExitReason.COMPLETED
+        )
         if (userInitiated) beginExplicitPlaybackRequest()
         if (userInitiated) consecutiveErrors = 0
         val shouldAutoPlay = (userInitiated || snapshot.status == PlaybackStatus.PLAYING) && safetyPolicy.canAutomaticallyStart()
@@ -1092,6 +948,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun finishQueue(endedBySleepTimer: Boolean) {
+        releaseCurrentTrack(
+            if (endedBySleepTimer) PlaybackExitReason.SLEEP_TIMER else PlaybackExitReason.QUEUE_END
+        )
+        if (!endedBySleepTimer) clearAudiobookProgressForCurrent()
         safetyPolicy.onManualPause()
         releasePlaybackResources(cancelPreparation = false)
         clearPreload()
@@ -1112,14 +972,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    /**
-     * Advances to the next item that actually resolves to a readable file.
-     *
-     * Each probe mutates the queue position, so a search that finds nothing
-     * restores the index it started from: leaving the queue parked on an
-     * arbitrary unplayable item made the next user action continue from
-     * wherever the failed search happened to stop.
-     */
     private fun moveToNextAvailable(
         ignoreRepeatOne: Boolean = false,
         currentPassOnly: Boolean = false
@@ -1138,9 +990,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
             val track = libraryRepository.findTrack(next)
             if (track != null && !track.decodeFailed && resolvePlayableTrack(track) != null) return true
-            // Automatic advance skips what this device has already failed to
-            // decode. An explicit selection is never blocked this way — see
-            // togglePlaybackInternal, which still attempts whatever was chosen.
             logger.warn(
                 "Playback",
                 "skipping track=$next reason=${if (track?.decodeFailed == true) "undecodable" else "unavailable"}"
@@ -1163,6 +1012,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun clearQueueInternal() {
+        releaseCurrentTrack(PlaybackExitReason.EXPLICIT_STOP)
         clearSleepTimer()
         safetyPolicy.onSessionCleared()
         releasePlaybackResources(cancelPreparation = true)
@@ -1171,9 +1021,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         currentTrack = null
         pendingPositionMs = 0
         snapshot = PlaybackSnapshot(audioEffects = audioEffectsState, sleepTimerMode = sleepTimerMode)
-        // Written immediately rather than debounced: Reset Library clears the
-        // queue and then wipes the tracks it refers to, and a write still sitting
-        // in the debounce window would race that wipe.
         playbackHandler.removeCallbacks(queuePersistRunnable)
         queuePersistScheduled = false
         flushQueuePersist()
@@ -1185,17 +1032,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         snapshot = buildSnapshot(snapshot.status, snapshot.positionMs, snapshot.durationMs, snapshot.pauseReason, snapshot.errorMessage)
     }
 
-    /**
-     * The four steps every queue edit owes: refresh the snapshot, persist the
-     * new order, re-evaluate preload eligibility, publish.
-     *
-     * They were repeated verbatim at seven call sites, where omitting one — most
-     * easily [revalidatePreload], whose absence leaves a preloaded decoder that
-     * no longer matches the next item — produced a bug visible only at the next
-     * track transition.
-     */
     private fun afterQueueMutation() {
         syncReplayGain()
+        syncTransition()
         refreshSnapshot()
         persistQueueState()
         revalidatePreload()
@@ -1214,6 +1053,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             clearPreload()
             pendingAutoPlay = false
             pendingPositionMs = 0
+            if (!preserveRetry) releaseCurrentTrack(PlaybackExitReason.SOURCE_REMOVED)
             currentTrack = indexedTrack
             if (::engine.isInitialized) engine.cancel()
             if (::audioFocus.isInitialized) audioFocus.abandon()
@@ -1232,6 +1072,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
 
         clearPreload()
+        if (!preserveRetry) releaseCurrentTrack(PlaybackExitReason.UNKNOWN)
         if (!preserveRetry) currentRetryCount = 0
         currentTrack = track
         currentPreparationRecorded = false
@@ -1252,37 +1093,21 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "autoPlay" to autoPlay,
             "positionMs" to pendingPositionMs
         )
-        // A new current request invalidates the attempt guard by identity, but
-        // the remembered target must be dropped too or the first revalidation
-        // for this track would see "unchanged" and skip re-opening the request.
         preloadAttemptedForRequestId = 0L
         lastEligibleNextTrackId = null
-        // A new current track supersedes any promotion still awaiting its
-        // audible boundary.
         lastPromotedRequestId = 0L
         engine.prepare(track, activeRequestId)
-        // Prepare intentionally clears older engine commands. Queue the current
-        // ReplayGain policy afterwards so a new shuffled collection cannot erase
-        // the mode change that makes its first track use Track Gain.
         syncReplayGain()
+        syncTransition()
         scheduleCurrentWatchdog(activeRequestId)
     }
 
-    /** The next track the queue would advance to, respecting the sleep-timer mode. */
     private fun expectedNextTrackId(): Long? = when (sleepTimerMode) {
         SleepTimerMode.END_TRACK -> null
         SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.peekNextInCurrentPass()
         else -> queue.peekNext()
     }
 
-    /**
-     * The next track to hand the engine, or null if nothing should be preloaded.
-     *
-     * Purely a "which" question — queue order, repeat, the sleep-timer boundary,
-     * whether the file is readable and whether this device has already failed to
-     * decode it. The "when" question moved into the engine, which knows the exact
-     * frame and no longer has to be told any of this.
-     */
     private fun eligibleNextTrack(): Track? {
         if (currentTrack == null) return null
         if (queue.snapshot().repeatMode == RepeatMode.ONE) return null
@@ -1295,24 +1120,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         return nextTrack
     }
 
-    /**
-     * Reconciles the held preload with what now comes next.
-     *
-     * Called after a discrete change — prepare, transition, seek, queue edit,
-     * preference or sleep-timer change. It never *starts* a preload: the engine
-     * asks through [onNextTrackNeeded] when it is close enough to need one.
-     *
-     * What it does own is re-opening that question. The engine asks once per
-     * current track; if the service declined because nothing was eligible at the
-     * time — Repeat One, a sleep-timer boundary, an unmounted card — the engine
-     * would otherwise never ask again and the transition would silently lose its
-     * preload. So when an eligible next track appears where there was none, or
-     * the expected target changes, the attempt guard is cleared and
-     * `engine.clearNext()` resets the engine's latch.
-     *
-     * Guarded by [lastEligibleNextTrackId] so that repeated notifications with
-     * an unchanged target cannot turn into a stream of re-opened requests.
-     */
     private fun revalidatePreload() {
         if (!::engine.isInitialized) return
         val expected = eligibleNextTrack()
@@ -1332,8 +1139,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
             return
         }
-        // Nothing held. Re-open the engine's request only on a real transition,
-        // so an exhausted failure with an unchanged target is not retried.
         if (targetChanged) {
             preloadAttemptedForRequestId = 0L
             engine.clearNext()
@@ -1341,7 +1146,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun preloadTrack(track: Track) {
-        // Replacing one attempt with another; the guard was set by the caller.
         clearPreload(preserveAttemptGuard = true)
         preloadedTrack = track
         preloadedRequestId = ++requestCounter
@@ -1351,18 +1155,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         refreshSnapshot()
     }
 
-    /**
-     * Releases the prepared next decoder.
-     *
-     * [preserveAttemptGuard] is the difference between "this attempt failed and
-     * must not repeat" and "the decoder was released for some other reason".
-     * Only the exhausted-failure path and [preloadTrack] itself preserve the
-     * guard; every other caller — pause, low memory, storage loss, queue edit,
-     * safe mode — is releasing a resource and a later attempt is legitimate.
-     *
-     * Note this also resets the *engine's* request latch through
-     * `engine.clearNext()`, which is what lets the engine ask again at all.
-     */
     private fun clearPreload(preserveAttemptGuard: Boolean = false) {
         nextWatchdogRequest = null
         if (::playbackHandler.isInitialized) playbackHandler.removeCallbacks(nextWatchdogRunnable)
@@ -1384,14 +1176,118 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (::engine.isInitialized) engine.cancel()
     }
 
+    // Must run before currentTrack is replaced, or the outgoing position is lost.
+    private fun releaseCurrentTrack(reason: PlaybackExitReason) {
+        val track = currentTrack ?: return
+        val requestId = activeRequestId
+        if (requestId == 0L || requestId == lastReleasedRequestId) return
+        lastReleasedRequestId = requestId
+        val positionMs = currentPosition()
+        val durationMs = currentDuration()
+        eventLog.debug(
+            Sub.PLAYBACK, Ev.TRACK_RELEASED,
+            "request" to requestId,
+            "track" to track.id,
+            "reason" to reason.code,
+            "positionMs" to positionMs,
+            "durationMs" to durationMs
+        )
+        // Consumed here, so a track that was prepared but never started cannot inherit
+        // the previous track's listening time.
+        val session = listeningSession
+        listeningSession = null
+        saveAudiobookProgress(track, positionMs, durationMs)
+        recordPlaybackHistory(track, positionMs, reason, session)
+    }
+
+    private fun recordPlaybackHistory(
+        track: Track,
+        endPositionMs: Long,
+        reason: PlaybackExitReason,
+        session: ListeningSession?
+    ) {
+        if (session == null) return
+        session.pause()
+        val listened = session.listenedMs()
+        if (listened < PlaybackHistory.MIN_SESSION_MS) return
+        val queueState = queue.snapshot()
+        val record = PlaybackSession(
+            track = track,
+            startedAtUtcMs = session.startedAtUtcMs,
+            endedAtUptimeMs = SystemClock.elapsedRealtime(),
+            startPositionMs = session.startPositionMs,
+            endPositionMs = endPositionMs,
+            listenedMs = listened,
+            exitReason = reason,
+            shuffleEnabled = queueState.shuffleEnabled,
+            repeatMode = queueState.repeatMode
+        )
+        submitPersistence("playback history") { playbackHistory.append(record) }
+    }
+
+    internal fun historySummary(): PlaybackHistory.Summary =
+        if (::playbackHistory.isInitialized) playbackHistory.summary() else PlaybackHistory.Summary()
+
+    fun clearHistory(): Boolean =
+        ::playbackHistory.isInitialized && playbackHistory.clear()
+
+    private fun saveAudiobookProgress(track: Track, positionMs: Long, durationMs: Long) {
+        val folderKey = track.audiobookFolderKey ?: return
+        val storedPosition = PlaybackPositionPolicy.audiobookSavePosition(positionMs, durationMs)
+        submitPersistence("audiobook progress") {
+            database.saveAudiobookProgress(folderKey, track.id, storedPosition)
+        }
+    }
+
+    private fun clearAudiobookProgressForCurrent() {
+        val folderKey = currentTrack?.audiobookFolderKey ?: return
+        logger.info("Playback", "audiobook finished key=$folderKey")
+        submitPersistence("audiobook progress cleared") {
+            database.deleteAudiobookProgress(folderKey)
+        }
+    }
+
+    private fun prepareAudiobookStart(
+        forceOrdered: Boolean = true,
+        ignoreSavedPosition: Boolean = false
+    ): Long {
+        val trackId = queue.currentTrackId() ?: return 0
+        val track = libraryRepository.findTrack(trackId) ?: return 0
+        val folderKey = track.audiobookFolderKey ?: return 0
+        if (forceOrdered && queue.applyOrderedPlayback()) {
+            syncReplayGain()
+            syncTransition()
+        }
+        if (ignoreSavedPosition) return 0
+        val progress = runCatching { database.loadAudiobookProgress(folderKey) }
+            .onFailure { logger.warn("Playback", "audiobook progress unreadable: ${it.javaClass.simpleName}") }
+            .getOrNull() ?: return 0
+        if (libraryRepository.findTrack(progress.trackId) == null) {
+            logger.info("Playback", "audiobook progress dropped; track ${progress.trackId} is gone")
+            submitPersistence("audiobook progress cleanup") {
+                database.deleteAudiobookProgress(folderKey)
+            }
+            return 0
+        }
+        if (progress.trackId != trackId) return 0
+        val resume = PlaybackPositionPolicy.audiobookResumePosition(progress.positionMs, track.durationMs)
+        if (resume > 0) {
+            logger.info("Playback", "audiobook resume key=$folderKey track=$trackId positionMs=$resume")
+        }
+        return resume
+    }
+
     private fun recordCurrentPlaybackStart() {
         if (currentPreparationRecorded) return
         val track = currentTrack ?: return
         currentPreparationRecorded = true
+        listeningSession = ListeningSession(
+            startedAtUtcMs = System.currentTimeMillis(),
+            startPositionMs = currentPosition(),
+            uptimeMs = SystemClock::uptimeMillis
+        ).apply { resume() }
         libraryRepository.recordRecentlyPlayed(track.id)
-        // Proof beats prediction: a track that plays cannot be undecodable, so a
-        // stale verdict is withdrawn here. Guarded, so the ordinary case writes
-        // nothing.
+        saveAudiobookProgress(track, currentPosition(), currentDuration())
         if (track.decodeFailed) libraryRepository.clearPlaybackFailure(track.id)
         logger.info("Playback", "playback started track=${track.id} ${track.title}")
     }
@@ -1401,15 +1297,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         playbackHandler.postDelayed(progressRunnable, progressInterval())
     }
 
-    /**
-     * How often to refresh the displayed position.
-     *
-     * This is now purely a display cadence. While UI is bound, sampling four
-     * times per second prevents Handler jitter from stepping over a whole-second
-     * boundary; [lastPublishedProgressSecond] still limits UI publication to one
-     * update per displayed second. The engine schedules transitions itself, so
-     * with no UI bound this can use the slower background cadence.
-     */
     private fun progressInterval(): Long =
         if (boundClients == 0) BACKGROUND_PROGRESS_INTERVAL_MS else PROGRESS_INTERVAL_MS
 
@@ -1419,21 +1306,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val position = engine.currentPositionMs()
             val duration = engine.durationMs()
             if (consecutiveErrors > 0 && position >= STABLE_PLAYBACK_RESET_MS) consecutiveErrors = 0
-            // Nothing about transitions happens here any more: preload and
-            // crossfade are scheduled by the engine against the frame counter.
-            // This loop only moves the displayed position and persists it.
             val progressSecond = position / 1_000L
             if (progressSecond != lastPublishedProgressSecond) {
                 lastPublishedProgressSecond = progressSecond
-                // Always keep the internal position current (persistence, remote-control
-                // position provider, next bind), but only wake UI listeners when one is
-                // actually bound. Periodic progress never takes the material path, so it
-                // does not rewrite RemoteControlClient state or the notification.
                 updateInternalProgress(position, duration)
                 publishUiProgressIfBound()
             }
-            // Persist less often in the background to spare the eMMC while the
-            // screen is off; foreground keeps the tighter 5 s cadence.
             val persistInterval = if (boundClients == 0) BACKGROUND_POSITION_PERSIST_INTERVAL_MS else POSITION_PERSIST_INTERVAL_MS
             val lastPosition = lastPeriodicPersistedPositionMs
             if (lastPosition == Long.MIN_VALUE || position < lastPosition || position - lastPosition >= persistInterval) {
@@ -1441,6 +1319,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 submitPersistence("position persistence") {
                     database.updatePlaybackPosition(if (currentPreferences.resumePosition) position else 0)
                 }
+                // An audiobook must survive an unclean stop. Without this the only
+                // writes are chapter start, pause and release, so a kill mid-chapter
+                // left the saved position at the chapter-start value of zero.
+                currentTrack?.let { saveAudiobookProgress(it, position, duration) }
             }
             playbackHandler.postDelayed(this, progressInterval())
         }
@@ -1463,8 +1345,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         val requestId = currentWatchdogRequest ?: return@Runnable
         if (requestId == activeRequestId && snapshot.status == PlaybackStatus.PREPARING) {
             currentWatchdogRequest = null
-            // The same watchdog covers both halves of a start: opening the file
-            // and getting the first PCM out of it.
             val message = if (awaitingStartRequest == requestId) {
                 "Playback did not start"
             } else {
@@ -1492,8 +1372,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private val nextWatchdogRunnable = Runnable {
         val requestId = nextWatchdogRequest ?: return@Runnable
-        // onNextPrepared cancels this watchdog, so still being armed for the
-        // current preload request is exactly "the preload never landed".
         if (requestId == preloadedRequestId) {
             nextWatchdogRequest = null
             logger.warn("Playback", "preload timed out request=$requestId track=${preloadedTrack?.absolutePath}")
@@ -1507,8 +1385,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             releaseStorageSource()
         }
         if (preloadedTrack?.id?.let { it !in availableTrackIds } == true) clearPreload()
-        // A target that has just become available again is a real eligibility
-        // change, so let the engine ask for it.
         revalidatePreload()
     }
 
@@ -1522,17 +1398,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val nextVolume = device.storageVolumes.firstOrNull { it.id == nextTrack.volumeId }
             if (nextVolume?.available == false || resolvePlayableTrack(nextTrack) == null) clearPreload()
         }
-        // A remount makes a previously unreachable next track eligible again.
         revalidatePreload()
     }
 
-    /**
-     * A stock-UMS unmount must close the native data source, not merely
-     * pause it. Keeping the queue and position allows an explicit user resume
-     * after remount, while cancelling the engine releases every media file
-     * descriptor before the stock storage transition removes the volume.
-     */
     private fun releaseStorageSource() {
+        releaseCurrentTrack(PlaybackExitReason.SOURCE_REMOVED)
         val position = currentPosition()
         val duration = currentDuration()
         releasePlaybackResources(cancelPreparation = true)
@@ -1557,6 +1427,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun enterSafeModeInternal() {
+        releaseCurrentTrack(PlaybackExitReason.SAFE_MODE)
         clearSleepTimer()
         safetyPolicy.onSessionCleared()
         releasePlaybackResources(cancelPreparation = true)
@@ -1597,6 +1468,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             logger.error("Playback", "session restore failed; restoring paused", it)
         }.getOrNull()
         queue.restore(persistedQueue, persistedSession)
+        syncTransition()
         val validTrackIds = runCatching { database.validTrackIds(persistedQueue) }.onFailure {
             logger.error("Playback", "queue validation failed; removing unsafe references", it)
         }.getOrDefault(emptySet())
@@ -1624,16 +1496,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         return PlaybackPositionPolicy.clampRestored(positionMs, durationMs)
     }
 
-    /**
-     * The position to report or persist right now.
-     *
-     * While PREPARING the engine holds no position for the track being loaded,
-     * so a pending seek is the truth. Once it does hold a track its live
-     * position wins outright, **including zero**: zero is a legitimate position
-     * at the start of a track, and the old `takeIf { it > 0 }` idiom silently
-     * replaced it with a stale snapshot value. Holding a track is tested with
-     * `durationMs() > 0` rather than with the position itself.
-     */
     private fun currentPosition(): Long = when {
         snapshot.status == PlaybackStatus.PREPARING ->
             pendingPositionMs.takeIf { it > 0 } ?: snapshot.positionMs
@@ -1642,17 +1504,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         else -> snapshot.positionMs
     }
 
-    /** The duration to report right now; the snapshot covers the gap before a prepare lands. */
     private fun currentDuration(): Long {
         if (!::engine.isInitialized) return snapshot.durationMs
         return engine.durationMs().takeIf { it > 0 } ?: snapshot.durationMs
     }
 
-    // Scheduling intentionally uses Handler.postDelayed (uptime clock), not AlarmManager:
-    // while playing, the engine's partial wake lock keeps the CPU awake so uptime
-    // tracks elapsed time. If the user pauses with a timer armed and the SoC deep-sleeps,
-    // the callback fires late — but its only job is to pause, so late-while-paused is
-    // harmless, and the elapsedRealtime deadline check keeps it correct on wake.
     private fun cycleSleepTimerInternal() {
         sleepTimerMode = sleepTimerMode.next()
         sleepTimerDeadlineElapsed = sleepTimerMode.durationMs?.let { SystemClock.elapsedRealtime() + it }
@@ -1698,23 +1554,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         else -> false
     }
 
-    /**
-     * Resolves a stored track to a file that can actually be opened right now.
-     *
-     * Deliberately does **not** consult `Track.available`. That flag records
-     * what the last scan concluded, not what the filesystem currently holds, and
-     * the two disagree after an ordinary reboot: as the HOME app this process
-     * starts before the card is mounted, so a card that takes longer than
-     * BOOT_STORAGE_GRACE_MS to appear gets its whole volume flagged unavailable.
-     * A restored session captured while that flag was false could then never be
-     * resumed — the check failed before ever touching the file, and the copy of
-     * the track held by the service was never re-read, so it stayed broken even
-     * after the card mounted and the rescan set the flag back.
-     *
-     * The volume check that replaces it is live rather than remembered, so a
-     * genuinely absent card still short-circuits without stat-ing every queue
-     * item, which is what the flag was really protecting.
-     */
     private fun resolvePlayableTrack(track: Track): Track? {
         if (track.absolutePath.isBlank() || track.relativePath.isBlank()) return null
         if (!Y2StoragePaths.isVolumeMounted(track.volumeId)) return null
@@ -1731,6 +1570,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun stopForSleepTimer() {
+        releaseCurrentTrack(PlaybackExitReason.SLEEP_TIMER)
         clearSleepTimer()
         safetyPolicy.onManualPause()
         releasePlaybackResources(cancelPreparation = false)
@@ -1750,33 +1590,21 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         val previousGain = appVolumeGain()
         val effective = runtimePreferences(value)
         val modeChanged = value.audioQualityMode != requestedPreferences.audioQualityMode
-        val transitionChanged = effective.gaplessEnabled != currentPreferences.gaplessEnabled ||
-            effective.crossfadeMs != currentPreferences.crossfadeMs
-        if (modeChanged || transitionChanged) clearPreload()
+        if (modeChanged) clearPreload()
         requestedPreferences = value
         currentPreferences = effective
-        engine.configureTransition(
-            gaplessEnabled = effective.gaplessEnabled,
-            crossfadeMs = effective.crossfadeMs.toLong()
-        )
+        syncTransition()
         syncReplayGain()
-        // A volume step must be audible immediately. While a fade is running,
-        // its terminal update applies the newest steady-state gain instead.
         if (appVolumeGain() != previousGain && !fadeInProgress) setOutputVolume(effectiveVolume())
-        // Not routed through setOutputVolume: balance is a fixed per-channel scale
-        // the engine keeps, so a fade in flight is not disturbed by setting it.
         engine.setBalance(effective.balance)
         dacController.applyDirectMode(value.audioQualityMode == AudioQualityMode.DIRECT_DAC)
         audioEffectsState = audioEffectsController.apply(effective)
-        if (modeChanged || transitionChanged) revalidatePreload()
+        if (modeChanged) revalidatePreload()
         refreshSnapshot()
         publishSnapshot()
     }
 
     private fun applyVolumeModeTransitionInternal(value: PlayerPreferencesState, systemVolumeIndex: Int) {
-        // A resume/focus fade owns an output gain layer for only a short bounded
-        // interval. Deferring preserves its completion callback and avoids
-        // raising the system layer before the transferred app gain is active.
         if (fadeInProgress) {
             playbackHandler.postDelayed(
                 { applyVolumeModeTransitionInternal(value, systemVolumeIndex) },
@@ -1793,7 +1621,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    /** Keeps Android from silently limiting the top of the in-app fader. */
     private fun normalizeSystemVolumeForAppControl() {
         if (currentPreferences.volumeMode != VolumeMode.PERCEPTUAL || fadeInProgress) return
         val maximum = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
@@ -1816,28 +1643,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             .onFailure { logger.warn("Volume", "unable to set music-stream volume: ${it.javaClass.simpleName}") }
     }
 
-    /**
-     * Attenuation contributed by the in-app volume mode. Exactly 1.0 in SYSTEM
-     * mode, so the multiplication below is a no-op and decoded PCM receives the
-     * unmodified value; only PERCEPTUAL mode changes the gain.
-     */
     private fun appVolumeGain(): Float =
         if (currentPreferences.volumeMode == VolumeMode.PERCEPTUAL) {
             VolumeCurve.gainForLevel(currentPreferences.volumeLevel)
         } else 1f
 
-    /**
-     * The steady-state output level. Ducking and the in-app gain compose by
-     * multiplication, which is correct for amplitudes: ducking to 20% of an
-     * already-attenuated signal still lands 14 dB down, as intended. Fades and
-     * crossfades multiply on top of this inside the engine.
-     */
     private fun effectiveVolume(): Float =
         appVolumeGain() * (if (duckedForFocus) EFFECTIVE_DUCK_VOLUME else 1f)
 
     private fun fadeToVolume(target: Float, durationMs: Long, onComplete: (() -> Unit)? = null) {
-        // A focus ramp supersedes any resume ramp. Restore the live gate first
-        // so cancelling the latter can never strand playback attenuated.
         if (transientOutputGain != 1f) setTransientOutputGain(1f)
         val from = outputVolume
         val safeTarget = target.coerceIn(0f, 1f)
@@ -1858,9 +1672,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (fraction >= 1f) {
                     fadeInProgress = false
                     onComplete?.invoke()
-                    // Preferences can change during a fade. Its originally
-                    // captured target is stale in that case, so finish at the
-                    // current steady-state gain before touching system volume.
                     setOutputVolume(effectiveVolume())
                     normalizeSystemVolumeForAppControl()
                 } else playbackHandler.postDelayed(this, VOLUME_FADE_STEP_MS)
@@ -1869,11 +1680,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         playbackHandler.post(runnable)
     }
 
-    /**
-     * Ramps AudioTrack's live gain instead of modifying future PCM blocks.
-     * MODE_STREAM retains already-submitted audio while paused, so this is the
-     * only layer where a resume fade covers both retained and new audio.
-     */
     private fun fadeOutputGain(target: Float, durationMs: Long) {
         val from = transientOutputGain
         val safeTarget = target.coerceIn(0f, 1f)
@@ -1893,8 +1699,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 setTransientOutputGain(from + (safeTarget - from) * fraction)
                 if (fraction >= 1f) {
                     fadeInProgress = false
-                    // A preference change during the fade was deliberately
-                    // deferred; settle both gain layers at their current values.
                     setOutputVolume(effectiveVolume())
                     normalizeSystemVolumeForAppControl()
                 } else playbackHandler.postDelayed(this, VOLUME_FADE_STEP_MS)
@@ -1931,9 +1735,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "AudioRoute",
             "action=${event.action} wired=${event.routes.wired} bluetooth=${event.routes.bluetooth} noisy=${event.becomingNoisy}"
         )
-        // Android may restore a different remembered stream index for each
-        // output route. App-controlled mode must not become capped again after
-        // a wired/Bluetooth route switch.
         normalizeSystemVolumeForAppControl()
         val mustPause = safetyPolicy.onRoutesChanged(
             event.routes,
@@ -1943,24 +1744,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (mustPause) {
             handlePrivateRouteLoss(event.action)
         } else if (::queue.isInitialized) {
-            // Route changes are UI state too; publishing does not change playback behavior.
             refreshSnapshot()
             publishSnapshot()
         }
     }
 
-    /**
-     * Pauses without speaker fallback after the private output disappeared.
-     *
-     * [pauseInternal] already builds the snapshot, persists the session and
-     * publishes; passing the message straight through means one DB write, one
-     * RemoteControlClient update and one UI wake per disconnect. Disconnects
-     * arrive in bursts (AUDIO_BECOMING_NOISY, then A2DP CONNECTION_STATE_CHANGED),
-     * so doing this work twice per event was multiplied by every burst.
-     *
-     * [PlaybackSafetyPolicy.onRoutesChanged] has already latched the loss when it
-     * returned true, so it is not latched again here.
-     */
     private fun handlePrivateRouteLoss(action: String) {
         cancelVolumeFade()
         duckedForFocus = false
@@ -1980,6 +1768,24 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 pauseResumeFadeMs = 0
             )
         } else value
+    }
+
+    private fun syncTransition() {
+        if (!::engine.isInitialized || !::queue.isInitialized) return
+        val crossfadeMs = currentPreferences.crossfadeMode.effectiveMs(
+            currentPreferences.crossfadeMs,
+            queue.snapshot().shuffleEnabled
+        )
+        val gapless = currentPreferences.gaplessEnabled
+        if (crossfadeMs == appliedCrossfadeMs && gapless == appliedGapless) return
+        val firstApplication = appliedGapless == null
+        appliedCrossfadeMs = crossfadeMs
+        appliedGapless = gapless
+        engine.configureTransition(gaplessEnabled = gapless, crossfadeMs = crossfadeMs)
+        if (firstApplication) return
+        logger.info("Playback", "transition changed gapless=$gapless crossfadeMs=$crossfadeMs")
+        if (!engine.isTransitioning) clearPreload()
+        revalidatePreload()
     }
 
     private fun syncReplayGain() {
@@ -2032,10 +1838,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             val session = queue.session(positionOverride ?: currentPersistPosition())
             submitPersistence("session persistence") { database.savePlaybackSession(session) }
         } else if (!queuePersistScheduled) {
-            // A queue rewrite deletes and reinserts up to 50k rows; coalescing a burst
-            // of edits into one debounced write keeps eMMC traffic and persistence
-            // latency bounded. Session and queue stay in one atomic save so a session
-            // can never reference an unpersisted queue.
             queuePersistScheduled = true
             playbackHandler.postDelayed(queuePersistRunnable, QUEUE_PERSIST_DEBOUNCE_MS)
         }
@@ -2045,12 +1847,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (!::queue.isInitialized) return
         val items = queue.snapshot().items
         val session = queue.session(currentPersistPosition())
-        // Claimed here, on the playback thread, rather than inside the executor.
-        // Recording it only after the write completed left a window in which
-        // further edits saw "not yet persisted" and scheduled another full
-        // rewrite of the same list — repeating a delete-and-reinsert of up to
-        // MAX_QUEUE_ITEMS rows that the debounce exists to prevent. On failure
-        // the claim is released so the next edit rewrites it for real.
         lastPersistedQueueItems = items
         submitPersistence("atomic queue persistence") {
             runCatching { database.saveQueueState(items, session) }
@@ -2080,16 +1876,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun removeListener(listener: Listener) { listeners -= listener }
 
-    /**
-     * Material update: track/status/route/queue/sleep-timer changes. Pushes the
-     * RemoteControlClient metadata and state, wakes every UI listener, and
-     * refreshes the notification. This is the full path — not for periodic ticks.
-     */
     private fun publishSnapshot() {
         val value = snapshot
-        // Every status change passes through here, so this is the one place the
-        // scanner's back-off needs telling. Progress ticks deliberately do not
-        // publish this way, and cannot change the status.
         libraryRepository.setPlaybackActive(value.status == PlaybackStatus.PLAYING)
         if (::remoteControl.isInitialized) remoteControl.update(value, currentTrack)
         mainHandler.post {
@@ -2098,19 +1886,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    /** Keeps the internal snapshot position current without publishing anything. */
-    /**
-     * Advances only the fields that time changes, without rebuilding the snapshot.
-     *
-     * A full [buildSnapshot] re-reads the queue, the audio route and the DAC state.
-     * Doing that once a second put native audio-server calls on the playback
-     * thread for values that cannot have changed — nothing else varies during a
-     * progress tick, because every path that *does* change queue, route, effects
-     * or track already publishes through the full path itself.
-     *
-     * This matters most when the library scanner is running: extra native calls
-     * would land on the one thread that has to start a crossfade on schedule.
-     */
     private fun updateInternalProgress(position: Long, duration: Long) {
         snapshot = snapshot.copy(
             status = PlaybackStatus.PLAYING,
@@ -2123,22 +1898,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         )
     }
 
-    /**
-     * Delivers a periodic progress tick to bound UI only. When nothing is bound
-     * (screen off), it does no work: no listener wake, no RemoteControlClient
-     * rewrite (its position comes from the position provider), no notification.
-     */
     private fun publishUiProgressIfBound() {
         if (boundClients == 0) return
         val value = snapshot
         mainHandler.post { listeners.forEach { it.onPlaybackChanged(value) } }
     }
 
-    /**
-     * A UI client just bound: pull the live engine position, publish a full
-     * snapshot so the screen is current immediately instead of waiting for the
-     * next background tick, and restore the tighter foreground cadence.
-     */
     private fun refreshProgressForNewClient() {
         if (!::engine.isInitialized) return
         if (snapshot.status == PlaybackStatus.PLAYING && engine.isPlaying()) {
@@ -2148,27 +1913,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             lastPublishedProgressSecond = position / 1_000L
             scheduleProgress()
         }
-        // Full rebuild here, unlike the progress path: a client that has just
-        // bound may have been away while the route or queue changed, and once per
-        // bind is not a cost worth optimising.
         refreshSnapshot()
         publishSnapshot()
     }
 
-    /**
-     * Enters the foreground and records the key describing what was posted.
-     *
-     * The notification and [lastNotificationKey] must move together: the key is
-     * what stops [updateNotificationIfNeeded] from re-posting an identical
-     * notification. Keeping the pair in one place removes the possibility of a
-     * caller updating one without the other.
-     */
     private fun enterForeground() {
         startForeground(NOTIFICATION_ID, createNotification())
         lastNotificationKey = notificationKey()
     }
 
-    /** Leaves the foreground and forgets the posted key. Counterpart of [enterForeground]. */
     private fun leaveForeground() {
         stopForeground(true)
         lastNotificationKey = null
@@ -2201,29 +1954,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    /**
-     * Stops the service once nothing needs it, without discarding a command that
-     * arrived in the meantime.
-     *
-     * [stopSelfResult] with the last delivered start id rather than a bare
-     * `stopSelf()`: a headset press reaches this service as a `startService`, and
-     * a bare stop cannot tell that one arrived between deciding to stop and
-     * stopping. Device logs showed exactly that — the press was dispatched,
-     * `onDestroy` then cleared the playback thread's queue with the resulting
-     * `togglePlaybackInternal` still on it, and the command was silently lost.
-     * That is why the first stem press after the screen went off did nothing and
-     * the second one, which cold-started a fresh service, worked.
-     *
-     * Passing the id makes Android refuse the stop in that case, so the press
-     * survives. A refused stop leaves an idle service running until the next
-     * idle check, which is a far better outcome than a dropped command: paused
-     * playback holds no wake lock.
-     */
     private fun stopSelfIfIdle() {
         if (boundClients != 0 || snapshot.status in ACTIVE_STATUSES || safetyPolicy.hasPendingFocusResume()) return
         val startId = lastStartId
-        // Never started, only bound: there is no id to match, and unbinding
-        // already destroys the service.
         val stopped = if (startId == 0) { stopSelf(); true } else stopSelfResult(startId)
         logger.info("Playback", "idle with no bound clients: startId=$startId stopped=$stopped")
     }
@@ -2245,12 +1978,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         const val EXTRA_MEDIA_KEY_CODE = "com.schulzcode.y2player.extra.MEDIA_KEY_CODE"
         private const val NOTIFICATION_ID = 19
         private const val PROGRESS_INTERVAL_MS = 250L
-        // Screen off with no UI bound: poll every 5 s and persist at most every 10 s.
         private const val BACKGROUND_PROGRESS_INTERVAL_MS = 5_000L
         private const val BACKGROUND_POSITION_PERSIST_INTERVAL_MS = 10_000L
-        // 5 s bounds the position lost to a battery pull / hard crash to the stated
-        // acceptable window (±2–5 s). One WAL row update every 5 s is negligible eMMC
-        // traffic; losing 15 s of a long track on reboot is noticeable.
         private const val POSITION_PERSIST_INTERVAL_MS = 5_000L
         private const val QUEUE_PERSIST_DEBOUNCE_MS = 500L
         private const val SHUTDOWN_TIMEOUT_MS = 2_000L
@@ -2263,12 +1992,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         private const val VOLUME_FADE_STEP_MS = 25L
         private const val ROUTE_LOSS_MESSAGE = "Private audio output disconnected - playback paused"
         private val ACTIVE_STATUSES = setOf(PlaybackStatus.PLAYING, PlaybackStatus.PREPARING)
-        // Hoisted: these were allocated fresh on every evaluation, on paths that
-        // run per key press and per track transition.
-        // PLAYING belongs here: engine state is now published by the engine
-        // thread after the fact, so a play pressed straight after a pause can
-        // still observe PLAYING. All three mean "a usable decoder is loaded",
-        // which is the only question this set answers.
         private val RESUMABLE_ENGINE_STATES = setOf(
             EngineState.READY,
             EngineState.PAUSED,

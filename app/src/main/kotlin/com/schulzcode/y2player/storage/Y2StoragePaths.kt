@@ -6,14 +6,6 @@ import java.io.File
 
 data class StorageRoot(val id: String, val directory: File)
 
-/**
- * Whether a reading taken from the monotonic uptime clock is still usable.
- *
- * Cache timestamps use [UNREAD_UPTIME_MS] until their first real read. Keeping
- * that state out of elapsed-time arithmetic is important: subtracting
- * `Long.MIN_VALUE` overflowed to a negative duration and made the first mount
- * verdict live for the rest of the process.
- */
 internal fun isFreshUptimeReading(nowMs: Long, readAtMs: Long, maxAgeMs: Long): Boolean =
     readAtMs >= 0L &&
         nowMs >= readAtMs &&
@@ -27,16 +19,6 @@ object Y2StoragePaths {
         "sdcard" to listOf("/storage/sdcard1", "/mnt/sdcard2", "/mnt/extSdCard", "/storage/extSdCard")
     )
 
-    /**
-     * The two volume roots, re-probed at most once per [ROOT_CACHE_MS].
-     *
-     * Selecting a root stats every candidate path, and this property is read on
-     * paths that repeat: the device snapshot builds two volumes from it, and the
-     * event log re-resolves its card mirror on every write batch. Caching for
-     * the same short window already used for `/proc/mounts` keeps a mount
-     * transition visible within half a second while removing the repeated
-     * syscalls between them.
-     */
     val roots: List<StorageRoot>
         get() {
             val now = SystemClock.uptimeMillis()
@@ -61,19 +43,6 @@ object Y2StoragePaths {
 
     fun availableRoots(): List<StorageRoot> = roots.filter(::isAvailable)
 
-    /**
-     * Whether the volume behind a stored track is mounted *now*.
-     *
-     * Playback asks this instead of trusting `Track.available`, which only
-     * records what the last scan concluded and can outlive reality — most
-     * visibly after a boot where the card mounted later than the startup grace
-     * period.
-     *
-     * Memoised for the same short window as [roots], because the caller that
-     * matters is the skip-to-next-playable loop: with a removed card that walks
-     * the whole queue, and an uncached answer would stat the volume directory
-     * once per item.
-     */
     @Synchronized
     fun isVolumeMounted(volumeId: String): Boolean {
         val now = SystemClock.uptimeMillis()
@@ -82,18 +51,11 @@ object Y2StoragePaths {
             mountedVolumesReadAt = now
         }
         mountedVolumes[volumeId]?.let { return it }
-        // Reentrant: roots and currentMounts take this same monitor.
         val mounted = roots.firstOrNull { it.id == volumeId }?.let(::isAvailable) == true
         mountedVolumes[volumeId] = mounted
         return mounted
     }
 
-    /**
-     * Drops every answer derived from the platform mount table or storage-root
-     * aliases. Called synchronously for mount broadcasts so playback sees the
-     * transition immediately rather than inheriting the verdict from just
-     * before the broadcast.
-     */
     @Synchronized
     fun invalidateMountCaches() {
         cachedRoots = null
@@ -115,7 +77,7 @@ object Y2StoragePaths {
             val state = Environment.getExternalStorageState()
             if (state == Environment.MEDIA_MOUNTED || state == Environment.MEDIA_MOUNTED_READ_ONLY) return true
         }
-        // Some MTK builds bind-mount storage without exposing the final alias in /proc/mounts.
+        // Some MTK builds bind-mount storage without listing the alias in /proc/mounts.
         return runCatching { directory.listFiles() != null }.getOrDefault(false)
     }
 

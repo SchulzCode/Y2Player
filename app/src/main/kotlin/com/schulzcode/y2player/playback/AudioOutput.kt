@@ -4,18 +4,6 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 
-/**
- * The one description of Y2Player's fixed PCM geometry.
- *
- * Every buffer size, frame count and byte count in the playback path derives
- * from these five values. They were previously restated in three places
- * (`FfmpegPlaybackEngine`, `PcmMixer`, `PcmOutputFormat`), which meant a change
- * to the block size had to be made correctly in all of them.
- *
- * These are compile-time constants rather than a negotiated format because the
- * engine resamples everything to 44.1 kHz stereo packed float32 in native code,
- * then quantizes once to the PCM16 required by the API-19 AudioTrack sink.
- */
 internal object PcmFormat {
     const val SAMPLE_RATE = 44_100
     const val CHANNELS = 2
@@ -39,25 +27,14 @@ internal object PcmFormat {
     }
 }
 
-/** Strict PCM boundary shared by standard and future verified hardware output. */
 internal interface AudioOutput {
     val audioSessionId: Int
     val playedFrames: Long
     val submittedFrames: Long
 
-    /** One-shot description of the negotiated track, logged once at start-up. */
     val configuration: String
 
-    /**
-     * Quantizes [sampleCount] normalized float samples starting at
-     * [offsetSamples] and returns the submitted frame count.
-     *
-     * The offset exists because a decoded block is not always consumed in one
-     * write: a crossfade mixes only as many frames as both sides can supply, so
-     * the longer block is written from where the previous turn stopped.
-     */
     fun write(pcm: FloatArray, offsetSamples: Int, sampleCount: Int): Int
-    /** Live post-buffer gain, applied equally to both output channels. */
     fun setOutputGain(gain: Float)
     fun pause()
     fun resume()
@@ -68,29 +45,11 @@ internal interface AudioOutput {
 
 internal class AudioOutputException(message: String) : Exception(message)
 
-/**
- * The API-19 `AudioTrack.write(short[], int, int)` contract, isolated so the
- * partial-write loop can be exercised without an AudioTrack.
- *
- * [AudioTrackOutput] implements this itself and passes `this` to the loop, so
- * unlike the previous `ShortArrayWriter` lambda nothing is allocated per write.
- */
 internal interface PcmSink {
-    /** Offset, requested count and return value are all measured in PCM16 shorts. */
     fun writeSome(pcm: ShortArray, offsetShorts: Int, shortCount: Int): Int
 }
 
-/** Pure partial-write loop, kept outside AudioTrack so host tests cover it. */
 internal object PcmWriteLoop {
-
-    /**
-     * Writes [decodedShortCount] shorts, retrying short writes.
-     *
-     * A zero return is not back-pressure: MODE_STREAM `write` blocks until the
-     * track has room. It is tolerated a bounded number of times to absorb a
-     * transient report and then treated as a stalled track, so this can neither
-     * spin nor hang.
-     */
     fun writeFully(
         pcm: ShortArray,
         offsetShorts: Int,
@@ -131,19 +90,6 @@ internal object PcmWriteLoop {
     private const val MAX_ZERO_PROGRESS_WRITES = 3
 }
 
-/**
- * The one precision-reduction boundary in the playback pipeline.
- *
- * [samples] is allocated once with the AudioTrack and reused for every write.
- * Conversion retains the caller's offset so the existing partial-write loop
- * keeps exactly the same offset/count contract. Values outside the requested
- * range are not touched.
- *
- * No dither is applied. PCM16-origin values represented as `short / 32768f`
- * round-trip exactly, while higher-precision values use deterministic nearest
- * integer conversion. Non-finite input becomes silence rather than full-scale
- * noise.
- */
 internal class Pcm16StagingBuffer(sampleCapacity: Int) {
     val samples = ShortArray(sampleCapacity)
     var clippedSampleCount = 0L
@@ -202,7 +148,6 @@ internal class Pcm16StagingBuffer(sampleCapacity: Int) {
     }
 }
 
-/** Converts AudioTrack's wrapping unsigned 32-bit head into a monotonic count. */
 internal class PlaybackHeadAccumulator {
     private var initialized = false
     private var previousRaw = 0L
@@ -219,8 +164,6 @@ internal class PlaybackHeadAccumulator {
 
         val delta = (raw - previousRaw) and UINT32_MASK
         previousRaw = raw
-        // A backwards reset is a huge unsigned delta; flush/recreation starts a
-        // new position base instead of pretending billions of frames played.
         if (delta <= MAX_FORWARD_DELTA) accumulated += delta
         return accumulated
     }
@@ -237,14 +180,6 @@ internal class PlaybackHeadAccumulator {
     }
 }
 
-/**
- * API-19-compatible MODE_STREAM output.
- *
- * The track is created once, in the constructor, and never reconfigured. That
- * is what makes [audioSessionId] stable for the life of the engine, which the
- * effects backend depends on: an effect is attached to the session, so silently
- * recreating the track would detach every effect the user had configured.
- */
 @Suppress("DEPRECATION")
 internal class AudioTrackOutput : AudioOutput, PcmSink {
     private var track: AudioTrack?
@@ -293,6 +228,8 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
             "state=${created.state}"
     }
 
+    // The track is created once and never reconfigured. Effects attach to this
+    // session id, so recreating it would silently detach every one.
     override val audioSessionId: Int
         get() = track?.audioSessionId ?: 0
 
@@ -318,8 +255,6 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
             "sampleCount must contain complete PCM frames"
         }
         val staged = pcm16Staging.stage(pcm, offsetSamples, sampleCount)
-        // `this` rather than a lambda: the previous indirection captured a local
-        // and so allocated one object per decoded block, ~11 per second.
         PcmWriteLoop.writeFully(staged, offsetSamples, sampleCount, this)
         val decodedFrameCount = sampleCount / PcmFormat.CHANNELS
         writtenFrames += decodedFrameCount
@@ -365,7 +300,6 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
             try {
                 if (releasing.playState != AudioTrack.PLAYSTATE_STOPPED) releasing.stop()
             } catch (_: IllegalStateException) {
-                // A failed or already-released track still needs release below.
             }
             releasing.release()
         }

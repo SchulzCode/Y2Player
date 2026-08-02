@@ -8,11 +8,6 @@ import org.junit.Test
 import kotlin.math.pow
 
 class Y2PaletteTest {
-    /**
-     * The dark theme is the original design and must not have shifted by a single
-     * bit while being moved out of `Y2UiTheme`. These are the twelve constants as
-     * they were written there, in the negative-hex form `const val` required.
-     */
     @Test fun darkPaletteIsBitIdenticalToTheOriginalConstants() {
         assertEquals(-0x00f5f2ee, Y2Palette.DARK.background)
         assertEquals(-0x00ece7df, Y2Palette.DARK.surface)
@@ -41,17 +36,6 @@ class Y2PaletteTest {
         }
     }
 
-    /**
-     * Every text tone must stay legible on both the page and a focused row.
-     *
-     * The focused row is the harder case and the one that matters, because its fill
-     * is closer to the text than the background is and it is where the user is
-     * looking. Floors are set from what the dark palette already achieves rather
-     * than from a standard, so the light theme cannot ship visibly worse than the
-     * design it mirrors — the light accent and semantic colours had to be darkened
-     * substantially to clear this, since gold, salmon and sage fall below 2:1 on
-     * paper at their original values.
-     */
     @Test fun textTonesAreLegibleOnBothPalettes() {
         listOf("DARK" to Y2Palette.DARK, "LIGHT" to Y2Palette.LIGHT).forEach { (name, p) ->
             textTones(p).forEach { (tone, colour) ->
@@ -66,7 +50,6 @@ class Y2PaletteTest {
         }
     }
 
-    /** A focused row that cannot be told from the page makes the wheel unusable. */
     @Test fun theFocusedRowIsDistinguishableFromTheBackground() {
         listOf("DARK" to Y2Palette.DARK, "LIGHT" to Y2Palette.LIGHT).forEach { (name, p) ->
             assertTrue(
@@ -76,7 +59,6 @@ class Y2PaletteTest {
         }
     }
 
-    /** Light is an inversion, not a tint: the page and the ink swap ends. */
     @Test fun lightInvertsTheTonalLadder() {
         assertTrue(luminance(Y2Palette.LIGHT.background) > luminance(Y2Palette.LIGHT.primaryText))
         assertTrue(luminance(Y2Palette.DARK.background) < luminance(Y2Palette.DARK.primaryText))
@@ -114,9 +96,6 @@ class Y2PaletteTest {
     }
 
     private companion object {
-        // Set from what the two palettes actually measure (dark 6.38/4.06, light
-        // 5.55/3.72), not from a standard, so lightening any tone in either theme
-        // fails here rather than shipping.
         const val MIN_ON_BACKGROUND = 5.0
         const val MIN_ON_FOCUS = 3.5
     }

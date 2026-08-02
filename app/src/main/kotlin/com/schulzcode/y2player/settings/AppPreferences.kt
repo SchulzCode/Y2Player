@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
+import com.schulzcode.y2player.playback.CrossfadeMode
 import com.schulzcode.y2player.playback.ReplayGainMode
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
@@ -14,22 +15,6 @@ import com.schulzcode.y2player.playback.VolumeMode
 class AppPreferences(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 
-    /**
-     * Last read state, held until a write invalidates it.
-     *
-     * Building this reads twenty-two keys and parses the equaliser band string.
-     * Every mutator asked for it twice — once to read the current value, once to
-     * return the new one — so a single volume detent, which the wheel produces
-     * dozens of times per second on Now Playing, cost forty-four keyed reads and
-     * two band-list parses. The store is the source of truth; this only avoids
-     * asking it the same question repeatedly between writes.
-     *
-     * Reads and writes are serialised on this instance. Without that, a write
-     * landing between another thread's read and its cache store would leave the
-     * pre-write value cached indefinitely — the settings screen and the playback
-     * service call in from different threads, so that interleaving is reachable.
-     * The lock is uncontended in practice and guards only in-memory work.
-     */
     private var cached: PlayerPreferencesState? = null
 
     @Synchronized
@@ -43,6 +28,7 @@ class AppPreferences(context: Context) {
         replayGainMode = ReplayGainMode.fromStorage(string(KEY_REPLAY_GAIN_MODE, null)),
         hapticLevel = HapticLevel.fromStorage(string(KEY_HAPTIC_LEVEL, null)),
         keepScreenOnWhilePlaying = boolean(KEY_KEEP_SCREEN_ON, false),
+        extraTrackInfo = boolean(KEY_EXTRA_TRACK_INFO, false),
         lightTheme = boolean(KEY_LIGHT_THEME, false),
         localKeysWhileScreenOff = boolean(KEY_SCREEN_OFF_KEYS, false),
         pauseOnDisconnect = boolean(KEY_PAUSE_ON_DISCONNECT, true),
@@ -50,6 +36,7 @@ class AppPreferences(context: Context) {
         sortOrder = TrackSortOrder.fromStorage(string(KEY_SORT_ORDER, TrackSortOrder.TITLE.storageId)),
         gaplessEnabled = boolean(KEY_GAPLESS, true),
         crossfadeMs = integer(KEY_CROSSFADE, 0).takeIf { it in CROSSFADE_LEVELS } ?: 0,
+        crossfadeMode = CrossfadeMode.fromStorage(string(KEY_CROSSFADE_MODE, null)),
         pauseResumeFadeMs = integer(KEY_PAUSE_FADE, 200).takeIf { it in FADE_LEVELS } ?: 200,
         seekStepMs = integer(KEY_SEEK_STEP, 10_000).takeIf { it in SEEK_LEVELS } ?: 10_000,
         longSeekStepMs = integer(KEY_LONG_SEEK_STEP, 30_000).takeIf { it in LONG_SEEK_LEVELS } ?: 30_000,
@@ -68,6 +55,7 @@ class AppPreferences(context: Context) {
     fun toggleUiSoundEffects() = updateBoolean(KEY_UI_SOUND_EFFECTS, !snapshot().uiSoundEffectsEnabled)
     fun toggleVerboseDiagnostics() = updateBoolean(KEY_VERBOSE_DIAGNOSTICS, !snapshot().verboseDiagnostics)
     fun toggleKeepScreenOn() = updateBoolean(KEY_KEEP_SCREEN_ON, !snapshot().keepScreenOnWhilePlaying)
+    fun toggleExtraTrackInfo() = updateBoolean(KEY_EXTRA_TRACK_INFO, !snapshot().extraTrackInfo)
     fun toggleLightTheme() = updateBoolean(KEY_LIGHT_THEME, !snapshot().lightTheme)
     fun toggleLocalKeysWhileScreenOff() = updateBoolean(KEY_SCREEN_OFF_KEYS, !snapshot().localKeysWhileScreenOff)
     fun togglePauseOnDisconnect() = updateBoolean(KEY_PAUSE_ON_DISCONNECT, !snapshot().pauseOnDisconnect)
@@ -80,7 +68,6 @@ class AppPreferences(context: Context) {
         return commit { putString(KEY_HAPTIC_LEVEL, next.storageId) }
     }
 
-    /** Persists a mode and its transferred in-app level as one atomic edit. */
     fun setVolumeMode(mode: VolumeMode, appLevel: Int): PlayerPreferencesState {
         return commit {
             putString(KEY_VOLUME_MODE, mode.storageId)
@@ -88,10 +75,6 @@ class AppPreferences(context: Context) {
         }
     }
 
-    /**
-     * Moves the in-app level by one step. Returns the unchanged snapshot in
-     * SYSTEM mode so a stray call can never introduce hidden attenuation.
-     */
     fun adjustVolumeLevel(direction: Int): PlayerPreferencesState {
         val current = snapshot()
         if (current.volumeMode != VolumeMode.PERCEPTUAL) return current
@@ -111,6 +94,11 @@ class AppPreferences(context: Context) {
     }
 
     fun cycleCrossfade(): PlayerPreferencesState = cycleInt(KEY_CROSSFADE, CROSSFADE_LEVELS, snapshot().crossfadeMs)
+
+    fun cycleCrossfadeMode(): PlayerPreferencesState {
+        val next = snapshot().crossfadeMode.next()
+        return commit { putString(KEY_CROSSFADE_MODE, next.storageId) }
+    }
     fun cyclePauseFade(): PlayerPreferencesState = cycleInt(KEY_PAUSE_FADE, FADE_LEVELS, snapshot().pauseResumeFadeMs)
     fun cycleSeekStep(): PlayerPreferencesState = cycleInt(KEY_SEEK_STEP, SEEK_LEVELS, snapshot().seekStepMs)
     fun cycleLongSeekStep(): PlayerPreferencesState = cycleInt(KEY_LONG_SEEK_STEP, LONG_SEEK_LEVELS, snapshot().longSeekStepMs)
@@ -125,7 +113,7 @@ class AppPreferences(context: Context) {
         val current = snapshot().equalizerPreset
         val next = when {
             current < 0 -> 0
-            current + 1 >= presetCount -> -1 // Custom bands after the final device preset.
+            current + 1 >= presetCount -> -1
             else -> current + 1
         }
         return commit { putInt(KEY_EQ_PRESET, next) }
@@ -145,7 +133,6 @@ class AppPreferences(context: Context) {
     fun cycleBassStrength(): PlayerPreferencesState = cycleInt(KEY_BASS_STRENGTH, BASS_LEVELS, snapshot().bassStrength)
     fun cycleLoudnessGain(): PlayerPreferencesState = cycleInt(KEY_LOUDNESS_GAIN, LOUDNESS_LEVELS, snapshot().loudnessGainMb)
 
-    /** Set, not cycled: 21 steps is too many to reach by repeated pressing. */
     fun setBalance(balance: Int): PlayerPreferencesState =
         commit { putInt(KEY_BALANCE, AudioBalance.clamp(balance)) }
 
@@ -160,10 +147,6 @@ class AppPreferences(context: Context) {
         return commit { putInt(key, levels[(index + 1) % levels.size]) }
     }
 
-    /**
-     * The single write path. Invalidating here — rather than at each call site —
-     * is what makes the cache safe: a new setter cannot forget to do it.
-     */
     @Synchronized
     private fun commit(block: SharedPreferences.Editor.() -> Unit): PlayerPreferencesState {
         val editor = preferences.edit()
@@ -195,6 +178,7 @@ class AppPreferences(context: Context) {
         private const val KEY_REPLAY_GAIN_MODE = "replay_gain_mode"
         private const val KEY_HAPTIC_LEVEL = "haptic_level"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
+        private const val KEY_EXTRA_TRACK_INFO = "extra_track_info"
         private const val KEY_LIGHT_THEME = "light_theme"
         private const val KEY_SCREEN_OFF_KEYS = "screen_off_keys"
         private const val KEY_PAUSE_ON_DISCONNECT = "pause_on_disconnect"
@@ -202,6 +186,7 @@ class AppPreferences(context: Context) {
         private const val KEY_SORT_ORDER = "sort_order"
         private const val KEY_GAPLESS = "gapless"
         private const val KEY_CROSSFADE = "crossfade_ms"
+        private const val KEY_CROSSFADE_MODE = "crossfade_mode"
         private const val KEY_PAUSE_FADE = "pause_resume_fade_ms"
         private const val KEY_SEEK_STEP = "seek_step_ms"
         private const val KEY_LONG_SEEK_STEP = "long_seek_step_ms"

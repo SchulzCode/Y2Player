@@ -26,9 +26,6 @@ class AudioEffectsController(
     private var lastError: String? = null
 
     init {
-        // Session 0 is the global output mix; attaching effects there (possible when
-        // the AudioTrack engine failed to initialize) would process every app's audio.
-        // Effects are only created for a real, positive session id.
         if (sessionId > 0) {
             appContext.sendBroadcast(Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
                 putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)

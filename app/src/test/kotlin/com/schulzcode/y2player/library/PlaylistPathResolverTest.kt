@@ -27,8 +27,6 @@ class PlaylistPathResolverTest {
                 requireNotNull(parentFile).mkdirs()
                 writeText("audio")
             }
-            // A same-named file beside the playlist must not beat the more specific
-            // Music/album suffix from the exported desktop path.
             File(playlistDirectory, track.name).writeText("wrong audio")
 
             val resolved = PlaylistPathResolver(playlistDirectory).resolve(

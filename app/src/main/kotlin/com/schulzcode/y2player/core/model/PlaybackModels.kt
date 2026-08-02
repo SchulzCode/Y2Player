@@ -2,7 +2,6 @@ package com.schulzcode.y2player.core.model
 
 enum class PlaybackStatus { IDLE, PREPARING, PLAYING, PAUSED, ERROR }
 
-/** Framework-observed media output. UNKNOWN deliberately avoids claiming an unconfirmed route. */
 enum class AudioOutputRoute { WIRED, BLUETOOTH, SPEAKER, NONE, UNKNOWN }
 
 object AudioOutputRouteResolver {
@@ -12,10 +11,6 @@ object AudioOutputRouteResolver {
         status: PlaybackStatus,
         pauseReason: PauseReason
     ): AudioOutputRoute = when {
-        // API 19's legacy wired flag can remain true on the Y2 while AudioPolicy
-        // has moved the music stream to A2DP. A connected A2DP route therefore
-        // takes presentation precedence; the safety policy still consumes both
-        // raw booleans so this does not weaken disconnect handling.
         bluetooth -> AudioOutputRoute.BLUETOOTH
         wired -> AudioOutputRoute.WIRED
         pauseReason == PauseReason.OUTPUT_DISCONNECTED -> AudioOutputRoute.NONE
@@ -62,6 +57,24 @@ enum class RepeatMode(val storageId: String) {
     }
 }
 
+// Codes are written to the history file and read off-device. R8 renames the
+// constants, so the code is the contract, not the name.
+enum class PlaybackExitReason(val code: String) {
+    COMPLETED("completed"),
+    MANUAL_NEXT("manual_next"),
+    MANUAL_PREVIOUS("manual_previous"),
+    MANUAL_SELECT("manual_select"),
+    QUEUE_REPLACED("queue_replaced"),
+    EXPLICIT_STOP("explicit_stop"),
+    QUEUE_END("queue_end"),
+    SLEEP_TIMER("sleep_timer"),
+    SOURCE_REMOVED("source_removed"),
+    ERROR("error"),
+    SERVICE_SHUTDOWN("service_shutdown"),
+    SAFE_MODE("safe_mode"),
+    UNKNOWN("unknown")
+}
+
 enum class SleepTimerMode(val label: String, val durationMs: Long? = null) {
     OFF("Off"),
     MINUTES_15("15 minutes", 15 * 60_000L),
@@ -91,11 +104,6 @@ data class AudioEffectsState(
     val errorMessage: String? = null
 )
 
-/**
- * What the Sound screen and Now Playing warnings need to know about the DAC
- * route — nothing more. Raw inputs (policy sample-rate lists, source format)
- * stay inside DacController, which folds them into [limitation].
- */
 data class DacState(
     val detected: Boolean = false,
     val hiFiRequestAccepted: Boolean = false,

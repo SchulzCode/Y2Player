@@ -1,6 +1,6 @@
 # Y2Player
 
-**Y2Player 2.1 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
+**Y2Player 2.2 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
@@ -19,6 +19,7 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 ## Highlights
 
 - Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
+- Keep your place in **Audiobooks**, which are grouped by folder and resume at the minute you stopped.
 - Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, AIFF/PCM, Ogg Vorbis, and Opus.
 - Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and resume fades.
@@ -29,24 +30,27 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
 
-## Version 2.1
+## Version 2.2
 
-Version 2.1 improves the library scanner and refines the FFmpeg media engine using measurements collected directly on physical Y2 hardware.
+Version 2.2 adds audiobook support and rebuilds the menu structure around the four rows the display shows at once.
 
 The release includes:
 
-- a collation-correct SQLite index that makes the largest measured scanner lookup 98.4% faster on a synthetic 9,178-file library;
-- larger, safe database batches and faster unchanged-library and incremental scans;
-- a 32 KiB/100 ms FFmpeg metadata probe policy validated against 76 fixtures and 1,394 metadata assertions;
-- visible scan progress and a scan-only wake lock that is released as soon as indexing finishes;
-- improved metadata correctness, lazy artwork handling, and portable desktop-playlist path resolution;
-- float32 application DSP with one final PCM16 conversion at the Android 4.4 AudioTrack boundary;
-- decoder cancellation, malformed-packet, short-FLAC seek, notification, and diagnostic fixes;
-- an automated physical-device media regression suite and reproducible secure ADB development image.
+- audiobooks on the main menu, grouped by folder, resuming at the saved position inside a chapter rather than at its start;
+- a chapter list, Start from Beginning, and a confirmed Clear Progress for every book;
+- 47 vector row icons drawn as strokes with no per-frame allocation;
+- a reorganised main menu, Music section, and Settings tree;
+- menus ordered by how often each entry is opened, with reference screens such as About at the bottom;
+- confirmation prompts on all six irreversible actions, including Delete Playlist, Clear History, and Clear Queue;
+- featured artists as their own entries, and albums that no longer lose tracks when browsed by artist;
+- a Shuffle row on album track lists, matching every other collection;
+- a repository-wide comment cleanup verified to leave the compiled behaviour unchanged.
 
-The complete technical release write-up is available in [`docs/Y2PLAYER_V2_1_RELEASE_POST.md`](docs/Y2PLAYER_V2_1_RELEASE_POST.md).
+The complete technical release write-up is available in [`docs/Y2PLAYER_V2_2_RELEASE_POST.md`](docs/Y2PLAYER_V2_2_RELEASE_POST.md).
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete release history. The short [Reddit release post](docs/Y2PLAYER_V2_1_REDDIT_POST.md) is also kept in the repository.
+Version 2.1 improved the library scanner and refined the FFmpeg media engine using measurements collected directly on physical Y2 hardware, including a collation-correct SQLite index that made the largest measured scanner lookup 98.4% faster on a synthetic 9,178-file library.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history. The short [Reddit release post](docs/Y2PLAYER_V2_2_REDDIT_POST.md) is also kept in the repository.
 
 ## Music library and playback
 
@@ -247,7 +251,7 @@ Outputs and verification reports are written to `out\boot-adb\`. This image is f
 5. Fully charge the Y2 before beginning.
 6. Read all remaining steps before opening SP Flash Tool.
 
-If `userdata` was recently reset or flashed, first boot the original firmware and complete the initial Android setup. After setup is complete, shut the device down and flash only the modified `system.img`. Skipping the original setup may leave required device settings uninitialized.
+The current image retains Android's `Provision.apk`, and Y2Player deliberately does not outrank the provisioning activity during a blank-userdata first boot. A device whose `userdata` was previously reset can therefore complete initial provisioning directly with Y2Player installed; booting the stock launcher first is no longer required. For an ordinary upgrade, leave `userdata` untouched and flash only `system.img` as described below.
 
 #### Flashing steps
 
@@ -312,7 +316,9 @@ Do not restore additional partitions unless a verified device-specific recovery 
 
 ### Build the system image yourself
 
-The repository can also build a system-partition-only image from your own matching stock firmware. It replaces the stock launcher with the signed APK at `/system/priv-app/Y2Player.apk`, installs the byte-identical Android 4.4 runtime at `/system/lib/liby2audio.so`, and applies the exact-hash-guarded primary-audio HAL frequency-hook patch described above.
+The repository can also build a minimized, system-partition-only image from your own matching stock firmware. It replaces the stock launcher with the signed APK at `/system/priv-app/Y2Player.apk`, installs the byte-identical Android 4.4 runtime at `/system/lib/liby2audio.so`, applies the exact-hash-guarded primary-audio HAL frequency-hook patch described above, and prunes 35 standalone media, utility, wallpaper, phone-UI, and engineering packages that are not used by the player appliance.
+
+The package policy is intentionally conservative. Provisioning, Settings, SystemUI, Keyguard, storage/media providers, Bluetooth, input, package-management, thermal/battery, and underlying framework services remain in the image. Both the integrator and independent verifier use the same policy: optional APK/ODEX files must be absent, critical APKs must be present, and freed ext4 blocks must be zero before sparse repacking.
 
 Provide:
 
@@ -333,7 +339,7 @@ Build and verify the release APK and replacement system image:
 powershell -ExecutionPolicy Bypass -File .\tools\build-firmware.ps1
 ```
 
-This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report. The verifier reopens the sparse image and checks the embedded APK, native runtime, patched HAL, ext4 structure, partition size, ownership, modes, SELinux labels, uniqueness, and SHA-256 readback.
+This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report. The verifier reopens the sparse image and checks the embedded APK, native runtime, patched HAL, package-pruning policy, retained critical packages, ext4 structure, partition size, ownership, modes, SELinux labels, uniqueness, and SHA-256 readback.
 
 The build script only creates files. It never flashes, pushes, reboots, emits a boot image, or modifies the original firmware inputs.
 

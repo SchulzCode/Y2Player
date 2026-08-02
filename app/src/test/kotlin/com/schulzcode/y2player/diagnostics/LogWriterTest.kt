@@ -7,17 +7,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * The writer is the one piece both logs now depend on, so the properties it has
- * to hold are asserted directly rather than only through [EventLog].
- *
- * Every sink here reports itself urgent. That is not incidental: under the unit
- * test runner `SystemClock.elapsedRealtime()` returns 0, so a non-urgent batch
- * would sit in the full coalescing window and make these tests sleep for
- * seconds. Urgency is exactly the path that must bypass the window anyway.
- */
 class LogWriterTest {
-
     private class RecordingSink(
         private val urgent: Boolean = true,
         private val onDrain: () -> Unit = {}
@@ -53,7 +43,6 @@ class LogWriterTest {
         writer.wake()
 
         assertTrue(drained.await(5, TimeUnit.SECONDS))
-        // Give the writer a moment to do anything further it might wrongly do.
         Thread.sleep(100)
         assertEquals(1, sink.drains.get())
     }
@@ -99,7 +88,6 @@ class LogWriterTest {
                 twoDrains.countDown()
                 if (!wokeAgain) {
                     wokeAgain = true
-                    // Simulates a caller enqueuing while the writer is mid-drain.
                     writer.wake()
                 }
             }

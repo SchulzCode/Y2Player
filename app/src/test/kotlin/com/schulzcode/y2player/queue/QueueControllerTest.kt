@@ -250,12 +250,6 @@ class QueueControllerTest {
         assertNull(queue.nextInCurrentPass())
     }
 
-    /**
-     * The dedicated-player contract: Previous in shuffle walks the *actual* playback
-     * history backwards (A→F→C→M, Previous yields M→C→F→A), and Next afterwards
-     * continues forward through the same order without corrupting the history.
-     * The seeded permutation + cursor model provides exactly this.
-     */
     @Test
     fun shufflePreviousWalksTheActualHistoryAndNextContinuesForward() {
         val queue = QueueController()
@@ -266,23 +260,19 @@ class QueueControllerTest {
                 shuffleEnabled = true, shuffleSeed = 7, playOrder = listOf(3, 0, 2, 4, 1)
             )
         )
-        // Playback history along the shuffle order: 4 → 1 → 3 → 5.
         val played = mutableListOf(queue.currentTrackId()!!)
         repeat(3) { played += queue.next()!! }
         assertEquals(listOf(4L, 1L, 3L, 5L), played)
 
-        // Previous replays the real history backwards, never a new random pick.
         assertEquals(3L, queue.previous())
         assertEquals(1L, queue.previous())
         assertEquals(4L, queue.previous())
 
-        // Next afterwards continues the same order without corrupting the history.
         assertEquals(1L, queue.next())
         assertEquals(3L, queue.next())
         assertEquals(5L, queue.next())
     }
 
-    /** Shuffle must play every track exactly once before the cycle is exhausted. */
     @Test
     fun shufflePlaysEveryTrackOnceBeforeExhaustion() {
         val queue = QueueController()
@@ -301,7 +291,6 @@ class QueueControllerTest {
         assertEquals(8, seen.size)
     }
 
-    /** Shuffle history (not just the order) must survive a persistence round trip. */
     @Test
     fun shuffleHistorySurvivesPersistenceRoundTrip() {
         val queue = QueueController()
@@ -324,7 +313,6 @@ class QueueControllerTest {
         assertEquals(first, restored.previous())
     }
 
-    /** Repeat All + shuffle starts a fresh pass that preload can predict. */
     @Test
     fun repeatAllShuffleStartsFreshPassWithoutImmediateRepeat() {
         val queue = QueueController()
@@ -400,9 +388,8 @@ class QueueControllerTest {
     fun peekNextDoesNotAdvanceAndRespectsRepeatModes() {
         val queue = QueueController(listOf(10, 20), initialIndex = 0)
         assertEquals(20L, queue.peekNext())
-        assertEquals(10L, queue.currentTrackId()) // peek must not move the cursor
+        assertEquals(10L, queue.currentTrackId())
 
-        // End of queue, repeat off: nothing next.
         queue.moveToQueueIndex(1)
         assertNull(queue.peekNext())
     }
@@ -415,5 +402,4 @@ class QueueControllerTest {
         val repeatAll = QueueController(listOf(10, 20), initialIndex = 1, initialRepeatMode = RepeatMode.ALL)
         assertEquals(10L, repeatAll.peekNext())
     }
-
 }

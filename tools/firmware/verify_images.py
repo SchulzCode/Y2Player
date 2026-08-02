@@ -11,6 +11,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sparse
+import system_package_policy as package_policy
 
 APK_PATH = "/priv-app/Y2Player.apk"
 NATIVE_LIBRARY_PATH = "/lib/liby2audio.so"
@@ -97,6 +98,65 @@ def stat_size(output):
     return int(match.group(1)) if match else None
 
 
+def zeroed_free_block_summary(image):
+    """Independently verify that every block marked free by ext4 is zero."""
+    header = subprocess.run(
+        ["dumpe2fs", "-h", image], capture_output=True, text=True
+    )
+    report = subprocess.run(
+        ["dumpe2fs", image], capture_output=True, text=True
+    )
+    if header.returncode != 0 or report.returncode != 0:
+        return False, "dumpe2fs could not enumerate the free-block map"
+
+    values = {}
+    for line in header.stdout.splitlines():
+        match = re.match(r"^(Block count|Free blocks|Block size):\s*(\d+)$", line)
+        if match:
+            values[match.group(1)] = int(match.group(2))
+    if set(values) != {"Block count", "Free blocks", "Block size"}:
+        return False, "dumpe2fs header is missing block-count information"
+
+    ranges = []
+    for line in report.stdout.splitlines():
+        match = re.match(r"^\s+Free blocks:\s*(.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if not value or value == "(none)":
+            continue
+        for token in value.split(","):
+            bounds = token.strip().split("-", 1)
+            start = int(bounds[0])
+            end = int(bounds[-1])
+            if start > end or start < 0 or end >= values["Block count"]:
+                return False, "invalid ext4 free-block range: %s" % token.strip()
+            ranges.append((start, end))
+
+    ranges.sort()
+    for previous, current in zip(ranges, ranges[1:]):
+        if current[0] <= previous[1]:
+            return False, "overlapping ext4 free-block ranges"
+    block_count = sum(end - start + 1 for start, end in ranges)
+    if block_count != values["Free blocks"]:
+        return False, (
+            "free-block map count %d differs from superblock %d"
+            % (block_count, values["Free blocks"])
+        )
+
+    block_size = values["Block size"]
+    with open(image, "rb") as handle:
+        for start, end in ranges:
+            handle.seek(start * block_size)
+            remaining = (end - start + 1) * block_size
+            while remaining:
+                piece = handle.read(min(remaining, 8 << 20))
+                if not piece or piece != b"\x00" * len(piece):
+                    return False, "non-zero data remains in a free ext4 block"
+                remaining -= len(piece)
+    return True, "%d blocks / %d bytes" % (block_count, block_count * block_size)
+
+
 def scatter_sizes(path):
     sizes = {}
     current = None
@@ -172,6 +232,8 @@ def main():
 
         fsck = subprocess.run(["e2fsck", "-fn", raw], capture_output=True, text=True)
         check(fsck.returncode < 4, "ext4 structure is sound (e2fsck -fn exit %d)" % fsck.returncode)
+        free_zeroed, free_summary = zeroed_free_block_summary(raw)
+        check(free_zeroed, "all ext4 free blocks are zero (%s)" % free_summary)
 
         apk_stat = query(raw, "stat %s" % APK_PATH)
         check("Inode" in apk_stat, "%s exists" % APK_PATH)
@@ -256,6 +318,23 @@ def main():
               "stock MyLauncher.apk is absent")
         check("Inode" not in query(raw, "stat %s" % STOCK_LAUNCHER_ODEX),
               "stale MyLauncher.odex is absent")
+        for directory, stem in package_policy.pruned_packages():
+            apk_path, odex_path = package_policy.package_files(directory, stem)
+            check(
+                "Inode" not in query(raw, "stat %s" % apk_path)
+                and "Inode" not in query(raw, "stat %s" % odex_path),
+                "optional package %s and its ODEX are absent" % stem,
+            )
+        check(
+            all(
+                "Inode" not in query(raw, "stat %s" % path)
+                for path in package_policy.PRUNED_SUPPORT_FILES
+            ),
+            "private VideoEditor support libraries are absent",
+        )
+        for path in package_policy.REQUIRED_APKS:
+            check("Inode" in query(raw, "stat %s" % path),
+                  "required package %s is retained" % path)
         listing = query(raw, "ls -p /priv-app")
         check(listing.count("Y2Player.apk") == 1,
               "Y2Player.apk exists exactly once under /system/priv-app")
@@ -271,7 +350,10 @@ def main():
         for problem in problems:
             log("  - %s" % problem)
     else:
-        log("All system-image content, metadata, hash, filesystem, and size checks passed.")
+        log(
+            "All system-image content, package-policy, metadata, hash, "
+            "filesystem, and size checks passed."
+        )
         log("Device boot and stock-UMS behavior still require hardware validation.")
 
     if args.report:

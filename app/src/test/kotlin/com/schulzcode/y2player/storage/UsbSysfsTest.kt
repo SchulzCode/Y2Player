@@ -6,13 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UsbSysfsTest {
-
     @Test fun parsesTheCommaSeparatedKernelForm() {
         assertEquals(setOf("mtp", "adb"), UsbSysfs.parseFunctions("mtp,adb"))
     }
 
     @Test fun toleratesVendorVariationsAndTrailingNewlines() {
-        // Seen in the wild on MTK 4.4: space separation and a trailing newline.
         assertEquals(setOf("mtp", "adb"), UsbSysfs.parseFunctions("mtp adb\n"))
         assertEquals(setOf("mtp"), UsbSysfs.parseFunctions("  MTP  "))
         assertEquals(emptySet<String>(), UsbSysfs.parseFunctions(""))
@@ -25,7 +23,6 @@ class UsbSysfsTest {
         assertTrue("PTP is the same transfer path for our purposes", UsbSysfs.hasMtp(setOf("ptp")))
         assertFalse(UsbSysfs.hasMtp(setOf("adb")))
         assertTrue(UsbSysfs.hasAdb(setOf("mtp", "adb")))
-        // Both spellings exist; the older one is still used by 4.4 MTK kernels.
         assertTrue(UsbSysfs.hasMassStorage(setOf("mass_storage")))
         assertTrue(UsbSysfs.hasMassStorage(setOf("usb_mass_storage")))
         assertFalse(UsbSysfs.hasMassStorage(setOf("mtp", "adb")))
@@ -42,11 +39,6 @@ class UsbSysfsTest {
         assertFalse(UsbSysfs.isConnected(null))
     }
 
-    /**
-     * The common case on this firmware: the nodes are not readable by an
-     * unprivileged app. "No functions listed" and "could not look" are different
-     * facts and must not be conflated in a support log.
-     */
     @Test fun unreadableNodesAreReportedRatherThanGuessed() {
         val state = UsbSysfs.build(
             broadcastConnected = true,
@@ -71,7 +63,6 @@ class UsbSysfsTest {
             rawFunctions = "mtp,adb\n",
             rawState = "CONFIGURED\n"
         )
-        // The broadcast said nothing yet; sysfs supplies the truth.
         assertTrue(state.connected)
         assertTrue(state.configured)
         assertTrue(state.mtp)
@@ -82,7 +73,6 @@ class UsbSysfsTest {
     }
 
     @Test fun massStorageIsReportedIfSomethingElseEnabledIt() {
-        // The app never enables this. Seeing it means another system component did.
         val state = UsbSysfs.build(true, true, true, "mass_storage", "CONFIGURED")
         assertTrue(state.massStorage)
         assertTrue(state.summary().contains("UMS"))

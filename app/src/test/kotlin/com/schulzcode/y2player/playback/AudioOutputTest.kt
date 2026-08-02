@@ -7,9 +7,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** PCM staging, output accounting, gain, balance and crossfade regression tests. */
 class AudioOutputTest {
-
     private class FakeSink(private val chunk: (Int) -> Int) : PcmSink {
         val offsets = mutableListOf<Int>()
         val requests = mutableListOf<Int>()
@@ -20,8 +18,6 @@ class AudioOutputTest {
             return chunk(shortCount)
         }
     }
-
-    // ---- fixed format and native-buffer geometry --------------------------
 
     @Test fun floatAndPcm16GeometryUseExplicitDifferentByteCounts() {
         assertEquals(8, PcmFormat.FLOAT_BYTES_PER_FRAME)
@@ -39,8 +35,6 @@ class AudioOutputTest {
             PcmFormat.floatBytesForFrames(Int.MAX_VALUE)
         }
     }
-
-    // ---- deterministic float-to-PCM16 boundary ----------------------------
 
     @Test fun normalizedValuesAndFullScaleQuantizeDeterministically() {
         val staging = Pcm16StagingBuffer(9)
@@ -109,8 +103,6 @@ class AudioOutputTest {
         assertEquals(Math.round(source[1] * 32_768f).toShort(), output[1])
     }
 
-    // ---- partial writes ----------------------------------------------------
-
     @Test fun partialWritesRetainTheRequestedOffsetWithoutRepeatingSamples() {
         val pcm = ShortArray(12) { it.toShort() }
         val sink = FakeSink { remaining -> minOf(3, remaining) }
@@ -150,8 +142,6 @@ class AudioOutputTest {
         assertEquals(0, sink.requests.size)
     }
 
-    // ---- playback head -----------------------------------------------------
-
     @Test fun playbackHeadAccumulatesAcrossUnsignedWrap() {
         val accumulator = PlaybackHeadAccumulator()
         assertEquals(0xffff_fff0L, accumulator.update(0xffff_fff0L.toInt()))
@@ -168,8 +158,6 @@ class AudioOutputTest {
         assertEquals(NativeErrorCategory.ABORTED, NativeErrorCategory.fromWireValue(4))
         assertEquals(NativeErrorCategory.INTERNAL, NativeErrorCategory.fromWireValue(999))
     }
-
-    // ---- gain, ReplayGain, ducking, fades and balance ----------------------
 
     @Test fun unityGainAtCentreBalanceLeavesEverySampleUntouched() {
         val pcm = floatArrayOf(0.1f, -0.1f, 1.25f, -1.25f)
@@ -238,8 +226,6 @@ class AudioOutputTest {
             PcmGain.apply(FloatArray(4), 0, 3, 0.5f, AudioBalance.CENTRE)
         }
     }
-
-    // ---- crossfade ---------------------------------------------------------
 
     @Test fun equalSizeCrossfadeProgressesLinearlyFromCurrentToNext() {
         assertFloatListEquals(listOf(0.8f, -0.8f), mixOneFrame(transitionFrame = 0))

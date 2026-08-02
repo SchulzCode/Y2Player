@@ -13,25 +13,6 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 
-/**
- * Reports USB gadget state. Reports only — see [UsbState] for why nothing here
- * can switch the device into mass storage mode.
- *
- * ## Why it never polls
- * Every transition the app cares about already arrives as a broadcast:
- * `USB_STATE` for connect/configure, `ACTION_POWER_CONNECTED/DISCONNECTED` and
- * `ACTION_BATTERY_CHANGED` for charging. Polling sysfs on a timer would keep the
- * CPU out of idle on a battery-powered player to learn nothing new. The sysfs
- * nodes are read once per relevant transition, on a worker thread, and only to
- * refine what the broadcast already said. Unchanged battery broadcasts are ignored.
- *
- * ## Why the reads are guarded so heavily
- * The nodes under `/sys/class/android_usb/android0` are frequently unreadable to an
- * unprivileged app on this firmware, and on some units the node exists but
- * blocks. Reads are bounded to [UsbSysfs.MAX_NODE_BYTES], wrapped in
- * `runCatching`, never touch the main thread, and an unreadable node is a
- * reported fact rather than an error.
- */
 class UsbStateMonitor(
     context: Context,
     private val eventLog: EventLog? = null
@@ -53,12 +34,6 @@ class UsbStateMonitor(
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            // ACTION_BATTERY_CHANGED is deliberately not observed here. It fires
-            // every few seconds for voltage and temperature and never changes the
-            // USB picture; the only thing this monitor wanted from it was the
-            // charging flip, which ACTION_POWER_CONNECTED/DISCONNECTED already
-            // delivers as an edge. StorageMonitor owns the battery broadcast for
-            // the whole process, so it is received once rather than twice.
             val decision = when (intent?.action) {
                 ACTION_USB_STATE -> {
                     broadcastConnected = intent.getBooleanExtra(EXTRA_CONNECTED, false)
@@ -107,7 +82,6 @@ class UsbStateMonitor(
         registered = false
     }
 
-    /** Reads sysfs off the main thread and publishes only on an actual change. */
     fun refresh() {
         executor.execute {
             val state = UsbSysfs.build(
@@ -120,7 +94,6 @@ class UsbStateMonitor(
             val previous = latest
             if (state == previous) return@execute
             latest = state
-            // Transitions only: a state that has not changed is not an event.
             eventLog?.info(
                 Sub.USB, Ev.USB_STATE,
                 "connected" to state.connected,
@@ -139,11 +112,6 @@ class UsbStateMonitor(
         }
     }
 
-    /**
-     * Bounded, non-throwing read. Reads at most [UsbSysfs.MAX_NODE_BYTES]: these
-     * are sysfs attributes, so anything longer means the node is not what we
-     * think it is, and reading it wholesale would be a mistake.
-     */
     private fun readNode(path: String): String? = runCatching {
         val file = File(path)
         if (!file.canRead()) return@runCatching null
@@ -153,14 +121,13 @@ class UsbStateMonitor(
     }.getOrNull()
 
     private companion object {
-        // @hide on API 19; the action and extra names are stable across MTK 4.4.
+        // @hide on API 19; the names are stable across MTK 4.4.
         const val ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE"
         const val EXTRA_CONNECTED = "connected"
         const val EXTRA_CONFIGURED = "configured"
     }
 }
 
-/** Pure transition policy kept beside its only Android consumer. */
 internal object UsbRefreshPolicy {
     data class Decision(val charging: Boolean, val refresh: Boolean)
 

@@ -24,8 +24,6 @@ class StableStorageIdsTest {
     fun volumeModeReadsStableAndLegacyValuesAndDefaultsToSystem() {
         assertEquals(VolumeMode.PERCEPTUAL, VolumeMode.fromStorage("perceptual"))
         assertEquals(VolumeMode.PERCEPTUAL, VolumeMode.fromStorage("PERCEPTUAL"))
-        // Unknown or absent must fall back to SYSTEM (the Android music stream),
-        // never to hidden in-app attenuation.
         assertEquals(VolumeMode.SYSTEM, VolumeMode.fromStorage(null))
         assertEquals(VolumeMode.SYSTEM, VolumeMode.fromStorage("renamed-or-invalid"))
     }
@@ -34,7 +32,6 @@ class StableStorageIdsTest {
     fun hapticLevelReadsStableAndLegacyValuesAndDefaultsToOff() {
         assertEquals(HapticLevel.MEDIUM, HapticLevel.fromStorage("medium"))
         assertEquals(HapticLevel.MEDIUM, HapticLevel.fromStorage("MEDIUM"))
-        // Unknown must never restore to a buzzing device.
         assertEquals(HapticLevel.OFF, HapticLevel.fromStorage(null))
         assertEquals(HapticLevel.OFF, HapticLevel.fromStorage("renamed-or-invalid"))
     }

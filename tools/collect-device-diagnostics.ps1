@@ -45,7 +45,6 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-# --------------------------------------------------------------- repo layout
 $RepoRoot = $PSScriptRoot
 while ($RepoRoot -and -not (Test-Path (Join-Path $RepoRoot "gradlew.bat"))) {
     $parent = Split-Path $RepoRoot -Parent
@@ -89,7 +88,6 @@ function Add-Manifest {
     }) | Out-Null
 }
 
-# ------------------------------------------------------------------- adb I/O
 $adbArgs = @()
 if ($Serial) { $adbArgs += @("-s", $Serial) }
 
@@ -185,7 +183,6 @@ function Save-DevicePull {
     }
 }
 
-# =============================================================== preconditions
 Write-Host ""
 Write-Host "Y2 device diagnostics collection" -ForegroundColor Cyan
 Write-Host "Read-only: this script never flashes, reboots, mounts or modifies the device."
@@ -223,7 +220,6 @@ $isRoot = $idOutput -match "uid=0"
 $privilege = if ($isRoot) { " (root)" } else { " (unprivileged)" }
 Write-Log ("adb shell identity: " + $idOutput.Trim() + $privilege)
 
-# ========================================================= device identity
 Write-Host ""
 Write-Host "-- device identity" -ForegroundColor Cyan
 Save-ShellOutput -Command "getprop"    -FileName "getprop.txt"  -Item "system properties" | Out-Null
@@ -232,7 +228,6 @@ Save-ShellOutput -Command "id"         -FileName "adb-id.txt"   -Item "adb shell
 Save-ShellOutput -Command "date"       -FileName "device-date.txt" -Item "device clock"   | Out-Null
 Save-ShellOutput -Command "cat /proc/uptime" -FileName "uptime.txt" -Item "uptime"        | Out-Null
 
-# ============================================================= build identity
 Write-Host ""
 Write-Host "-- build identity" -ForegroundColor Cyan
 Save-ShellOutput -Command "dumpsys package $PackageName" -FileName "dumpsys-package.txt" -Item "package info" | Out-Null
@@ -242,7 +237,6 @@ Save-ShellOutput -Command "grep $PackageName /data/system/packages.list" -FileNa
 
 Save-ShellOutput -Command "getprop ro.build.fingerprint" -FileName "firmware-fingerprint.txt" -Item "firmware fingerprint" | Out-Null
 
-# ========================================================== init and processes
 Write-Host ""
 Write-Host "-- init and process state" -ForegroundColor Cyan
 Save-ShellOutput -Command "ps"    -FileName "ps.txt"    -Item "process list" | Out-Null
@@ -251,7 +245,6 @@ Save-ShellOutput -Command "ps"    -FileName "ps.txt"    -Item "process list" | O
 Save-ShellOutput -Command "ps -Z" -FileName "ps-selinux.txt" -Item "process SELinux contexts" | Out-Null
 Save-ShellOutput -Command "getenforce" -FileName "selinux-enforce.txt" -Item "SELinux mode" | Out-Null
 
-# =================================================================== app logs
 Write-Host ""
 Write-Host "-- application logs" -ForegroundColor Cyan
 # The card mirror is readable without any privilege at all — this is the path
@@ -284,7 +277,6 @@ if ($runAsProbe.ExitCode -eq 0 -and $runAsProbe.StdOut -and $runAsProbe.StdOut -
 # The app's own export directory, if the user ran Export diagnostics.
 Save-DevicePull -RemotePath "/storage/sdcard0/Y2Player/diagnostics/." -LocalDirectory (Join-Path $FilesDir "app-export") -Item "app diagnostic export"
 
-# ============================================================= Android logs
 Write-Host ""
 Write-Host "-- logcat buffers" -ForegroundColor Cyan
 foreach ($buffer in @("main", "system", "events", "radio", "crash")) {
@@ -311,7 +303,6 @@ if ($filtered.StdOut) {
     Add-Manifest -Item "logcat (filtered view)" -Status "COLLECTED" -Path "logs/logcat-filtered.txt"
 }
 
-# ================================================== kernel and boot diagnostics
 Write-Host ""
 Write-Host "-- kernel and boot" -ForegroundColor Cyan
 Save-ShellOutput -Command "dmesg"              -FileName "logs/dmesg.txt"      -Item "kernel ring buffer" | Out-Null
@@ -319,7 +310,6 @@ Save-ShellOutput -Command "dmesg"              -FileName "logs/dmesg.txt"      -
 Save-ShellOutput -Command "cat /proc/last_kmsg" -FileName "logs/last_kmsg.txt" -Item "previous boot kernel log" | Out-Null
 Save-ShellOutput -Command "ls -l /sys/fs/pstore" -FileName "logs/pstore-listing.txt" -Item "pstore records" | Out-Null
 
-# ============================================================ USB diagnostics
 Write-Host ""
 Write-Host "-- USB state" -ForegroundColor Cyan
 Save-ShellOutput -Command "getprop sys.usb.config" -FileName "usb-config.txt" -Item "sys.usb.config" | Out-Null
@@ -342,13 +332,11 @@ Save-ShellOutput -Command "ls -l /dev/socket/vold" -FileName "ls-vold-socket.txt
 # Storage roots only — never a recursive listing of the user's music.
 Save-ShellOutput -Command "ls -l /storage" -FileName "ls-storage.txt" -Item "storage roots" | Out-Null
 
-# ========================================================== power diagnostics
 Write-Host ""
 Write-Host "-- power" -ForegroundColor Cyan
 Save-ShellOutput -Command "dumpsys power"   -FileName "dumpsys-power.txt"   -Item "dumpsys power"   | Out-Null
 Save-ShellOutput -Command "dumpsys battery" -FileName "dumpsys-battery.txt" -Item "dumpsys battery" | Out-Null
 
-# ===================================================================== output
 Write-Host ""
 Write-Host "-- writing manifest" -ForegroundColor Cyan
 

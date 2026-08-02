@@ -31,17 +31,6 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    /**
-     * One loader instance is shared process-wide (see AppContainer): the Now Playing
-     * view and the RemoteControlClient both request the same 256 px decode per track,
-     * so sharing halves the extraction/decode work at every track change. Cache keys
-     * include the target size so differently sized requests can never collide.
-     *
-     * There is no shutdown: the loader lives for the process, and its executor
-     * is a daemon. The previous `closed` flag was checked four times per load
-     * but could never become true, because nothing ever called the method that
-     * set it.
-     */
     fun load(path: String, targetSize: Int, callback: (String, Bitmap?) -> Unit) {
         val safeTargetSize = targetSize.coerceIn(MIN_TARGET_SIZE, MAX_TARGET_SIZE)
         val key = "$path#$safeTargetSize"
@@ -87,14 +76,13 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
             NativeAudio.nativeReadArtwork(path, MAX_EMBEDDED_ART_BYTES)
         }.getOrNull() ?: return null
         if (bytes.size > MAX_EMBEDDED_ART_BYTES) return null
-        val safeTargetSize = targetSize
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
             bounds.outWidth > MAX_IMAGE_DIMENSION || bounds.outHeight > MAX_IMAGE_DIMENSION
         ) return null
         var sample = 1
-        while (bounds.outWidth / sample > safeTargetSize * 2 || bounds.outHeight / sample > safeTargetSize * 2) {
+        while (bounds.outWidth / sample > targetSize * 2 || bounds.outHeight / sample > targetSize * 2) {
             sample *= 2
         }
         return BitmapFactory.decodeByteArray(
@@ -116,5 +104,4 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
         private const val MAX_TARGET_SIZE = 1024
         private const val MAX_IMAGE_DIMENSION = 16_384
     }
-
 }

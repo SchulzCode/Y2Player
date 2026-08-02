@@ -4,34 +4,23 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AudioCodecSupportTest {
-
-    /**
-     * The case the whole verdict exists for: both files are `.m4a`, and only the
-     * AAC one plays on API 19. An extension-based rule cannot tell them apart.
-     */
     @Test fun alacAndAacInTheSameContainerAreSupported() {
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/mp4a-latm", "m4a"))
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/alac", "m4a"))
     }
 
-    /**
-     * Both live in an Ogg container and the build now carries both decoders, so
-     * the container cannot decide and the codec must.
-     */
     @Test fun vorbisAndOpusAreBothPlayableFromAnOggContainer() {
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/vorbis", "ogg"))
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/opus", "ogg"))
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/opus", "opus"))
     }
 
-    /** AIFF: the demuxer is enabled and the big-endian PCM decoders were always built. */
     @Test fun aiffIsSupportedNowThatItsDemuxerIsEnabled() {
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of("audio/aiff", "aiff"))
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of(null, "aiff"))
     }
 
     @Test fun containerNamesAreNotTreatedAsCodecs() {
-        // m4a/mp4 are containers; only the extension fallback may use them.
         assertEquals(CodecSupport.SUPPORTED, AudioCodecSupport.of(null, "m4a"))
         assertEquals(CodecSupport.UNKNOWN, AudioCodecSupport.of("audio/m4a", "m4a"))
     }

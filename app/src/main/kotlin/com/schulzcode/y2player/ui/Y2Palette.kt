@@ -1,18 +1,5 @@
 package com.schulzcode.y2player.ui
 
-/**
- * The twelve colours the renderer draws with, as a swappable set.
- *
- * Separate from [Y2UiTheme] — which keeps the dimensions and type scale — because
- * only the colours change between themes. Held as a value rather than looked up
- * per draw call: [Y2PlayerView] keeps one reference and reads fields off it, so a
- * repaint costs exactly what it did when these were compile-time constants.
- *
- * Written as `0xAARRGGBB.toInt()` rather than the negative-hex form the constants
- * used. That form exists only to satisfy `const val`, which these no longer are,
- * and it is easy to get wrong by hand — `Y2PaletteTest` pins [DARK] against the
- * original literals to prove the transcription was exact.
- */
 data class Y2Palette(
     val background: Int,
     val surface: Int,
@@ -28,7 +15,6 @@ data class Y2Palette(
     val success: Int
 ) {
     companion object {
-        /** The original design, unchanged. Still the default. */
         val DARK = Y2Palette(
             background = 0xFF0A0D12.toInt(),
             surface = 0xFF131821.toInt(),
@@ -44,24 +30,6 @@ data class Y2Palette(
             success = 0xFF77B597.toInt()
         )
 
-        /**
-         * The same design read the other way up.
-         *
-         * The tonal ladder is inverted and the hue families are kept, so the warm
-         * off-white that was the text colour becomes the background and the cool
-         * near-black becomes the text. What could *not* simply be swapped is the
-         * accent and the two semantic colours: gold, salmon and sage are mid-tones
-         * that sit at 9:1, 7:1 and 8:1 against near-black but collapse to under
-         * 2:1 against paper. Each is darkened until it matches what the dark
-         * palette achieves, measured against both the background and a focused
-         * row — the focused row being where the eye actually is, and the harder of
-         * the two because its fill is closer to the text.
-         *
-         * The single accent is kept as one token rather than split into fill and
-         * text variants. A darker gold reads as sepia when used as the progress
-         * fill, which is legible and looks deliberate; splitting it would mean
-         * auditing every one of its uses for a change nobody asked for.
-         */
         val LIGHT = Y2Palette(
             background = 0xFFF4F1EA.toInt(),
             surface = 0xFFE9E4DA.toInt(),

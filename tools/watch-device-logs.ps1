@@ -27,8 +27,14 @@ if ($Serial) { $adbArgs += @("-s", $Serial) }
 $tagSets = @{
     Usb = @("vold:V", "MountService:V", "StorageManager:V", "UsbDeviceManager:V",
         "UsbSettingsManager:V", "MediaProvider:V", "auditd:V", "*:S")
-    App = @("Y2Player:V", "Y2PlayerDb:V", "AndroidRuntime:E", "ActivityManager:E", "*:S")
-    Default = @("Y2Player:V", "Y2PlayerDb:V", "vold:V", "MountService:V",
+    # Y2Player keeps its diagnostics in files, not logcat: the only tags it
+    # actually emits are Y2PlayerDb (database faults) and, in debug builds,
+    # Y2Input (the temporary key probe). Filtering on a "Y2Player" tag returned
+    # an empty view and looked like a broken device.
+    # For app diagnostics use Export Diagnostics, or read
+    # <card>/Y2Player/logs/events.ndjson.
+    App = @("Y2PlayerDb:V", "Y2Input:V", "AndroidRuntime:E", "ActivityManager:E", "*:S")
+    Default = @("Y2PlayerDb:V", "Y2Input:V", "vold:V", "MountService:V",
         "StorageManager:V", "UsbDeviceManager:V", "MediaProvider:V",
         "AndroidRuntime:E", "ActivityManager:E", "auditd:V", "*:S")
 }

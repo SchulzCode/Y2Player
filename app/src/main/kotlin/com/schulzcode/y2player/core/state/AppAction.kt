@@ -9,10 +9,9 @@ sealed interface AppAction {
     data object WheelClockwise : AppAction
     data object WheelCounterClockwise : AppAction
     data object Confirm : AppAction
-    /** Long-press of the center key: contextual options (Now Playing menu, track/queue options). */
     data object ConfirmLong : AppAction
+    data object ShowNowPlaying : AppAction
     data object Back : AppAction
-    /** HOME re-entry: a launcher always returns to its top level. */
     data object NavigateHome : AppAction
     data object Left : AppAction
     data object Right : AppAction
@@ -37,7 +36,12 @@ sealed interface AppAction {
 }
 
 sealed interface AppEffect {
-    data class PlayCollection(val trackIds: List<Long>, val startIndex: Int) : AppEffect
+    data class PlayCollection(
+        val trackIds: List<Long>,
+        val startIndex: Int,
+        val shuffled: Boolean = false,
+        val fromStart: Boolean = false
+    ) : AppEffect
     data class PlayQueueIndex(val index: Int) : AppEffect
     data class RemoveQueueIndex(val index: Int) : AppEffect
     data class MoveQueueItem(val index: Int, val delta: Int) : AppEffect
@@ -53,7 +57,6 @@ sealed interface AppEffect {
     data class AdjustVolume(val direction: Int) : AppEffect
     data class SeekBy(val deltaMs: Long) : AppEffect
     data object RequestLibraryScan : AppEffect
-    /** One-press "just play my music": random start track, shuffle enabled. */
     data object ShuffleAll : AppEffect
     data class ToggleFavorite(val trackId: Long) : AppEffect
     data object CreatePlaylist : AppEffect
@@ -76,6 +79,7 @@ sealed interface AppEffect {
     data object ToggleUiSoundEffects : AppEffect
     data object ToggleVerboseDiagnostics : AppEffect
     data object ToggleKeepScreenOn : AppEffect
+    data object ToggleExtraTrackInfo : AppEffect
     data object ToggleLightTheme : AppEffect
     data object ToggleLocalKeysWhileScreenOff : AppEffect
     data class SetBalance(val balance: Int) : AppEffect
@@ -83,6 +87,7 @@ sealed interface AppEffect {
     data object ToggleResumePosition : AppEffect
     data object ToggleGapless : AppEffect
     data object CycleCrossfade : AppEffect
+    data object CycleCrossfadeMode : AppEffect
     data object CyclePauseFade : AppEffect
     data object CycleSeekStep : AppEffect
     data object CycleLongSeekStep : AppEffect
@@ -100,13 +105,47 @@ sealed interface AppEffect {
     data object CycleLoudnessGain : AppEffect
     data class SetSortOrder(val order: TrackSortOrder) : AppEffect
 
+    data object RefreshPlaybackHistory : AppEffect
+    data object RefreshAudiobooks : AppEffect
+    data class ClearAudiobookProgress(val folderKey: String) : AppEffect
+    data object ClearPlaybackHistory : AppEffect
     data object ExportDiagnostics : AppEffect
     data object ResetLibrary : AppEffect
     data object EnterSafeMode : AppEffect
     data object ExitSafeMode : AppEffect
 
-    /** Escape hatch to the platform Settings app (see docs/PRODUCT_DESIGN.md). */
     data object OpenAndroidSettings : AppEffect
 }
 
 data class Reduction(val state: AppState, val effects: List<AppEffect> = emptyList())
+
+// R8 renames these classes, so simpleName logs as `b0` in release builds.
+val AppAction.code: String get() = when (this) {
+    AppAction.WheelClockwise -> "wheel_clockwise"
+    AppAction.WheelCounterClockwise -> "wheel_counter_clockwise"
+    AppAction.Confirm -> "confirm"
+    AppAction.ConfirmLong -> "confirm_long"
+    AppAction.ShowNowPlaying -> "show_now_playing"
+    AppAction.Back -> "back"
+    AppAction.NavigateHome -> "navigate_home"
+    AppAction.Left -> "left"
+    AppAction.Right -> "right"
+    AppAction.PlayPause -> "play_pause"
+    AppAction.MediaNext -> "media_next"
+    AppAction.MediaPrevious -> "media_previous"
+    AppAction.MediaStop -> "media_stop"
+    AppAction.SeekBackward -> "seek_backward"
+    AppAction.SeekForward -> "seek_forward"
+    AppAction.SeekBackwardLong -> "seek_backward_long"
+    AppAction.SeekForwardLong -> "seek_forward_long"
+    is AppAction.LibraryChanged -> "library_changed"
+    is AppAction.PlaybackChanged -> "playback_changed"
+    is AppAction.DeviceChanged -> "device_changed"
+    is AppAction.BluetoothChanged -> "bluetooth_changed"
+    is AppAction.DisplayChanged -> "display_changed"
+    is AppAction.PreferencesChanged -> "preferences_changed"
+    is AppAction.DiagnosticsChanged -> "diagnostics_changed"
+    is AppAction.SafeModeChanged -> "safe_mode_changed"
+    is AppAction.ShowMessage -> "show_message"
+    is AppAction.SelectIndex -> "select_index"
+}

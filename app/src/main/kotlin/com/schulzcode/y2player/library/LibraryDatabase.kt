@@ -7,6 +7,7 @@ import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.schulzcode.y2player.core.model.AudiobookProgress
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
@@ -14,17 +15,6 @@ import com.schulzcode.y2player.core.model.TrackDraft
 import com.schulzcode.y2player.queue.PersistedPlaybackSession
 import com.schulzcode.y2player.queue.QueueController
 
-/**
- * The one-shot reset that the FFmpeg migration needed.
- *
- * Retained deliberately. A device upgrading from schema 4..8 still has to clear
- * its framework-era verdicts, and `format_probe` still exists at that point —
- * version 10 drops the table afterwards. Removing this to save lines would break
- * exactly those upgrades.
- *
- * Safe to delete once every device that can realistically receive an update has
- * passed schema 9, i.e. once no supported upgrade path starts below it.
- */
 internal object DecoderBackendMigration {
     const val VERSION = 9
     val RESET_STATEMENTS = listOf(
@@ -33,10 +23,24 @@ internal object DecoderBackendMigration {
     )
 }
 
-/** Current schema. See [DecoderBackendMigration] for why 9 is still referenced. */
 internal object LibrarySchema {
-    /** 13 persists comment and complete track/disc numbering. */
-    const val VERSION = 13
+    const val VERSION = 14
+}
+
+// Additive only. Invalidating track metadata here would trigger a full rescan.
+internal object AudiobookProgressMigration {
+    const val VERSION = 14
+    val STATEMENTS = listOf(AudiobookProgressTable.CREATE)
+}
+
+internal object AudiobookProgressTable {
+    const val NAME = "audiobook_progress"
+
+    const val CREATE = "CREATE TABLE IF NOT EXISTS $NAME (" +
+        "folder_key TEXT PRIMARY KEY, " +
+        "track_id INTEGER NOT NULL, " +
+        "position_ms INTEGER NOT NULL, " +
+        "updated_at INTEGER NOT NULL)"
 }
 
 internal object FfmpegMetadataMigration {
@@ -53,8 +57,6 @@ internal object FfmpegMetadataMigration {
         "ALTER TABLE tracks ADD COLUMN replaygain_track_peak REAL",
         "ALTER TABLE tracks ADD COLUMN replaygain_album_db REAL",
         "ALTER TABLE tracks ADD COLUMN replaygain_album_peak REAL",
-        // Fingerprints otherwise make an unchanged library skip the new
-        // FFmpeg extractor forever. A successful read restores the real mtime.
         "UPDATE tracks SET modified_at = -1"
     )
 }
@@ -65,7 +67,6 @@ internal object MetadataCompletenessMigration {
         "ALTER TABLE tracks ADD COLUMN track_total INTEGER",
         "ALTER TABLE tracks ADD COLUMN disc_total INTEGER",
         "ALTER TABLE tracks ADD COLUMN comment TEXT",
-        // Existing fingerprints would otherwise suppress the newly complete read.
         "UPDATE tracks SET modified_at = -1"
     )
 }
@@ -82,15 +83,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     private var writeAheadLoggingRequested = false
 
     init {
-        // WAL gives readers a snapshot without blocking the writer and enables the
-        // read-connection pool on API 19. Without it, a findTrack() issued by the
-        // playback thread for the next transition can stall behind a scan-batch
-        // commit or the post-scan full reload on the single rollback-journal
-        // connection — an audible gap on slow eMMC.
-        // MediaTek's API-19 SQLite pool reproducibly handed the first reader an
-        // empty schema when WAL was enabled before a brand-new database's
-        // onCreate transaction. Existing databases can use WAL immediately. A
-        // new one enables it from ensureOpen(), after schema creation commits.
         if (appContext.getDatabasePath(DATABASE_NAME).isFile) {
             requestWriteAheadLogging()
         }
@@ -108,19 +100,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         createUserLibrary(db)
     }
 
-    /**
-     * Opens or migrates the schema without running a query.
-     *
-     * Android 4.4's WAL connection pool can give the first reader a stale empty
-     * schema when WAL was active during database creation. This background-only
-     * open commits onCreate first, then enables WAL before cached queries run.
-     */
     fun ensureOpen() {
         writableDatabase
         requestWriteAheadLogging()
     }
 
     @Synchronized
+    // Without WAL, MediaTek's API-19 reader pool reproducibly hands a reader a
+    // connection still inside the scanner's write transaction.
     private fun requestWriteAheadLogging() {
         if (writeAheadLoggingRequested) return
         setWriteAheadLoggingEnabled(true)
@@ -174,21 +161,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 version = 7
             }
             if (version < 8) {
-                // Records a decode failure the device actually reported, so a file
-                // the firmware cannot play is only discovered the hard way once.
                 execSQL("ALTER TABLE tracks ADD COLUMN playback_error TEXT")
                 version = 8
             }
             if (version < 9) {
-                // Framework-decoder verdicts and format-probe results describe the old
-                // backend. FFmpeg must get one clean attempt at every readable
-                // file instead of inheriting a stale framework rejection.
                 DecoderBackendMigration.RESET_STATEMENTS.forEach(::execSQL)
                 version = DecoderBackendMigration.VERSION
             }
             if (version < 10) {
-                // The format probe is gone: codec support is fixed by the FFmpeg
-                // configure line, so there is nothing left to record per device.
                 execSQL("DROP TABLE IF EXISTS format_probe")
                 version = 10
             }
@@ -204,16 +184,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 MetadataCompletenessMigration.STATEMENTS.forEach(::execSQL)
                 version = MetadataCompletenessMigration.VERSION
             }
+            if (version < 14) {
+                AudiobookProgressMigration.STATEMENTS.forEach(::execSQL)
+                version = AudiobookProgressMigration.VERSION
+            }
             if (version != newVersion) error("No migration exists from $oldVersion to $newVersion")
         }
     }
 
-    /**
-     * Loads only playable rows: unavailable tracks (removed volume) stay DB-only and
-     * are re-materialized by the next successful scan. Keeping them out of RAM saves
-     * several MB of long-lived Dalvik heap for libraries with a removed SD card.
-     * Uses tracks_available_title_idx for the filtered, pre-sorted walk.
-     */
     fun loadTracks(): List<Track> {
         val stringPool = HashMap<String, String>(256)
         return readableDatabase.query(
@@ -224,16 +202,10 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         }
     }
 
-    /** Total indexed rows including unavailable ones (About screen bookkeeping). */
     fun countTracks(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM tracks", null).use { cursor ->
         if (cursor.moveToFirst()) cursor.getInt(0) else 0
     }
 
-    /**
-     * Single row, so no string pool: pooling exists to share repeated artist and
-     * album strings across a whole library walk, and a one-row map could only
-     * ever hold values already unique to this track.
-     */
     fun findTrack(id: Long): Track? = readableDatabase.query(
         "tracks", TRACK_COLUMNS, "id = ?", arrayOf(id.toString()), null, null, null, "1"
     ).use { cursor -> if (cursor.moveToFirst()) cursor.toTrack(TrackColumns(cursor), null) else null }
@@ -264,9 +236,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         database.beginTransaction()
         profiler?.stop(ScanPhase.DATABASE_BEGIN, beginStarted)
         try {
-            // Unchanged files only need their seen-token refreshed; one statement per
-            // chunk instead of one UPDATE per file removes ~30k statement executions
-            // from every rescan. Chunk size stays far below SQLite's 999-variable cap.
             val unchanged = ArrayList<String>(files.size)
             files.forEach { scanned ->
                 val draft = scanned.changedDraft
@@ -332,14 +301,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         )
     }
 
-    /**
-     * Records that this device could not decode the track, with the reason.
-     *
-     * Only called for failures the framework attributed to the media itself —
-     * see PlaybackFailure. A transient fault such as mediaserver dying must never
-     * land here, or a perfectly good file would be condemned by an unrelated
-     * crash.
-     */
     fun setPlaybackError(trackId: Long, reason: String?) {
         writableDatabase.update(
             "tracks",
@@ -358,8 +319,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         )
     }
 
-
-    /** Stores queue structure and its matching session atomically. */
     fun saveQueueState(trackIds: List<Long>, session: PersistedPlaybackSession) {
         writableDatabase.transaction {
             replaceQueueRows(this, trackIds)
@@ -554,6 +513,56 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         )
     }
 
+    fun saveAudiobookProgress(folderKey: String, trackId: Long, positionMs: Long) {
+        writableDatabase.insertWithOnConflict(
+            AudiobookProgressTable.NAME,
+            null,
+            ContentValues().apply {
+                put("folder_key", folderKey)
+                put("track_id", trackId)
+                put("position_ms", positionMs.coerceAtLeast(0))
+                put("updated_at", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun loadAudiobookProgress(folderKey: String): AudiobookProgress? = readableDatabase.query(
+        AudiobookProgressTable.NAME,
+        arrayOf("folder_key", "track_id", "position_ms", "updated_at"),
+        "folder_key = ?", arrayOf(folderKey), null, null, null, "1"
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        AudiobookProgress(
+            folderKey = cursor.getString(0),
+            trackId = cursor.getLong(1),
+            positionMs = cursor.getLong(2).coerceAtLeast(0),
+            updatedAt = cursor.getLong(3)
+        )
+    }
+
+    fun loadAllAudiobookProgress(): Map<String, AudiobookProgress> = readableDatabase.query(
+        AudiobookProgressTable.NAME,
+        arrayOf("folder_key", "track_id", "position_ms", "updated_at"),
+        null, null, null, null, null
+    ).use { cursor ->
+        val progress = HashMap<String, AudiobookProgress>(cursor.count * 4 / 3 + 1)
+        while (cursor.moveToNext()) {
+            val key = cursor.getString(0) ?: continue
+            progress[key] = AudiobookProgress(
+                folderKey = key,
+                trackId = cursor.getLong(1),
+                positionMs = cursor.getLong(2).coerceAtLeast(0),
+                updatedAt = cursor.getLong(3)
+            )
+        }
+        progress
+    }
+
+    fun deleteAudiobookProgress(folderKey: String) {
+        writableDatabase.delete(AudiobookProgressTable.NAME, "folder_key = ?", arrayOf(folderKey))
+    }
+
     fun loadRecentlyPlayedIds(limit: Int = 100): List<Long> = readableDatabase.query(
         "recently_played", arrayOf("track_id"), null, null, null, null, "last_played DESC", limit.toString()
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) } }
@@ -585,9 +594,9 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
             delete("playback_session", null, null)
             delete("tracks", null, null)
             delete("scan_runs", null, null)
+            delete(AudiobookProgressTable.NAME, null, null)
         }
     }
-
 
     private fun replaceQueueRows(db: SQLiteDatabase, trackIds: List<Long>) {
         db.delete("queue_items", null, null)
@@ -653,9 +662,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         put("last_seen_scan", scanToken)
         put("available", 1)
         putNullable("scan_error", scanError)
-        // A rewritten file gets a clean slate: a re-encode of something that
-        // previously failed to decode deserves another attempt. The exception is a
-        // container the scan could prove is invalid — there is nothing to retry.
         putNullable("playback_error", playbackError)
         putNullable("codec", codec)
         putNullable("container", container)
@@ -679,14 +685,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         }
     }
 
-    /**
-     * Column indices for one cursor, resolved once.
-     *
-     * Resolving them by name inside the row loop meant twenty-one string-keyed
-     * lookups per track: on a 30k-track library that was over half a million
-     * redundant lookups per full load, all of it on the library thread ahead of
-     * the first usable screen.
-     */
     private class TrackColumns(cursor: Cursor) {
         val id = cursor.getColumnIndexOrThrow("id")
         val volumeId = cursor.getColumnIndexOrThrow("volume_id")
@@ -904,7 +902,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         createVolumeRelativePathIndex(db)
     }
 
-    /** Matches the remount/absolute-root-change fallback in [applyScanBatch]. */
     private fun createVolumeRelativePathIndex(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS tracks_volume_relative_nocase_idx " +
@@ -930,6 +927,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE INDEX IF NOT EXISTS playlist_tracks_position_idx ON playlist_tracks(playlist_id, position)")
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS playlists_source_path_idx ON playlists(source_path)")
         db.execSQL("CREATE TABLE IF NOT EXISTS recently_played (track_id INTEGER PRIMARY KEY, last_played INTEGER NOT NULL, play_count INTEGER NOT NULL, FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE)")
+        db.execSQL(AudiobookProgressTable.CREATE)
     }
 
     companion object {
@@ -939,7 +937,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         private const val MAX_PLAY_ORDER_ITEMS = 50_000
         private const val MAX_PLAY_ORDER_CHARS = 300_000
         private const val QUERY_ID_BATCH = 192
-        /** 400 paths + scan token + volume = 402, below SQLite's 999-variable cap. */
         private const val SEEN_UPDATE_CHUNK = 400
         private val TRACK_COLUMNS = arrayOf(
             "id", "volume_id", "absolute_path", "relative_path", "title", "artist", "album", "album_artist",

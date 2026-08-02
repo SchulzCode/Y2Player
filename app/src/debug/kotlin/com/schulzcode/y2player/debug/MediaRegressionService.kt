@@ -25,13 +25,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 
-/**
- * ADB-driven, debug-only media regression runner.
- *
- * The fixture manifest supplies paths and hashes, but never influences actual
- * values. This component calls the same JNI, scanner and database code as the
- * product, then exports raw observations for the independent host comparator.
- */
 class MediaRegressionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -68,8 +61,6 @@ class MediaRegressionService : Service() {
         analyzeUs: Int
     ): JSONObject {
         val app = application as Y2Application
-        // Keep the debug process from launching the ordinary whole-card scan in
-        // response to a mount callback while this isolated corpus run owns the DB.
         app.container.safeModeManager.forceSafeMode()
         app.container.libraryRepository.cancelScan("media regression isolation")
         val manifestFile = File(corpus, "manifest.json")

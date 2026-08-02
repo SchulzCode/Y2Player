@@ -71,7 +71,6 @@ class DisplayController(private val activity: Activity) {
             )
         }.getOrDefault(false)
         return if (persisted) {
-            // Single label owner: ScreenContent renders the same values in the UI.
             Result(true, "Screen timeout set to ${ScreenContent.timeoutLabel(timeoutMs)}")
         } else {
             Result(false, "Unable to change timeout; install Y2Player as a system app with WRITE_SETTINGS")

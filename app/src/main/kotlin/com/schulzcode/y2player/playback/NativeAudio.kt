@@ -3,7 +3,6 @@ package com.schulzcode.y2player.playback
 import com.schulzcode.y2player.library.FfmpegMetadata
 import java.nio.ByteBuffer
 
-/** Minimal JNI surface. FFmpeg types and low-level operations stay in C. */
 internal object NativeAudio {
     init {
         System.loadLibrary("y2audio")
@@ -62,10 +61,6 @@ internal class NativeDecoderException(
     detail: String
 ) : Exception(detail.ifBlank { category.name })
 
-/**
- * Opaque, single-owner decoder handle. Only [requestAbort] may be called from a
- * non-owner thread; its small lock prevents that signal racing with close.
- */
 internal class NativeDecoder : AutoCloseable {
     private val lifecycleLock = Any()
 
@@ -93,10 +88,6 @@ internal class NativeDecoder : AutoCloseable {
         )
     }
 
-    /**
-     * Writes packed 44.1 kHz stereo float32 to [output]. Returns its frame
-     * count, or zero at EOF; never bytes or sample values.
-     */
     fun decode(output: ByteBuffer, frameCapacity: Int): Int {
         require(output.isDirect) { "Native decode requires a direct ByteBuffer" }
         require(frameCapacity > 0) { "frameCapacity must be positive" }
@@ -113,7 +104,6 @@ internal class NativeDecoder : AutoCloseable {
         }
     }
 
-    /** Number of damaged packets skipped during the current decode pass. */
     fun warningCount(): Int = NativeAudio.nativeDecodeWarningCount(requireHandle()).coerceAtLeast(0)
 
     fun requestAbort() {

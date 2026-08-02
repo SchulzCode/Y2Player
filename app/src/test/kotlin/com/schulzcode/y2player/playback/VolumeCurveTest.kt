@@ -5,17 +5,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VolumeCurveTest {
-
     private fun stepDecibels(level: Int): Double =
         20.0 * Math.log10(VolumeCurve.gainForLevel(level).toDouble() / VolumeCurve.gainForLevel(level - 1))
 
     @Test fun levelZeroIsExactDigitalSilence() {
-        // Not "very small" — exactly zero, so mute means silence.
         assertEquals(0f, VolumeCurve.gainForLevel(0), 0f)
     }
 
     @Test fun maximumLevelIsExactlyUnity() {
-        // Exactly 1.0 means no app-level attenuation at full volume.
         assertEquals(1f, VolumeCurve.gainForLevel(VolumeCurve.STEPS), 0f)
     }
 
@@ -32,11 +29,6 @@ class VolumeCurveTest {
         }
     }
 
-    /**
-     * The point of the curve: every audible step is the same perceptual size and
-     * close to the ~1 dB just-noticeable difference. Level 0 is excluded because
-     * it is silence by definition, so the ratio there is undefined.
-     */
     @Test fun everyAudibleStepIsUniformAndNearTheJustNoticeableDifference() {
         val steps = (2..VolumeCurve.STEPS).map(::stepDecibels)
         val smallest = steps.minOrNull()!!
@@ -54,7 +46,6 @@ class VolumeCurveTest {
     }
 
     @Test fun halfTravelIsWellBelowHalfAmplitude() {
-        // Half the fader is half the dB range, i.e. -24 dB, not 0.5 amplitude.
         val half = VolumeCurve.gainForLevel(VolumeCurve.STEPS / 2)
         assertEquals(Math.pow(10.0, VolumeCurve.RANGE_DB / 40.0).toFloat(), half, 1e-4f)
     }
@@ -72,11 +63,6 @@ class VolumeCurveTest {
         assertEquals(50, VolumeCurve.percentForLevel(VolumeCurve.STEPS / 2))
     }
 
-    /**
-     * The gain is multiplied by the duck factor and by the fade/crossfade
-     * fraction before reaching decoded PCM. Composition must stay in range and
-     * must collapse to silence whenever any factor is zero.
-     */
     @Test fun composesWithDuckAndFadeFactors() {
         val duck = 0.2f
         for (level in 0..VolumeCurve.STEPS) {
