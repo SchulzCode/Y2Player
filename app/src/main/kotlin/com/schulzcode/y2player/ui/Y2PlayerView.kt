@@ -126,6 +126,7 @@ class Y2PlayerView(
     private var cachedNowAlbum = ""
     private var cachedNowAlbumFull = ""
     private var cachedNowAlbumWidth = 0f
+    private var cachedNowGenre = ""
     private var cachedTechnicalLine = ""
     private var cachedNowSecondary = ""
     private var cachedNowSecondaryWarning = false
@@ -923,10 +924,16 @@ class Y2PlayerView(
                 drawScrollingText(canvas, cachedNowAlbumFull, colLeft, colRight, y, paint)
             } else canvas.drawText(cachedNowAlbum, colLeft, y, paint)
         }
+        if (cachedNowGenre.isNotEmpty()) {
+            paint.textSize = Y2UiTheme.META_SP * density
+            paint.color = palette.mutedText
+            y += 18f * density
+            canvas.drawText(cachedNowGenre, colLeft, y, paint)
+        }
         if (cachedNowSecondary.isNotEmpty()) {
             paint.textSize = Y2UiTheme.META_SP * density
             paint.color = if (cachedNowSecondaryWarning) palette.warning else palette.mutedText
-            y += 21f * density
+            y += 18f * density
             canvas.drawText(cachedNowSecondary, colLeft, y, paint)
         }
         drawStateBadges(canvas, colLeft + 8f * density, (y + 25f * density).coerceAtMost(barTop - 18f * density), 28f * density)
@@ -1067,11 +1074,20 @@ class Y2PlayerView(
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ALBUM, cachedNowAlbumFull)) {
             drawScrollingText(canvas, cachedNowAlbumFull, 12f * density, width - 12f * density, titleTop + 58f * density, paint)
         } else canvas.drawText(cachedNowAlbum, centerX, titleTop + 58f * density, paint)
+        var metadataY = titleTop + 58f * density
         paint.textSize = Y2UiTheme.META_SP * density
-        paint.color = if (cachedNowSecondaryWarning) palette.warning else palette.mutedText
-        canvas.drawText(cachedNowSecondary, centerX, titleTop + 75f * density, paint)
+        if (cachedNowGenre.isNotEmpty()) {
+            metadataY += 17f * density
+            paint.color = palette.mutedText
+            canvas.drawText(cachedNowGenre, centerX, metadataY, paint)
+        }
+        if (cachedNowSecondary.isNotEmpty()) {
+            metadataY += 17f * density
+            paint.color = if (cachedNowSecondaryWarning) palette.warning else palette.mutedText
+            canvas.drawText(cachedNowSecondary, centerX, metadataY, paint)
+        }
 
-        val barTop = titleTop + 88f * density
+        val barTop = (titleTop + 88f * density).coerceAtLeast(metadataY + 13f * density)
         drawProgressBar(canvas, 20f * density, width - 20f * density, barTop)
         paint.style = Paint.Style.FILL
         paint.textSize = Y2UiTheme.META_SP * density
@@ -1129,21 +1145,6 @@ class Y2PlayerView(
 
     private fun drawStateBadges(canvas: Canvas, startX: Float, centerY: Float, step: Float) {
         var x = startX
-        if (state.playback.shuffleEnabled) {
-            iconPainter.draw(canvas, Y2Icon.SHUFFLE, x, centerY, 15f * density, palette.accent)
-            x += step
-        }
-        if (state.playback.repeatMode != RepeatMode.OFF) {
-            iconPainter.draw(canvas, Y2Icon.REPEAT, x, centerY, 15f * density, palette.accent)
-            if (state.playback.repeatMode == RepeatMode.ONE) {
-                boldPaint.textAlign = Paint.Align.CENTER
-                boldPaint.textSize = Y2UiTheme.META_SP * density
-                boldPaint.color = palette.accent
-                canvas.drawText("1", x, centerY + 2.5f * density, boldPaint)
-                boldPaint.textAlign = Paint.Align.LEFT
-            }
-            x += step
-        }
         if (state.playback.sleepTimerMode != SleepTimerMode.OFF) {
             iconPainter.draw(canvas, Y2Icon.TIMER, x, centerY, 14f * density, palette.accent)
             x += step
@@ -1253,10 +1254,90 @@ class Y2PlayerView(
         paint.textSize = Y2UiTheme.BADGE_SP * density
         paint.color = palette.secondaryText
         canvas.drawText(cachedFooterPosition, width - 10f * density, top + 20f * density, paint)
+        if (state.currentScreen == Screen.NowPlaying) {
+            drawNowPlayingFooterStatuses(canvas, top)
+            return
+        }
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
         paint.color = palette.mutedText
         canvas.drawText(cachedFooterHint, 10f * density, top + 20f * density, paint)
+    }
+
+    private fun drawNowPlayingFooterStatuses(canvas: Canvas, top: Float) {
+        var x = 10f * density
+        x = drawFooterStatus(
+            canvas,
+            x,
+            top,
+            Y2Icon.SHUFFLE,
+            "Shuffle",
+            Y2UiLogic.shuffleStatusLabel(state.playback.shuffleEnabled),
+            state.playback.shuffleEnabled
+        )
+        paint.style = Paint.Style.FILL
+        paint.color = palette.divider
+        canvas.drawRect(x + 8f * density, top + 7f * density, x + 9f * density, top + 23f * density, paint)
+        x = drawFooterStatus(
+            canvas,
+            x + 18f * density,
+            top,
+            Y2Icon.REPEAT,
+            "Repeat",
+            Y2UiLogic.repeatStatusLabel(state.playback.repeatMode),
+            state.playback.repeatMode != RepeatMode.OFF
+        )
+        paint.style = Paint.Style.FILL
+        paint.color = palette.divider
+        canvas.drawRect(x + 8f * density, top + 7f * density, x + 9f * density, top + 23f * density, paint)
+        val transition = Y2UiLogic.transitionPresentation(
+            state.preferences.gaplessEnabled,
+            state.preferences.crossfadeMs,
+            state.preferences.crossfadeMode,
+            state.playback.shuffleEnabled
+        )
+        drawFooterStatus(
+            canvas,
+            x + 18f * density,
+            top,
+            Y2Icon.CROSSFADE,
+            if (width / density < 420f) "Mode" else "Transition",
+            transition.label,
+            transition.active
+        )
+    }
+
+    private fun drawFooterStatus(
+        canvas: Canvas,
+        startX: Float,
+        top: Float,
+        icon: Y2Icon,
+        label: String,
+        value: String,
+        active: Boolean
+    ): Float {
+        val centerY = top + footerHeight * .5f
+        val color = if (active) palette.accent else palette.mutedText
+        iconPainter.draw(canvas, icon, startX + 7f * density, centerY, 14f * density, color)
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.LEFT
+        paint.textSize = Y2UiTheme.BADGE_SP * density
+        paint.color = color
+        val text = "$label  $value"
+        val textX = startX + 19f * density
+        canvas.drawText(text, textX, top + 19f * density, paint)
+        val endX = textX + paint.measureText(text)
+        if (active) {
+            paint.color = palette.accent
+            reusableRectF.set(
+                startX,
+                height - 2f * density,
+                endX,
+                height.toFloat()
+            )
+            canvas.drawRoundRect(reusableRectF, density, density, paint)
+        }
+        return endX
     }
 
     private fun drawStatusMessage(canvas: Canvas) {
@@ -1325,12 +1406,15 @@ class Y2PlayerView(
         cachedNowAlbumFull = albumText
         cachedNowAlbumWidth = paint.measureText(cachedNowAlbumFull)
         cachedNowAlbum = ellipsize(cachedNowAlbumFull, nowWidth, paint)
+        paint.textSize = Y2UiTheme.META_SP * density
+        cachedNowGenre = if (track != null && state.preferences.extraTrackInfo) {
+            ellipsize(Y2UiLogic.genreLine(track.genre), nowWidth, paint)
+        } else ""
         cachedTechnicalLine = if (track == null) "" else Y2UiLogic.technicalLine(
             AudioCodecLabels.label(track.codec, track.extension),
             track.sampleRate,
             track.bitDepth,
-            if (state.preferences.extraTrackInfo) track.bitrate else null,
-            if (state.preferences.extraTrackInfo) track.genre else null
+            if (state.preferences.extraTrackInfo) track.bitrate else null
         )
         cachedDacLabel = Y2UiLogic.dacModeLabel(
             state.preferences.audioQualityMode,
@@ -1483,7 +1567,7 @@ class Y2PlayerView(
 
     private fun updateFooterHint() {
         val hint = when {
-            state.currentScreen == Screen.NowPlaying -> "WHEEL VOLUME · L/R TRACK · HOLD L/R SEEK · HOLD CENTER OPTIONS"
+            state.currentScreen == Screen.NowPlaying -> ""
             state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER + · HOLD CENTER - · L/R TRACK"
             state.currentScreen == Screen.Brightness || state.currentScreen == Screen.ScreenTimeout ||
                 state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY · L/R TRACK"
@@ -1706,6 +1790,17 @@ class Y2PlayerView(
             selected?.let {
                 append(", selected ${it.title}")
                 it.subtitle?.let { subtitle -> append(", $subtitle") }
+            }
+            if (value.currentScreen == Screen.NowPlaying) {
+                append(", shuffle ${Y2UiLogic.shuffleStatusLabel(value.playback.shuffleEnabled)}")
+                append(", repeat ${Y2UiLogic.repeatStatusLabel(value.playback.repeatMode)}")
+                val transition = Y2UiLogic.transitionPresentation(
+                    value.preferences.gaplessEnabled,
+                    value.preferences.crossfadeMs,
+                    value.preferences.crossfadeMode,
+                    value.playback.shuffleEnabled
+                )
+                append(", transition ${transition.label}")
             }
             append(", output ${cachedRoute.label}")
         }

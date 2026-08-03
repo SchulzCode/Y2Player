@@ -5,14 +5,47 @@ import com.schulzcode.y2player.core.model.AudioOutputRouteResolver
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.PauseReason
 import com.schulzcode.y2player.core.model.PlaybackStatus
+import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.ScreenContent
+import com.schulzcode.y2player.playback.CrossfadeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Y2UiLogicTest {
+    @Test fun nowPlayingFooterStatusLabelsCoverEveryPlaybackMode() {
+        assertEquals("Off", Y2UiLogic.shuffleStatusLabel(false))
+        assertEquals("On", Y2UiLogic.shuffleStatusLabel(true))
+        assertEquals("Off", Y2UiLogic.repeatStatusLabel(RepeatMode.OFF))
+        assertEquals("All", Y2UiLogic.repeatStatusLabel(RepeatMode.ALL))
+        assertEquals("One", Y2UiLogic.repeatStatusLabel(RepeatMode.ONE))
+    }
+
+    @Test fun transitionFooterReportsTheEffectiveMode() {
+        assertEquals(
+            TransitionPresentation("Gapless", active = true),
+            Y2UiLogic.transitionPresentation(true, 0, CrossfadeMode.ALWAYS, shuffleEnabled = false)
+        )
+        assertEquals(
+            TransitionPresentation("Fade 3s", active = true),
+            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.ALWAYS, shuffleEnabled = false)
+        )
+        assertEquals(
+            TransitionPresentation("Gapless", active = true),
+            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.WHILE_SHUFFLING, shuffleEnabled = false)
+        )
+        assertEquals(
+            TransitionPresentation("Fade 3s", active = true),
+            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.WHILE_SHUFFLING, shuffleEnabled = true)
+        )
+        assertEquals(
+            TransitionPresentation("Standard", active = false),
+            Y2UiLogic.transitionPresentation(false, 0, CrossfadeMode.ALWAYS, shuffleEnabled = false)
+        )
+    }
+
     @Test fun themeUsesOneReadableAccentOnDarkSurfaces() {
         assertEquals(0xFF0A0D12.toInt(), Y2Palette.DARK.background)
         assertEquals(0xFFD6AC53.toInt(), Y2Palette.DARK.accent)

@@ -18,40 +18,36 @@ class ExtraTrackInfoTest {
     }
 
     @Test
-    fun `extra fields extend the same line`() {
+    fun `format metadata is ordered for quick scanning`() {
         assertEquals(
-            "FLAC · 44.1 kHz · 16-bit · 932 kbps · Classical",
-            Y2UiLogic.technicalLine("FLAC", 44_100, 16, bitrate = 932_000, genre = "Classical")
+            "FLAC · 932 kbps · 44.1 kHz · 16-bit",
+            Y2UiLogic.technicalLine("FLAC", 44_100, 16, bitrate = 932_000)
         )
     }
 
     @Test
     fun `missing extra fields are omitted rather than blank`() {
         assertEquals(
-            "MP3 · 44.1 kHz · 320 kbps",
-            Y2UiLogic.technicalLine("MP3", 44_100, null, bitrate = 320_000, genre = null)
-        )
-        assertEquals(
-            "MP3 · 44.1 kHz · Rock",
-            Y2UiLogic.technicalLine("MP3", 44_100, null, bitrate = null, genre = "Rock")
+            "MP3 · 320 kbps · 44.1 kHz",
+            Y2UiLogic.technicalLine("MP3", 44_100, null, bitrate = 320_000)
         )
     }
 
     @Test
     fun `zero and negative metadata is treated as absent`() {
-        assertEquals("OPUS", Y2UiLogic.technicalLine("OPUS", 0, 0, bitrate = 0, genre = "   "))
-        assertEquals("OPUS", Y2UiLogic.technicalLine("OPUS", -1, -1, bitrate = -1, genre = ""))
+        assertEquals("OPUS", Y2UiLogic.technicalLine("OPUS", 0, 0, bitrate = 0))
+        assertEquals("OPUS", Y2UiLogic.technicalLine("OPUS", -1, -1, bitrate = -1))
     }
 
     @Test
     fun `genre whitespace is trimmed`() {
-        assertEquals("MP3 · Rock", Y2UiLogic.technicalLine("MP3", null, null, genre = "  Rock  "))
+        assertEquals("Rock", Y2UiLogic.genreLine("  Rock  "))
     }
 
     @Test
     fun `unicode and CJK genres survive intact`() {
-        assertEquals("FLAC · 邦楽", Y2UiLogic.technicalLine("FLAC", null, null, genre = "邦楽"))
-        assertEquals("FLAC · Café", Y2UiLogic.technicalLine("FLAC", null, null, genre = "Café"))
+        assertEquals("邦楽", Y2UiLogic.genreLine("邦楽"))
+        assertEquals("Café", Y2UiLogic.genreLine("Café"))
     }
 
     @Test

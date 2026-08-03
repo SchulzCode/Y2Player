@@ -2,6 +2,9 @@ package com.schulzcode.y2player.ui
 
 import com.schulzcode.y2player.core.model.AudioOutputRoute
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.RepeatMode
+import com.schulzcode.y2player.playback.CrossfadeMode
+import java.util.Locale
 
 enum class RowVisualState { FOCUSED, FOCUSED_ACTIVE, ACTIVE, NORMAL, UNAVAILABLE }
 enum class ArtworkVisual { EMBEDDED, FALLBACK }
@@ -11,6 +14,7 @@ enum class RouteIcon { HEADPHONES, BLUETOOTH, SPEAKER, DISCONNECTED, UNKNOWN }
 enum class PlayerLayout { WIDE, TALL }
 
 data class RoutePresentation(val label: String, val icon: RouteIcon, val warning: Boolean = false)
+data class TransitionPresentation(val label: String, val active: Boolean)
 
 object Y2UiLogic {
     private val wiredRoute = RoutePresentation("Wired", RouteIcon.HEADPHONES)
@@ -91,18 +95,18 @@ object Y2UiLogic {
         codec: String,
         sampleRate: Int?,
         bitDepth: Int?,
-        bitrate: Long? = null,
-        genre: String? = null
+        bitrate: Long? = null
     ): String {
-        val parts = ArrayList<String>(5)
+        val parts = ArrayList<String>(4)
         parts += codec
+        bitrate?.takeIf { it > 0 }?.let { parts += "${(it + 500) / 1000} kbps" }
         sampleRate?.takeIf { it > 0 }
             ?.let { parts += if (it % 1000 == 0) "${it / 1000} kHz" else "${it / 1000.0} kHz" }
         bitDepth?.takeIf { it > 0 }?.let { parts += "$it-bit" }
-        bitrate?.takeIf { it > 0 }?.let { parts += "${(it + 500) / 1000} kbps" }
-        genre?.trim()?.takeIf { it.isNotEmpty() }?.let { parts += it }
         return parts.joinToString(" · ")
     }
+
+    fun genreLine(genre: String?): String = genre?.trim().orEmpty()
 
     // Now Playing reuses the same three cached lines for both media types: the
     // title slot carries the chapter, the artist slot the book, the album slot the
@@ -120,6 +124,37 @@ object Y2UiLogic {
         if (album.isEmpty()) return ""
         val validYear = year?.takeIf { it > 0 }
         return if (includeYear && validYear != null) "$album ($validYear)" else album
+    }
+
+    fun shuffleStatusLabel(enabled: Boolean): String = if (enabled) "On" else "Off"
+
+    fun repeatStatusLabel(mode: RepeatMode): String = when (mode) {
+        RepeatMode.OFF -> "Off"
+        RepeatMode.ALL -> "All"
+        RepeatMode.ONE -> "One"
+    }
+
+    fun transitionPresentation(
+        gaplessEnabled: Boolean,
+        crossfadeMs: Int,
+        crossfadeMode: CrossfadeMode,
+        shuffleEnabled: Boolean
+    ): TransitionPresentation {
+        val effectiveCrossfadeMs = crossfadeMode.effectiveMs(crossfadeMs, shuffleEnabled)
+        return when {
+            effectiveCrossfadeMs > 0 -> TransitionPresentation(
+                "Fade ${secondsLabel(effectiveCrossfadeMs)}",
+                active = true
+            )
+            gaplessEnabled -> TransitionPresentation("Gapless", active = true)
+            else -> TransitionPresentation("Standard", active = false)
+        }
+    }
+
+    private fun secondsLabel(milliseconds: Long): String = if (milliseconds % 1000L == 0L) {
+        "${milliseconds / 1000L}s"
+    } else {
+        String.format(Locale.US, "%.1fs", milliseconds / 1000.0)
     }
 
     fun artworkVisual(hasArtwork: Boolean): ArtworkVisual = if (hasArtwork) ArtworkVisual.EMBEDDED else ArtworkVisual.FALLBACK
