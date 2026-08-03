@@ -65,6 +65,18 @@ class DecoderBackendMigrationTest {
         assertTrue(reset.contains("AudiobookProgressTable.NAME"))
     }
 
+    @Test fun libraryResetWaitsForScannerAndQueuedStateWrites() {
+        val source = java.io.File(
+            repositoryRoot(),
+            "app/src/main/kotlin/com/schulzcode/y2player/library/LibraryRepository.kt"
+        ).readText()
+        val reset = source.substringAfter("fun resetLibrary(").substringBefore("\n    fun findTrack")
+
+        assertTrue(reset.indexOf("scanExecutor.execute") < reset.indexOf("stateExecutor.execute"))
+        assertTrue(reset.indexOf("stateExecutor.execute") < reset.indexOf("database.resetLibrary()"))
+        assertTrue(reset.indexOf("database.resetLibrary()") < reset.indexOf("scan(ScanReason.MANUAL)"))
+    }
+
     @Test fun freshInstallCreatesTheAudiobookTable() {
         val source = java.io.File(repositoryRoot(), "app/src/main/kotlin/com/schulzcode/y2player/library/LibraryDatabase.kt")
             .readText()

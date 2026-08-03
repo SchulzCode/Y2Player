@@ -210,6 +210,7 @@ class Y2Application : Application() {
         runCatching { unregisterReceiver(bluetoothOwnershipReceiver) }
         mainHandler.removeCallbacks(mediaButtonReassert)
         container.bluetoothControllerOrNull()?.stop()
+        container.hapticControllerOrNull()?.release()
         super.onTerminate()
     }
 

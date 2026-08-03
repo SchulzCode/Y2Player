@@ -6,8 +6,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 
 sealed interface AppAction {
-    data object WheelClockwise : AppAction
-    data object WheelCounterClockwise : AppAction
+    data class WheelMoved(val delta: Int) : AppAction
     data object Confirm : AppAction
     data object ConfirmLong : AppAction
     data object ShowNowPlaying : AppAction
@@ -96,6 +95,7 @@ sealed interface AppEffect {
     data object CycleVolumeMode : AppEffect
     data object CycleReplayGain : AppEffect
     data object CycleHapticLevel : AppEffect
+    data object ToggleWrapLists : AppEffect
     data object CycleSleepTimer : AppEffect
     data object CycleAudioQuality : AppEffect
     data object ToggleAudioEffects : AppEffect
@@ -121,8 +121,7 @@ data class Reduction(val state: AppState, val effects: List<AppEffect> = emptyLi
 
 // R8 renames these classes, so simpleName logs as `b0` in release builds.
 val AppAction.code: String get() = when (this) {
-    AppAction.WheelClockwise -> "wheel_clockwise"
-    AppAction.WheelCounterClockwise -> "wheel_counter_clockwise"
+    is AppAction.WheelMoved -> if (delta >= 0) "wheel_clockwise" else "wheel_counter_clockwise"
     AppAction.Confirm -> "confirm"
     AppAction.ConfirmLong -> "confirm_long"
     AppAction.ShowNowPlaying -> "show_now_playing"

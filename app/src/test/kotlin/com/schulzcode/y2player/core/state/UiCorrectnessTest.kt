@@ -7,7 +7,6 @@ import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -43,81 +42,39 @@ class UiCorrectnessTest {
 
     private fun keys(state: AppState) = ScreenContent.rows(state).map { (it as ScreenRow.Action).key }
 
-    // ---- the context row follows the session, not the metadata --------------------
+    // ---- main-menu playback shortcuts ---------------------------------------------
 
-    @Test fun `a wiped library does not turn Now Playing back into Shuffle All`() {
+    @Test fun `a live session has no duplicate Now Playing row`() {
         val state = AppState(library = LibraryState(), playback = playing)
         assertEquals(
-            "playback is live, so the row must still reach it",
-            listOf("music", "audiobooks", "now_playing", "settings"),
+            listOf("music", "audiobooks", "settings"),
             keys(state)
         )
     }
 
-    @Test fun `an unresolvable current track still gets a useful subtitle`() {
-        val state = AppState(library = LibraryState(), playback = playing)
-        val row = ScreenContent.rows(state)[2] as ScreenRow.Action
-        assertEquals("Now Playing", row.title)
-        assertNotNull(row.subtitle)
-        assertFalse(row.subtitle.orEmpty().isBlank())
-    }
-
-    @Test fun `Confirm on the context row cannot destroy a live session`() {
-        val state = AppState(library = LibraryState(), playback = playing)
-        val result = AppReducer.reduce(
-            state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu, 2))),
-            AppAction.Confirm
-        )
-        assertEquals(Screen.NowPlaying, result.state.currentScreen)
-        assertTrue("must not shuffle over the running queue", result.effects.isEmpty())
-    }
-
-    @Test fun `the row reverts to Shuffle All only when the session really ends`() {
+    @Test fun `Shuffle All is present only when the session has ended`() {
         val stopped = AppState(library = LibraryState(tracks = listOf(track)), playback = PlaybackSnapshot())
         assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(stopped))
     }
 
-    @Test fun `the context row keeps its slot so the selected index stays meaningful`() {
-        val idle = AppState(library = LibraryState(tracks = listOf(track)))
-        val live = idle.copy(playback = playing)
-        assertEquals(ScreenContent.rows(idle).size, ScreenContent.rows(live).size)
-        assertEquals(2, keys(idle).indexOf("shuffle_all"))
-        assertEquals(2, keys(live).indexOf("now_playing"))
-    }
-
-    @Test fun `a restored queue with no loaded track is still a session`() {
+    @Test fun `a restored queue has neither Shuffle All nor a duplicate Now Playing row`() {
         val restored = AppState(
             library = LibraryState(tracks = listOf(track)),
             playback = PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
         )
         assertEquals(
-            "a queue without a loaded track must not offer Shuffle All",
-            listOf("music", "audiobooks", "now_playing", "settings"),
+            listOf("music", "audiobooks", "settings"),
             keys(restored)
         )
     }
 
-    @Test fun `Confirm on a restored queue starts it instead of shuffling it away`() {
-        val restored = AppState(
-            screenStack = listOf(ScreenEntry(Screen.MainMenu, 2)),
-            library = LibraryState(tracks = listOf(track)),
-            playback = PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
-        )
-        val result = AppReducer.reduce(restored, AppAction.Confirm)
-        assertEquals(Screen.NowPlaying, result.state.currentScreen)
-        assertEquals(AppEffect.PlayQueueIndex(0), result.effects.single())
-        assertTrue(
-            "the restored queue must survive",
-            result.effects.none { it == AppEffect.ShuffleAll }
-        )
-    }
-
-    @Test fun `Shuffle All appears only when there is genuinely nothing loaded`() {
+    @Test fun `Settings selection survives removal of the idle Shuffle All row`() {
         val idle = AppState(
-            library = LibraryState(tracks = listOf(track)),
-            playback = PlaybackSnapshot()
+            screenStack = listOf(ScreenEntry(Screen.MainMenu, 3)),
+            library = LibraryState(tracks = listOf(track))
         )
-        assertTrue("shuffle_all" in keys(idle))
+        val live = AppReducer.reduce(idle, AppAction.PlaybackChanged(playing)).state
+        assertEquals("settings", keys(live)[live.selectedIndex])
     }
 
     @Test fun `long Play reaches Now Playing for a restored queue`() {

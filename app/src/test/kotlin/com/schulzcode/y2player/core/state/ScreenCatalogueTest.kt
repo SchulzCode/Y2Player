@@ -114,18 +114,15 @@ class ScreenCatalogueTest {
         }
     }
 
-    @Test fun `Right and long Confirm agree everywhere`() {
+    @Test fun `Left and Right are media controls on every screen`() {
         ScreenCatalogue.all().forEach { screen ->
-            if (screen == Screen.NowPlaying) return@forEach
             val state = bare(screen).copy(library = LibraryState())
             val right = AppReducer.reduce(state, AppAction.Right)
-            val longConfirm = AppReducer.reduce(state, AppAction.ConfirmLong)
-            assertEquals(
-                "${screen.code}: long Confirm must match Right",
-                right.state.screenStack.map { it.screen },
-                longConfirm.state.screenStack.map { it.screen }
-            )
-            assertEquals("${screen.code}: long Confirm effects differ", right.effects, longConfirm.effects)
+            val left = AppReducer.reduce(state, AppAction.Left)
+            assertEquals("${screen.code}: Right navigated", state.screenStack, right.state.screenStack)
+            assertEquals("${screen.code}: Right did not skip", AppEffect.NextTrack, right.effects.single())
+            assertEquals("${screen.code}: Left navigated", state.screenStack, left.state.screenStack)
+            assertEquals("${screen.code}: Left did not skip", AppEffect.PreviousTrack, left.effects.single())
         }
     }
 

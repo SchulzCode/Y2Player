@@ -19,7 +19,7 @@ class Y2RowIconsTest {
         "effects_toggle", "eq_bands", "eq_preset", "equalizer",
         "extra_track_info", "favorites", "folders", "haptics",
         "history_clear", "interface", "keep_screen_on", "library_settings",
-        "long_seek_step", "loudness", "music", "now_playing",
+        "long_seek_step", "loudness", "music",
         "output", "pause_disconnect", "playback_history", "playback_interruptions",
         "playback_seeking", "playback_transitions", "playback_volume", "playlist_create",
         "playlist_create_and_add", "playlist_export_m3u", "playlist_import_m3u", "playlists",
@@ -141,12 +141,22 @@ class Y2RowIconsTest {
     @Test
     fun `playing is visually distinct from play`() {
         assertNotEquals(Y2Icon.PLAY, Y2Icon.PLAYING)
-        assertEquals(Y2Icon.PLAYING, Y2RowIcons.forActionKey("now_playing"))
+    }
+
+    @Test
+    fun `favorite actions use a filled heart while active`() {
+        val row = com.schulzcode.y2player.core.state.ScreenRow.Action(
+            "Favorite",
+            "On",
+            "track_favorite:1"
+        )
+        assertEquals(Y2Icon.FAVORITE, Y2RowIcons.forRow(row, Screen.TrackOptions(1), null, active = false))
+        assertEquals(Y2Icon.FAVORITE_FILLED, Y2RowIcons.forRow(row, Screen.TrackOptions(1), null, active = true))
     }
 
     @Test
     fun `main menu rows are all visually distinct`() {
-        val icons = listOf("music", "audiobooks", "now_playing", "shuffle_all", "settings")
+        val icons = listOf("music", "audiobooks", "shuffle_all", "settings")
             .map(Y2RowIcons::forActionKey)
         assertEquals("main menu icons must be unique", icons.size, icons.toSet().size)
     }

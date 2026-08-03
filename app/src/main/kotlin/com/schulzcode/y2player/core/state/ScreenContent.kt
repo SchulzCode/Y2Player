@@ -212,23 +212,15 @@ object ScreenContent {
         else -> false
     }
 
-    private fun mainMenuRows(state: AppState): List<ScreenRow> = listOf(
-        ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"),
-        ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"),
-        nowPlayingOrShuffleRow(state),
-        ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings")
-    )
-
-    private fun nowPlayingOrShuffleRow(state: AppState): ScreenRow {
-        // A queue counts as a session even before a track loads. Keying this on the
-        // track alone offered Shuffle All over a restored queue, and Confirm replaced it.
-        val currentId = state.playback.currentTrackId
-        if (currentId == null && state.playback.queue.isEmpty()) {
-            return ScreenRow.Action("Shuffle All", "Every track in random order", "shuffle_all")
+    private fun mainMenuRows(state: AppState): List<ScreenRow> = buildList {
+        add(ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"))
+        add(ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"))
+        // Do not offer a destructive Shuffle All shortcut over a live or restored
+        // session. Now Playing remains available through the playback panel.
+        if (state.playback.currentTrackId == null && state.playback.queue.isEmpty()) {
+            add(ScreenRow.Action("Shuffle All", "Every track in random order", "shuffle_all"))
         }
-        val track = currentId?.let(state.library.byId::get)
-        val subtitle = if (track != null) "${track.title} · ${track.displayArtist}" else queuePositionLabel(state)
-        return ScreenRow.Action("Now Playing", subtitle, "now_playing")
+        add(ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings"))
     }
 
     private fun musicRows(state: AppState): List<ScreenRow> = listOf(
@@ -303,7 +295,7 @@ object ScreenContent {
         val saved = state.library.audiobookProgress
         val entries = ArrayList<AudiobookEntry>(groups.size)
         groups.forEach { (key, tracks) ->
-            val ordered = albumSorted(tracks)
+            val ordered = audiobookSorted(tracks)
             var total = 0L
             var everyDurationKnown = true
             ordered.forEach { chapter ->
@@ -368,10 +360,7 @@ object ScreenContent {
     private fun playlistTrackRows(state: AppState, screen: Screen.PlaylistTracks): List<ScreenRow> = buildList {
         val tracks = state.library.playlistTrackIds[screen.playlistId].orEmpty().mapNotNull(state.library.byId::get)
         if (tracks.isEmpty()) add(ScreenRow.Group("Playlist is empty", "Add tracks from Track Options", "playlist_empty"))
-        else {
-            add(shuffleCollectionRow(tracks.size))
-            tracks.forEach { add(ScreenRow.TrackRow(it)) }
-        }
+        else collectionRows(tracks).forEach(::add)
         add(ScreenRow.Action("Delete Playlist", "Removes this playlist, not its music", "playlist_delete:${screen.playlistId}"))
     }
 
@@ -556,12 +545,7 @@ object ScreenContent {
 
     private fun interfaceRows(state: AppState): List<ScreenRow> = listOf(
         ScreenRow.Action("Display", "${state.display.brightnessPercent}% · ${timeoutLabel(state.display.screenTimeoutMs)}", "display"),
-        ScreenRow.Action("Controls", controlsSummary(state), "controls"),
-        ScreenRow.Action(
-            "Technical Details",
-            if (state.preferences.extraTrackInfo) "On · codec, bitrate and genre on Now Playing" else "Off",
-            "extra_track_info"
-        )
+        ScreenRow.Action("Controls", controlsSummary(state), "controls")
     )
 
     private fun librarySettingsRows(state: AppState): List<ScreenRow> = listOf(
@@ -680,7 +664,7 @@ object ScreenContent {
             ?: "Preset ${state.preferences.equalizerPreset + 1}"
         return listOf(
             ScreenRow.Action("Preset", preset, "eq_preset"),
-            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · use left/right", "eq_bands")
+            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · center adjusts", "eq_bands")
         )
     }
 
@@ -824,8 +808,16 @@ object ScreenContent {
     private fun controlsRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Seeking", seekingSummary(state), "playback_seeking"))
         if (state.device.hapticsAvailable) {
-            add(ScreenRow.Action("Wheel Haptics", hapticLabel(state.preferences.hapticLevel), "haptics"))
+            add(ScreenRow.Action("Haptics", hapticLabel(state.preferences.hapticLevel), "haptics"))
         }
+        add(
+            ScreenRow.Action(
+                "Wrap Lists",
+                if (state.preferences.wrapLists) "Continue from bottom to top"
+                else "Stop at the first and last item",
+                "wrap_lists"
+            )
+        )
         add(
             ScreenRow.Action(
                 "Wheel When Screen Off",
@@ -850,6 +842,7 @@ object ScreenContent {
         if (state.device.hapticsAvailable) {
             add("Haptics ${if (state.preferences.hapticLevel == HapticLevel.OFF) "off" else state.preferences.hapticLevel.label.lowercase(Locale.US)}")
         }
+        if (!state.preferences.wrapLists) add("bounded lists")
         add("Sounds ${if (state.preferences.uiSoundEffectsEnabled) "on" else "off"}")
         if (state.preferences.localKeysWhileScreenOff) add("screen-off wheel")
     }.joinToString(" · ")
@@ -970,7 +963,7 @@ object ScreenContent {
                 .forEach { (album, count) ->
                     // A guest appearance names whose album it is; an own album counts tracks.
                     val owner = owners[album]
-                    val subtitle = if (owner != null && owner != artist) owner else trackCountLabel(count)
+                    val subtitle = if (owner != null && !owner.equals(artist, ignoreCase = true)) owner else trackCountLabel(count)
                     add(ScreenRow.Group(album, subtitle, album))
                 }
         }
@@ -980,27 +973,39 @@ object ScreenContent {
         // Only a name that performs somewhere earns a row, so an album artist of
         // "Various Artists" never becomes an artist. The counts then have to match
         // what the artist screen lists, which includes tracks joined by album artist.
-        val performers = HashSet<String>()
+        val performers = LinkedHashMap<String, String>()
         tracks.forEach { track ->
-            performers += track.primaryArtist
-            track.featuredArtist?.let { performers += it }
+            val primary = track.primaryArtist
+            val primaryKey = artistKey(primary)
+            if (!isSyntheticArtist(primary) && primaryKey !in performers) performers[primaryKey] = primary
+            track.featuredArtist?.let { guest ->
+                val guestKey = artistKey(guest)
+                if (!isSyntheticArtist(guest) && guestKey !in performers) performers[guestKey] = guest
+            }
         }
         val counts = LinkedHashMap<String, Int>()
         tracks.forEach { track ->
-            val primary = track.primaryArtist
-            counts[primary] = (counts[primary] ?: 0) + 1
-            track.featuredArtist?.let { guest ->
-                if (guest != primary) counts[guest] = (counts[guest] ?: 0) + 1
+            val primaryKey = artistKey(track.primaryArtist)
+            if (primaryKey in performers) counts[primaryKey] = (counts[primaryKey] ?: 0) + 1
+            val guestKey = track.featuredArtist?.let(::artistKey)
+            if (guestKey != null && guestKey != primaryKey && guestKey in performers) {
+                counts[guestKey] = (counts[guestKey] ?: 0) + 1
             }
-            val owner = track.albumArtistName
-            if (owner != primary && owner != track.featuredArtist && owner in performers) {
-                counts[owner] = (counts[owner] ?: 0) + 1
+            val ownerKey = artistKey(track.albumArtistName)
+            if (ownerKey != primaryKey && ownerKey != guestKey && ownerKey in performers) {
+                counts[ownerKey] = (counts[ownerKey] ?: 0) + 1
             }
         }
-        return counts.entries.sortedWith { first, second -> compareText(first.key, second.key) }.map { (artist, count) ->
+        return counts.entries.sortedWith { first, second ->
+            compareText(performers.getValue(first.key), performers.getValue(second.key))
+        }.map { (key, count) ->
+            val artist = performers.getValue(key)
             ScreenRow.Group(artist, trackCountLabel(count), artist)
         }
     }
+
+    private fun artistKey(name: String): String = name.trim().lowercase(Locale.US)
+    private fun isSyntheticArtist(name: String): Boolean = name.trim().equals("Various Artists", ignoreCase = true)
 
     private fun artistDetailRows(
         tracks: List<Track>,
@@ -1050,6 +1055,22 @@ object ScreenContent {
                 ?: (if (numbered) compareValues(first.trackNumber, second.trackNumber).takeUnless { it == 0 } else null)
                 ?: NaturalOrder.compare(first.fileName, second.fileName).takeUnless { it == 0 }
                 ?: compareText(first.title, second.title)
+        }
+    }
+
+    private fun audiobookSorted(tracks: List<Track>): List<Track> {
+        val numbered = tracks.all { it.trackNumber != null }
+        return tracks.sortedWith { first, second ->
+            compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
+                ?: NaturalOrder.compare(
+                    first.relativePath.substringBeforeLast('/', ""),
+                    second.relativePath.substringBeforeLast('/', "")
+                ).takeUnless { it == 0 }
+                ?: (if (numbered) compareValues(first.trackNumber, second.trackNumber).takeUnless { it == 0 } else null)
+                ?: NaturalOrder.compare(first.fileName, second.fileName).takeUnless { it == 0 }
+                ?: compareText(first.title, second.title).takeUnless { it == 0 }
+                ?: compareText(first.relativePath, second.relativePath).takeUnless { it == 0 }
+                ?: compareValues(first.id, second.id)
         }
     }
 
@@ -1268,7 +1289,7 @@ internal object ConfirmPrompts {
         key == RESET_LIBRARY -> ConfirmPrompt(
             "Reset the library?",
             "Playlists, favourites, history and audiobook positions are deleted. " +
-                "Music files are kept and the library is rescanned.",
+                "Music files are kept and scanning restarts unless Safe Mode is active.",
             "Reset Library"
         )
         else -> ConfirmPrompt("Are you sure?", "This cannot be undone.", "Continue")

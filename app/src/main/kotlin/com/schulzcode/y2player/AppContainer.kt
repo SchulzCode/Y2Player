@@ -14,6 +14,7 @@ import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.io.File
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
+import com.schulzcode.y2player.input.HapticController
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.storage.StorageMonitor
@@ -47,6 +48,10 @@ class AppContainer(context: Context) {
     val diagnosticsRepository: DiagnosticsRepository by lazy { DiagnosticsRepository(logger, eventLog) }
     val appStore: AppStore by lazy { AppStore() }
     val preferences: AppPreferences by lazy { AppPreferences(appContext) }
+    private val hapticControllerLazy = lazy {
+        HapticController(appContext, eventLog).also { it.setLevel(preferences.snapshot().hapticLevel) }
+    }
+    val hapticController: HapticController by hapticControllerLazy
     val safeModeManager: SafeModeManager by lazy { SafeModeManager(appContext, logger) }
     val storageMonitor: StorageMonitor by lazy { StorageMonitor(appContext, eventLog) }
     private val bluetoothControllerLazy = lazy { BluetoothController(appContext, logger, eventLog) }
@@ -60,6 +65,9 @@ class AppContainer(context: Context) {
 
     fun artworkLoaderOrNull(): AlbumArtworkLoader? =
         if (artworkLoaderLazy.isInitialized()) artworkLoaderLazy.value else null
+
+    fun hapticControllerOrNull(): HapticController? =
+        if (hapticControllerLazy.isInitialized()) hapticControllerLazy.value else null
 
     val deviceProfile: DeviceProfile by lazy { DeviceProfileLoader.load(appContext) }
 }

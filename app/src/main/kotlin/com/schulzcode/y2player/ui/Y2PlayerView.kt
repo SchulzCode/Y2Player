@@ -8,20 +8,18 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.accessibility.AccessibilityManager
 import com.schulzcode.y2player.artwork.AlbumArtworkLoader
 import com.schulzcode.y2player.core.model.AudioCodecLabels
-import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.PauseReason
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppState
-import com.schulzcode.y2player.core.state.BluetoothAdapterMode
-import com.schulzcode.y2player.core.state.BluetoothLinkState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.core.state.ScreenRow
@@ -49,6 +47,19 @@ class Y2PlayerView(
         context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
     private val reusableRect = Rect()
     private val reusableRectF = RectF()
+    private val textScroller = SelectedTextScroller(MARQUEE_SPEED_DP_PER_SECOND * density)
+    private var textAnimationsVisible = false
+    private var attached = false
+    private var textScrollCallbackScheduled = false
+    private val textScrollRunnable = object : Runnable {
+        override fun run() {
+            textScrollCallbackScheduled = false
+            val delay = textScroller.advance(SystemClock.uptimeMillis())
+            if (delay == SelectedTextScroller.NO_CALLBACK) return
+            invalidateTextScrollTarget()
+            scheduleTextScroll(delay)
+        }
+    }
 
     private var state: AppState = AppState()
 
@@ -91,6 +102,8 @@ class Y2PlayerView(
     private val cachedTrailingIcons = arrayOfNulls<Y2Icon>(MAX_VISIBLE_ROWS)
     private val cachedTrailingText = arrayOfNulls<String>(MAX_VISIBLE_ROWS)
     private val cachedTrackNumbers = arrayOfNulls<String>(MAX_VISIBLE_ROWS)
+    private val cachedTitleWidths = FloatArray(MAX_VISIBLE_ROWS)
+    private val cachedTitleAvailableWidths = FloatArray(MAX_VISIBLE_ROWS)
     private val cachedActive = BooleanArray(MAX_VISIBLE_ROWS)
     private val cachedUnavailable = BooleanArray(MAX_VISIBLE_ROWS)
     private var cachedRowStart = -1
@@ -105,9 +118,14 @@ class Y2PlayerView(
     private var cachedMiniTitle = ""
     private var cachedMiniArtist = ""
     private var cachedNowTitle = "Nothing playing"
-    private var cachedNowTitle2 = ""
+    private var cachedNowTitleFull = "Nothing playing"
+    private var cachedNowTitleWidth = 0f
     private var cachedNowArtist = "Select a track"
+    private var cachedNowArtistFull = "Select a track"
+    private var cachedNowArtistWidth = 0f
     private var cachedNowAlbum = ""
+    private var cachedNowAlbumFull = ""
+    private var cachedNowAlbumWidth = 0f
     private var cachedTechnicalLine = ""
     private var cachedNowSecondary = ""
     private var cachedNowSecondaryWarning = false
@@ -134,6 +152,42 @@ class Y2PlayerView(
         isClickable = true
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         updatePresentationCache()
+    }
+
+    fun setTextAnimationsVisible(visible: Boolean) {
+        if (textAnimationsVisible == visible) return
+        textAnimationsVisible = visible
+        updateTextScrollActivity()
+    }
+
+    fun onNavigationInput() {
+        if (!textScroller.hasTarget) return
+        textScroller.restart(SystemClock.uptimeMillis())
+        rescheduleTextScroll()
+        invalidateTextScrollTarget()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        attached = true
+        updateTextScrollActivity()
+    }
+
+    override fun onDetachedFromWindow() {
+        attached = false
+        stopTextScrollCallbacks()
+        textScroller.setActive(false, SystemClock.uptimeMillis())
+        super.onDetachedFromWindow()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        updateTextScrollActivity()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        updateTextScrollActivity()
     }
 
     fun render(newState: AppState) {
@@ -193,6 +247,8 @@ class Y2PlayerView(
     }
 
     fun release() {
+        stopTextScrollCallbacks()
+        textScroller.clear()
         artwork = null
         artworkPath = null
         detailArtwork = null
@@ -204,6 +260,55 @@ class Y2PlayerView(
         invalidateRowCache()
         updatePresentationCache()
         ensureSelectionVisible()
+    }
+
+    private fun updateTextScrollActivity() {
+        val active = attached && textAnimationsVisible &&
+            windowVisibility == VISIBLE && visibility == VISIBLE
+        val changed = textScroller.setActive(active, SystemClock.uptimeMillis())
+        stopTextScrollCallbacks()
+        if (active) rescheduleTextScroll()
+        if (changed) invalidateTextScrollTarget()
+    }
+
+    private fun rescheduleTextScroll() {
+        stopTextScrollCallbacks()
+        val delay = textScroller.advance(SystemClock.uptimeMillis())
+        if (delay != SelectedTextScroller.NO_CALLBACK) scheduleTextScroll(delay)
+    }
+
+    private fun scheduleTextScroll(delayMs: Long) {
+        if (textScrollCallbackScheduled) return
+        textScrollCallbackScheduled = true
+        if (delayMs == SelectedTextScroller.NEXT_FRAME) {
+            // Ten updates per second remain readable on the 480x360 panel without
+            // making the single Canvas view compete with audio decoding for CPU.
+            postDelayed(textScrollRunnable, MARQUEE_FRAME_MS)
+        } else {
+            postDelayed(textScrollRunnable, delayMs.coerceAtLeast(1L))
+        }
+    }
+
+    private fun stopTextScrollCallbacks() {
+        if (!textScrollCallbackScheduled) return
+        removeCallbacks(textScrollRunnable)
+        textScrollCallbackScheduled = false
+    }
+
+    private fun invalidateTextScrollTarget() {
+        when (textScroller.kind) {
+            SelectedTextScroller.TARGET_LIST -> {
+                val index = textScroller.index
+                if (index in cachedRowStart until cachedRowEnd) {
+                    val top = rowAreaTop() + (index - visibleStart) * rowHeight
+                    invalidate(0, top.toInt(), rowAreaRight().toInt(), (top + rowHeight).toInt())
+                }
+            }
+            SelectedTextScroller.TARGET_NOW_TITLE,
+            SelectedTextScroller.TARGET_NOW_ARTIST,
+            SelectedTextScroller.TARGET_NOW_ALBUM ->
+                invalidate(0, headerHeight.toInt(), width, (height - footerHeight).toInt())
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -248,7 +353,7 @@ class Y2PlayerView(
                     pendingTouchActive = false
                     if (isSplitHome() && event.x >= rowAreaRight() && event.y >= headerHeight && event.y < height - footerHeight) {
                         pendingTouchIndex = null
-                        dispatch(AppAction.Right)
+                        dispatch(AppAction.ShowNowPlaying)
                         return true
                     }
                     if (state.currentScreen != Screen.NowPlaying) {
@@ -418,6 +523,7 @@ class Y2PlayerView(
             return
         }
         refreshVisibleRowCache()
+        prepareListTextScrollTarget()
         val rowsRight = rowAreaRight()
         val rowsTop = rowAreaTop()
         val saveCount = canvas.save()
@@ -455,7 +561,25 @@ class Y2PlayerView(
                 else -> palette.primaryText
             }
             val titleBaseline = if (subtitle == null) top + rowHeight * .5f + 6f * density else top + 24f * density
-            canvas.drawText(cachedTitles[slot].orEmpty(), 50f * density, titleBaseline, boldPaint)
+            val fullTitle = rows[index].title
+            if (focused && textScroller.isTarget(
+                    SelectedTextScroller.TARGET_LIST,
+                    state.currentScreen,
+                    index,
+                    fullTitle
+                ) && textScroller.drawsFullText
+            ) {
+                drawScrollingText(
+                    canvas,
+                    fullTitle,
+                    50f * density,
+                    50f * density + cachedTitleAvailableWidths[slot],
+                    titleBaseline,
+                    boldPaint
+                )
+            } else {
+                canvas.drawText(cachedTitles[slot].orEmpty(), 50f * density, titleBaseline, boldPaint)
+            }
             if (subtitle != null) {
                 paint.style = Paint.Style.FILL
                 paint.textAlign = Paint.Align.LEFT
@@ -479,6 +603,67 @@ class Y2PlayerView(
         }
         canvas.restoreToCount(saveCount)
         drawScrollIndicator(canvas)
+    }
+
+    private fun prepareListTextScrollTarget() {
+        val selected = state.selectedIndex
+        val slot = selected - cachedRowStart
+        val row = rows.getOrNull(selected)
+        val changed = if (row == null || slot !in cachedTitles.indices) {
+            textScroller.clear()
+        } else {
+            textScroller.setTarget(
+                SelectedTextScroller.TARGET_LIST,
+                state.currentScreen,
+                selected,
+                row.title,
+                cachedTitleWidths[slot],
+                cachedTitleAvailableWidths[slot],
+                SystemClock.uptimeMillis()
+            )
+        }
+        if (changed) rescheduleTextScroll()
+    }
+
+    private fun prepareNowPlayingTextScrollTarget() {
+        val available = nowPlayingTextWidth()
+        val now = SystemClock.uptimeMillis()
+        val changed = when {
+            cachedNowTitleWidth > available -> textScroller.setTarget(
+                SelectedTextScroller.TARGET_NOW_TITLE, Screen.NowPlaying, 0,
+                cachedNowTitleFull, cachedNowTitleWidth, available, now
+            )
+            cachedNowArtistWidth > available -> textScroller.setTarget(
+                SelectedTextScroller.TARGET_NOW_ARTIST, Screen.NowPlaying, 0,
+                cachedNowArtistFull, cachedNowArtistWidth, available, now
+            )
+            cachedNowAlbumWidth > available -> textScroller.setTarget(
+                SelectedTextScroller.TARGET_NOW_ALBUM, Screen.NowPlaying, 0,
+                cachedNowAlbumFull, cachedNowAlbumWidth, available, now
+            )
+            else -> textScroller.clear()
+        }
+        if (changed) rescheduleTextScroll()
+    }
+
+    private fun isNowPlayingScrollTarget(kind: Int, text: String): Boolean =
+        textScroller.drawsFullText && textScroller.isTarget(kind, Screen.NowPlaying, 0, text)
+
+    private fun drawScrollingText(
+        canvas: Canvas,
+        text: String,
+        clipLeft: Float,
+        clipRight: Float,
+        baseline: Float,
+        targetPaint: Paint
+    ) {
+        val alignment = targetPaint.textAlign
+        val saveCount = canvas.save()
+        canvas.clipRect(clipLeft, baseline - targetPaint.textSize, clipRight, baseline + 4f * density)
+        targetPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText(text, clipLeft - textScroller.offsetPx, baseline, targetPaint)
+        targetPaint.textAlign = alignment
+        canvas.restoreToCount(saveCount)
     }
 
     private fun drawFocus(canvas: Canvas, top: Float, bottom: Float) {
@@ -698,6 +883,7 @@ class Y2PlayerView(
     }
 
     private fun drawNowPlaying(canvas: Canvas) {
+        prepareNowPlayingTextScrollTarget()
         if (Y2UiLogic.playerLayout(width, height) == PlayerLayout.WIDE) drawNowPlayingWide(canvas) else drawNowPlayingTall(canvas)
     }
 
@@ -718,22 +904,24 @@ class Y2PlayerView(
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
         boldPaint.color = palette.primaryText
         var y = artTop + 26f * density
-        canvas.drawText(cachedNowTitle, colLeft, y, boldPaint)
-        if (cachedNowTitle2.isNotEmpty()) {
-            y += 22f * density
-            canvas.drawText(cachedNowTitle2, colLeft, y, boldPaint)
-        }
+        if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_TITLE, cachedNowTitleFull)) {
+            drawScrollingText(canvas, cachedNowTitleFull, colLeft, colRight, y, boldPaint)
+        } else canvas.drawText(cachedNowTitle, colLeft, y, boldPaint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
         paint.color = palette.secondaryText
         y += 22f * density
-        canvas.drawText(cachedNowArtist, colLeft, y, paint)
+        if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ARTIST, cachedNowArtistFull)) {
+            drawScrollingText(canvas, cachedNowArtistFull, colLeft, colRight, y, paint)
+        } else canvas.drawText(cachedNowArtist, colLeft, y, paint)
         if (cachedNowAlbum.isNotEmpty()) {
             paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
             paint.color = palette.mutedText
             y += 19f * density
-            canvas.drawText(cachedNowAlbum, colLeft, y, paint)
+            if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ALBUM, cachedNowAlbumFull)) {
+                drawScrollingText(canvas, cachedNowAlbumFull, colLeft, colRight, y, paint)
+            } else canvas.drawText(cachedNowAlbum, colLeft, y, paint)
         }
         if (cachedNowSecondary.isNotEmpty()) {
             paint.textSize = Y2UiTheme.META_SP * density
@@ -864,15 +1052,21 @@ class Y2PlayerView(
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
         boldPaint.color = palette.primaryText
-        canvas.drawText(cachedNowTitle, centerX, titleTop + 19f * density, boldPaint)
+        if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_TITLE, cachedNowTitleFull)) {
+            drawScrollingText(canvas, cachedNowTitleFull, 12f * density, width - 12f * density, titleTop + 19f * density, boldPaint)
+        } else canvas.drawText(cachedNowTitle, centerX, titleTop + 19f * density, boldPaint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
         paint.color = palette.secondaryText
-        canvas.drawText(cachedNowArtist, centerX, titleTop + 40f * density, paint)
+        if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ARTIST, cachedNowArtistFull)) {
+            drawScrollingText(canvas, cachedNowArtistFull, 12f * density, width - 12f * density, titleTop + 40f * density, paint)
+        } else canvas.drawText(cachedNowArtist, centerX, titleTop + 40f * density, paint)
         paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
         paint.color = palette.mutedText
-        canvas.drawText(cachedNowAlbum, centerX, titleTop + 58f * density, paint)
+        if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ALBUM, cachedNowAlbumFull)) {
+            drawScrollingText(canvas, cachedNowAlbumFull, 12f * density, width - 12f * density, titleTop + 58f * density, paint)
+        } else canvas.drawText(cachedNowAlbum, centerX, titleTop + 58f * density, paint)
         paint.textSize = Y2UiTheme.META_SP * density
         paint.color = if (cachedNowSecondaryWarning) palette.warning else palette.mutedText
         canvas.drawText(cachedNowSecondary, centerX, titleTop + 75f * density, paint)
@@ -955,7 +1149,7 @@ class Y2PlayerView(
             x += step
         }
         if (cachedNowFavorite) {
-            iconPainter.draw(canvas, Y2Icon.FAVORITE, x, centerY, 14f * density, palette.accent)
+            iconPainter.draw(canvas, Y2Icon.FAVORITE_FILLED, x, centerY, 14f * density, palette.accent)
         }
         paint.style = Paint.Style.FILL
     }
@@ -1102,7 +1296,9 @@ class Y2PlayerView(
         cachedNowFavorite = track?.favorite == true
         val nowWidth = nowPlayingTextWidth()
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
-        splitNowTitle(track?.title ?: "Nothing playing", nowWidth)
+        cachedNowTitleFull = track?.title ?: "Nothing playing"
+        cachedNowTitleWidth = boldPaint.measureText(cachedNowTitleFull)
+        cachedNowTitle = ellipsize(cachedNowTitleFull, nowWidth, boldPaint)
         val book = track?.audiobookFolderKey?.let { ScreenContent.audiobookEntry(state, it) }
         paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
         val artistText = when {
@@ -1110,7 +1306,9 @@ class Y2PlayerView(
             book != null -> Y2UiLogic.audiobookArtistLine(book.name, track.artist)
             else -> track.displayArtist
         }
-        cachedNowArtist = ellipsize(artistText, nowWidth, paint)
+        cachedNowArtistFull = artistText
+        cachedNowArtistWidth = paint.measureText(cachedNowArtistFull)
+        cachedNowArtist = ellipsize(cachedNowArtistFull, nowWidth, paint)
         paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
         val albumText = when {
             track == null -> ""
@@ -1120,12 +1318,13 @@ class Y2PlayerView(
             )
             else -> Y2UiLogic.albumLine(
                 album = track.displayAlbum,
-                artist = track.displayArtist,
                 year = track.year,
                 includeYear = state.preferences.extraTrackInfo
             )
         }
-        cachedNowAlbum = ellipsize(albumText, nowWidth, paint)
+        cachedNowAlbumFull = albumText
+        cachedNowAlbumWidth = paint.measureText(cachedNowAlbumFull)
+        cachedNowAlbum = ellipsize(cachedNowAlbumFull, nowWidth, paint)
         cachedTechnicalLine = if (track == null) "" else Y2UiLogic.technicalLine(
             AudioCodecLabels.label(track.codec, track.extension),
             track.sampleRate,
@@ -1255,21 +1454,6 @@ class Y2PlayerView(
         cachedDetailTitle2 = ellipsize(title.substring(breakAt).trimStart(), maxWidth, boldPaint)
     }
 
-    private fun splitNowTitle(title: String, maxWidth: Float) {
-        if (title.isEmpty() || boldPaint.measureText(title) <= maxWidth) {
-            cachedNowTitle = title
-            cachedNowTitle2 = ""
-            return
-        }
-        val fitEnd = Y2UiLogic.truncationEnd(title.length, maxWidth, 0f) { prefix ->
-            boldPaint.measureText(title, 0, prefix)
-        }
-        val safeEnd = Y2UiLogic.safeTextBoundary(title, fitEnd).coerceAtLeast(1)
-        val breakAt = title.lastIndexOf(' ', safeEnd - 1).takeIf { it > 0 } ?: safeEnd
-        cachedNowTitle = title.substring(0, breakAt).trimEnd()
-        cachedNowTitle2 = ellipsize(title.substring(breakAt).trimStart(), maxWidth, boldPaint)
-    }
-
     private fun fallbackWidth(): Float = (width.takeIf { it > 0 } ?: (Y2UiTheme.TARGET_WIDTH_PX * density).toInt()).toFloat()
 
     private fun fallbackHeight(): Float = (height.takeIf { it > 0 } ?: (Y2UiTheme.TARGET_HEIGHT_PX * density).toInt()).toFloat()
@@ -1300,10 +1484,10 @@ class Y2PlayerView(
     private fun updateFooterHint() {
         val hint = when {
             state.currentScreen == Screen.NowPlaying -> "WHEEL VOLUME · L/R TRACK · HOLD L/R SEEK · HOLD CENTER OPTIONS"
-            state.currentScreen == Screen.MainMenu && state.playback.currentTrackId != null -> "WHEEL NAVIGATE · RIGHT PLAYER · PLAY KEY TOGGLE"
+            state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER + · HOLD CENTER - · L/R TRACK"
             state.currentScreen == Screen.Brightness || state.currentScreen == Screen.ScreenTimeout ||
-                state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY"
-            else -> "WHEEL NAVIGATE · CENTER SELECT"
+                state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY · L/R TRACK"
+            else -> "WHEEL NAVIGATE · CENTER SELECT · L/R TRACK"
         }
         paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
         paint.textAlign = Paint.Align.RIGHT
@@ -1423,9 +1607,11 @@ class Y2PlayerView(
                     else -> 14f * density
                 }
                 val maxWidth = (rowSurfaceRight() - 44f * density - trailingWidth).coerceAtLeast(36f * density)
+                cachedTitleWidths[slot] = boldPaint.measureText(row.title)
+                cachedTitleAvailableWidths[slot] = maxWidth
                 cachedTitles[slot] = ellipsize(row.title, maxWidth, boldPaint)
                 cachedSubtitles[slot] = rowSubtitle(row)?.let { ellipsize(it, maxWidth, paint) }
-                cachedIcons[slot] = iconFor(row)
+                cachedIcons[slot] = iconFor(row, active)
                 cachedTrailingText[slot] = trailingText
                 cachedTrailingIcons[slot] = trailingIcon
                 cachedTrackNumbers[slot] = if (state.currentScreen is Screen.AlbumSongs && row is ScreenRow.TrackRow) {
@@ -1440,6 +1626,8 @@ class Y2PlayerView(
                 cachedTrailingText[slot] = null
                 cachedTrailingIcons[slot] = null
                 cachedTrackNumbers[slot] = null
+                cachedTitleWidths[slot] = 0f
+                cachedTitleAvailableWidths[slot] = 0f
                 cachedActive[slot] = false
                 cachedUnavailable[slot] = false
             }
@@ -1451,8 +1639,8 @@ class Y2PlayerView(
         cachedRowEnd = -1
     }
 
-    private fun iconFor(row: ScreenRow): Y2Icon =
-        Y2RowIcons.forRow(row, state.currentScreen, state.playback.currentTrackId)
+    private fun iconFor(row: ScreenRow, active: Boolean): Y2Icon =
+        Y2RowIcons.forRow(row, state.currentScreen, state.playback.currentTrackId, active)
 
     private fun rowSubtitle(row: ScreenRow): String? = when {
         row !is ScreenRow.TrackRow -> row.subtitle
@@ -1475,32 +1663,7 @@ class Y2PlayerView(
         return if (active) Y2Icon.CHECK else null
     }
 
-    private fun isActive(row: ScreenRow): Boolean {
-        if (row is ScreenRow.TrackRow) return row.track.id == state.playback.currentTrackId &&
-            (state.playback.status == PlaybackStatus.PLAYING || state.playback.status == PlaybackStatus.PREPARING)
-        val action = row as? ScreenRow.Action ?: return false
-        return when {
-            action.key == "now_playing" -> state.playback.currentTrackId != null
-            action.key == "shuffle" -> state.playback.shuffleEnabled
-            action.key == "repeat" -> state.playback.repeatMode != RepeatMode.OFF
-            action.key == "gapless" -> state.preferences.gaplessEnabled && state.preferences.crossfadeMs == 0
-            action.key == "pause_disconnect" -> !state.preferences.pauseOnDisconnect
-            action.key == "resume_position" -> state.preferences.resumePosition
-            action.key == "keep_screen_on" -> state.preferences.keepScreenOnWhilePlaying
-            action.key == "effects_toggle" -> state.preferences.audioEffectsEnabled
-            action.key == "audio_quality" -> state.preferences.audioQualityMode == AudioQualityMode.DIRECT_DAC
-            action.key == "bt_toggle" -> state.bluetooth.adapterMode == BluetoothAdapterMode.ON
-            action.key.startsWith("bt_device:") -> state.bluetooth.devices.any {
-                "bt_device:${it.address}" == action.key && (it.audioStreaming || it.linkState == BluetoothLinkState.CONNECTED)
-            }
-            action.key.startsWith("sort:") -> action.key.substringAfter(':') == state.preferences.sortOrder.storageId
-            action.key.startsWith("brightness:") -> action.key.substringAfter(':').toIntOrNull()?.let {
-                kotlin.math.abs(state.display.brightnessPercent - it) <= 5
-            } == true
-            action.key.startsWith("timeout:") -> action.key.substringAfter(':').toIntOrNull() == state.display.screenTimeoutMs
-            else -> false
-        }
-    }
+    private fun isActive(row: ScreenRow): Boolean = Y2RowState.isActive(row, state)
 
     private fun isUnavailable(row: ScreenRow): Boolean {
         if (row is ScreenRow.TrackRow) return !row.track.available
@@ -1551,11 +1714,13 @@ class Y2PlayerView(
     companion object {
         private const val MAX_VISIBLE_ROWS = 12
         private const val SCAN_PROGRESS_PHASE_STEPS = 200
+        private const val MARQUEE_SPEED_DP_PER_SECOND = 28f
+        private const val MARQUEE_FRAME_MS = 100L
 
         private const val BATTERY_TEXT_REFERENCE = "100%"
         const val SHARED_ARTWORK_SIZE_PX = 256
         private val NAVIGATION_KEYS = setOf(
-            "music", "audiobooks", "now_playing", "songs", "albums", "artists", "playlists",
+            "music", "audiobooks", "songs", "albums", "artists", "playlists",
             "folders", "favorites", "recent", "audio", "settings", "output", "sort", "bluetooth",
             "sound_effects", "reset", "extra_track_info",
             "display", "controls", "storage", "system", "diagnostics", "android_settings", "about",

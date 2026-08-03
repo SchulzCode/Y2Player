@@ -26,6 +26,14 @@ class PlaybackPositionPolicyTest {
     }
 
     @Test
+    fun `seek never targets decoder EOF`() {
+        assertEquals(30_000L, PlaybackPositionPolicy.clampSeek(30_000L, minute))
+        assertEquals(59_750L, PlaybackPositionPolicy.clampSeek(minute, minute))
+        assertEquals(59_750L, PlaybackPositionPolicy.clampSeek(minute + 5_000L, minute))
+        assertEquals(0L, PlaybackPositionPolicy.clampSeek(10_000L, 200L))
+    }
+
+    @Test
     fun `audiobook position below the minimum is stored as the chapter start`() {
         assertEquals(0L, PlaybackPositionPolicy.audiobookSavePosition(5_000L, 30 * minute))
         assertEquals(0L, PlaybackPositionPolicy.audiobookSavePosition(0L, 30 * minute))

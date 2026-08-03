@@ -36,15 +36,38 @@ class AppReducerTest {
     )
 
     @Test fun mainMenuWrapsSelection() {
-        val result = AppReducer.reduce(AppState(), AppAction.WheelCounterClockwise)
+        val result = AppReducer.reduce(AppState(), AppAction.WheelMoved(-1))
         assertEquals(ScreenContent.rows(AppState()).lastIndex, result.state.selectedIndex)
+    }
+
+    @Test fun mainMenuStopsAtTheBoundaryWhenWrappingIsDisabled() {
+        val state = AppState(preferences = PlayerPreferencesState(wrapLists = false))
+        val result = AppReducer.reduce(state, AppAction.WheelMoved(-1))
+        assertEquals(0, result.state.selectedIndex)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    @Test fun acceleratedMovementClampsAtTheBoundaryWhenWrappingIsDisabled() {
+        val rowCount = ScreenContent.rows(AppState()).size
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.MainMenu, rowCount - 2)),
+            preferences = PlayerPreferencesState(wrapLists = false)
+        )
+        assertEquals(rowCount - 1, AppReducer.reduce(state, AppAction.WheelMoved(5)).state.selectedIndex)
+    }
+
+    @Test fun confirmationsRemainBoundedEvenWhenOrdinaryListsWrap() {
+        val state = AppState(screenStack = listOf(ScreenEntry(Screen.ConfirmAction("reset_library"), 1)))
+        assertEquals(1, AppReducer.reduce(state, AppAction.WheelMoved(-1)).state.selectedIndex)
+        val onConfirm = state.copy(screenStack = listOf(ScreenEntry(state.currentScreen, 2)))
+        assertEquals(2, AppReducer.reduce(onConfirm, AppAction.WheelMoved(1)).state.selectedIndex)
     }
 
     @Test fun everyMainMenuItemRemainsReachableWithThePhysicalWheel() {
         var state = AppState()
         val reached = mutableSetOf(state.selectedIndex)
         repeat(ScreenContent.rows(state).size - 1) {
-            state = AppReducer.reduce(state, AppAction.WheelClockwise).state
+            state = AppReducer.reduce(state, AppAction.WheelMoved(1)).state
             reached += state.selectedIndex
         }
         assertEquals(ScreenContent.rows(state).indices.toSet(), reached)
@@ -192,7 +215,7 @@ class AppReducerTest {
         assertTrue(ScreenContent.rows(state).single() is ScreenRow.TrackRow)
     }
 
-    @Test fun rightOnTheAlbumShuffleRowDoesNothing() {
+    @Test fun rightOnTheAlbumShuffleRowSkipsToTheNextTrack() {
         val second = track.copy(id = 2, title = "Second", trackNumber = 2)
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.AlbumSongs("Album"))),
@@ -200,12 +223,12 @@ class AppReducerTest {
         )
         val result = AppReducer.reduce(state, AppAction.Right)
         assertEquals(state.screenStack, result.state.screenStack)
-        assertTrue(result.effects.isEmpty())
+        assertEquals(AppEffect.NextTrack, result.effects.single())
     }
 
-    @Test fun rightOnTrackOpensTrackOptions() {
+    @Test fun longCenterOnTrackOpensTrackOptions() {
         val state = AppState(screenStack = listOf(ScreenEntry(Screen.Songs)), library = LibraryState(tracks = listOf(track)))
-        val result = AppReducer.reduce(state, AppAction.Right)
+        val result = AppReducer.reduce(state, AppAction.ConfirmLong)
         assertEquals(Screen.TrackOptions(1), result.state.currentScreen)
         assertTrue(result.effects.isEmpty())
     }
@@ -235,7 +258,7 @@ class AppReducerTest {
         assertEquals(Screen.MainMenu, AppReducer.reduce(emptyQueue, AppAction.Confirm).state.currentScreen)
     }
 
-    @Test fun rightOnAudioEntersTheSelectedChildInsteadOfOpeningNowPlaying() {
+    @Test fun centerOnAudioEntersTheSelectedChild() {
         val state = selectKey(
             AppState(
                 screenStack = listOf(ScreenEntry(Screen.Audio)),
@@ -243,19 +266,19 @@ class AppReducerTest {
             ),
             "playback_transitions"
         )
-        val result = AppReducer.reduce(state, AppAction.Right)
+        val result = AppReducer.reduce(state, AppAction.Confirm)
         assertEquals(Screen.PlaybackTransitions, result.state.currentScreen)
         assertTrue(result.effects.isEmpty())
     }
 
-    @Test fun rightNavigatesThroughRealChildrenAcrossLibraryAndSettings() {
+    @Test fun centerNavigatesThroughRealChildrenAcrossLibraryAndSettings() {
         val loaded = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L)
         val albums = AppState(
             screenStack = listOf(ScreenEntry(Screen.Albums)),
             library = LibraryState(tracks = listOf(track)),
             playback = loaded
         )
-        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(albums, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(albums, AppAction.Confirm).state.currentScreen)
 
         val music = AppState(
             screenStack = listOf(ScreenEntry(Screen.Music)),
@@ -264,47 +287,19 @@ class AppReducerTest {
         )
         val favouritesIndex = ScreenContent.rows(music).indexOfFirst { (it as? ScreenRow.Action)?.key == "favorites" }
         val onFavourites = music.copy(screenStack = listOf(ScreenEntry(Screen.Music, favouritesIndex)))
-        assertEquals(Screen.Favorites, AppReducer.reduce(onFavourites, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.Favorites, AppReducer.reduce(onFavourites, AppAction.Confirm).state.currentScreen)
 
         val settings = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.Audio)), playback = loaded),
             "sound_effects"
         )
-        assertEquals(Screen.SoundEffects, AppReducer.reduce(settings, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.SoundEffects, AppReducer.reduce(settings, AppAction.Confirm).state.currentScreen)
 
         val display = selectKey(
             AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded),
             "brightness"
         )
-        assertEquals(Screen.Brightness, AppReducer.reduce(display, AppAction.Right).state.currentScreen)
-    }
-
-    @Test fun rightOnEveryNestedLeafStaysPutEvenWhenATrackIsLoaded() {
-        val loaded = com.schulzcode.y2player.core.model.PlaybackSnapshot(currentTrackId = 1L, queue = listOf(1L))
-        val baseLibrary = LibraryState(tracks = listOf(track))
-        val states = listOf(
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.PlaybackTransitions)), playback = loaded), "gapless"),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.OutputInformation)), playback = loaded), "audio_quality"),
-            AppState(screenStack = listOf(ScreenEntry(Screen.SortOrder)), playback = loaded),
-            AppState(screenStack = listOf(ScreenEntry(Screen.Bluetooth)), playback = loaded),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Display)), playback = loaded), "keep_screen_on"),
-            AppState(screenStack = listOf(ScreenEntry(Screen.Brightness)), playback = loaded),
-            AppState(screenStack = listOf(ScreenEntry(Screen.ScreenTimeout)), playback = loaded),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Storage)), playback = loaded), "rescan"),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.System)), playback = loaded), "android_settings"),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.Diagnostics)), playback = loaded), "diag_export"),
-            AppState(screenStack = listOf(ScreenEntry(Screen.About)), playback = loaded),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.TrackOptions(1))), library = baseLibrary, playback = loaded), "track_favorite:1"),
-            AppState(screenStack = listOf(ScreenEntry(Screen.AddToPlaylist(1))), library = baseLibrary, playback = loaded),
-            AppState(screenStack = listOf(ScreenEntry(Screen.QueueOptions(0))), library = baseLibrary, playback = loaded),
-            selectKey(AppState(screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions)), library = baseLibrary, playback = loaded), "shuffle")
-        )
-
-        states.forEach { state ->
-            val result = AppReducer.reduce(state, AppAction.Right)
-            assertEquals("Right left ${state.currentScreen}", state.screenStack, result.state.screenStack)
-            assertTrue("Right activated ${state.currentScreen}", result.effects.isEmpty())
-        }
+        assertEquals(Screen.Brightness, AppReducer.reduce(display, AppAction.Confirm).state.currentScreen)
     }
 
     @Test fun favoriteMenuUsesFavoriteCollection() {
@@ -348,6 +343,20 @@ class AppReducerTest {
         assertTrue(effect.shuffled)
         assertEquals(listOf(1L, 2L), effect.trackIds)
         assertEquals(Screen.NowPlaying, result.state.currentScreen)
+    }
+
+    @Test fun singleTrackPlaylistDoesNotOfferShuffle() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.PlaylistTracks(5, "Playlist 1"))),
+            library = LibraryState(
+                tracks = listOf(track),
+                playlists = listOf(PlaylistSummary(5, "Playlist 1", 1)),
+                playlistTrackIds = mapOf(5L to listOf(1L))
+            )
+        )
+        assertTrue(ScreenContent.rows(state).none {
+            (it as? ScreenRow.Action)?.key == ScreenContent.COLLECTION_SHUFFLE_KEY
+        })
     }
 
     @Test fun shuffleRowIsAbsentWhenTheCollectionIsEmpty() {
@@ -501,13 +510,13 @@ class AppReducerTest {
         )
     }
 
-    @Test fun queueRightOpensQueueOptions() {
+    @Test fun longCenterOnQueueOpensQueueOptions() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Queue)),
             library = LibraryState(tracks = listOf(track)),
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
         )
-        assertEquals(Screen.QueueOptions(0), AppReducer.reduce(state, AppAction.Right).state.currentScreen)
+        assertEquals(Screen.QueueOptions(0), AppReducer.reduce(state, AppAction.ConfirmLong).state.currentScreen)
     }
 
     @Test fun destructiveQueueActionsLiveUnderQueueManagement() {
@@ -595,7 +604,7 @@ class AppReducerTest {
                 library = library
             )
         )
-        val options = AppReducer.reduce(source, AppAction.Right).state
+        val options = AppReducer.reduce(source, AppAction.ConfirmLong).state
         assertEquals(Screen.TrackOptions(1, 5), options.currentScreen)
         val removeIndex = ScreenContent.rows(options).indexOfFirst { (it as? ScreenRow.Action)?.key?.startsWith("track_remove_playlist:") == true }
         val result = AppReducer.reduce(options.copy(screenStack = options.screenStack.dropLast(1) + options.currentEntry.copy(selectedIndex = removeIndex)), AppAction.Confirm)
@@ -624,7 +633,7 @@ class AppReducerTest {
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
         )
 
-        val result = AppReducer.reduce(state, AppAction.Right).state
+        val result = AppReducer.reduce(state, AppAction.ConfirmLong).state
 
         assertEquals(Screen.QueueOptions(0), result.currentScreen)
         assertEquals(1, result.selectedIndex)
@@ -753,9 +762,9 @@ class AppReducerTest {
         assertEquals(3, ScreenContent.rows(bands).size)
     }
 
-    @Test fun nowPlayingSeekUsesConfiguredStep() {
+    @Test fun heldMediaDirectionKeysSeekFromMenusUsingConfiguredStep() {
         val state = AppState(
-            screenStack = listOf(ScreenEntry(Screen.NowPlaying)),
+            screenStack = listOf(ScreenEntry(Screen.MainMenu)),
             preferences = PlayerPreferencesState(seekStepMs = 30_000)
         )
         assertEquals(AppEffect.SeekBy(-30_000), AppReducer.reduce(state, AppAction.SeekBackward).effects.single())
@@ -763,6 +772,25 @@ class AppReducerTest {
         val longState = state.copy(preferences = state.preferences.copy(longSeekStepMs = 60_000))
         assertEquals(AppEffect.SeekBy(-60_000), AppReducer.reduce(longState, AppAction.SeekBackwardLong).effects.single())
         assertEquals(AppEffect.SeekBy(60_000), AppReducer.reduce(longState, AppAction.SeekForwardLong).effects.single())
+    }
+
+    @Test fun equalizerBandsUseCenterForAdjustmentInsteadOfLeftAndRight() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.EqualizerBands, selectedIndex = 1)),
+            playback = PlaybackSnapshot(
+                audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(
+                    available = true,
+                    equalizerSupported = true,
+                    bandFrequenciesHz = listOf(60, 230, 910),
+                    bandLevelsMb = listOf(0, 0, 0)
+                )
+            )
+        )
+
+        assertEquals(AppEffect.AdjustEqualizerBand(1, 1), AppReducer.reduce(state, AppAction.Confirm).effects.single())
+        assertEquals(AppEffect.AdjustEqualizerBand(1, -1), AppReducer.reduce(state, AppAction.ConfirmLong).effects.single())
+        assertEquals(AppEffect.PreviousTrack, AppReducer.reduce(state, AppAction.Left).effects.single())
+        assertEquals(AppEffect.NextTrack, AppReducer.reduce(state, AppAction.Right).effects.single())
     }
 
     @Test fun theThemeRowOnTheDisplayScreenTogglesTheTheme() {
@@ -976,6 +1004,24 @@ class AppReducerTest {
         )
     }
 
+    @Test fun controlsScreenOwnsTheSingleListWrappingToggle() {
+        val controls = AppState(screenStack = listOf(ScreenEntry(Screen.Controls)))
+        val row = ScreenContent.rows(controls).filterIsInstance<ScreenRow.Action>()
+            .single { it.key == "wrap_lists" }
+        assertEquals("Continue from bottom to top", row.subtitle)
+        assertEquals(
+            listOf(AppEffect.ToggleWrapLists),
+            AppReducer.reduce(selectKey(controls, "wrap_lists"), AppAction.Confirm).effects
+        )
+
+        val bounded = controls.copy(preferences = controls.preferences.copy(wrapLists = false))
+        assertEquals(
+            "Stop at the first and last item",
+            ScreenContent.rows(bounded).filterIsInstance<ScreenRow.Action>()
+                .single { it.key == "wrap_lists" }.subtitle
+        )
+    }
+
     @Test fun theScreenOffWheelRowStatesWhatItCosts() {
         val controls = AppState(screenStack = listOf(ScreenEntry(Screen.Controls)))
         fun subtitle(state: AppState) = ScreenContent.rows(state)
@@ -1022,6 +1068,14 @@ class AppReducerTest {
             "On · year, bitrate and genre",
             ScreenContent.rows(on).filterIsInstance<ScreenRow.Action>().single { it.key == "extra_track_info" }.subtitle
         )
+    }
+
+    @Test fun extraTrackInfoHasOneCanonicalControlUnderDisplay() {
+        val interfaceKeys = ScreenContent.rows(
+            AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)))
+        ).filterIsInstance<ScreenRow.Action>().map { it.key }
+        assertEquals(listOf("display", "controls"), interfaceKeys)
+        assertFalse("extra_track_info" in interfaceKeys)
     }
 
     @Test fun keepScreenOnLivesOnlyOnTheDisplayScreen() {

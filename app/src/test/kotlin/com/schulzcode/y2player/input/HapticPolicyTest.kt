@@ -38,12 +38,12 @@ class HapticPolicyTest {
         }
     }
 
-    @Test fun firstDetentAlwaysPulses() {
+    @Test fun firstAcceptedActionAlwaysPulses() {
         assertTrue(HapticRateLimiter(50L).allow(0L))
         assertTrue(HapticRateLimiter(50L).allow(1_000_000L))
     }
 
-    @Test fun detentsInsideTheWindowAreSuppressed() {
+    @Test fun actionsInsideTheWindowAreSuppressed() {
         val limiter = HapticRateLimiter(50L)
         assertTrue(limiter.allow(1_000L))
         assertFalse(limiter.allow(1_010L))
@@ -66,7 +66,7 @@ class HapticPolicyTest {
         assertEquals(0, limiter.suppressedCount())
     }
 
-    @Test fun resetMakesTheNextDetentImmediate() {
+    @Test fun resetMakesTheNextActionImmediate() {
         val limiter = HapticRateLimiter(50L)
         assertTrue(limiter.allow(0L))
         assertFalse(limiter.allow(10L))
@@ -88,31 +88,29 @@ class HapticPolicyTest {
 
     @Test fun noPulseWhenTheDeviceHasNoMotor() {
         assertFalse(
-            HapticPolicy.shouldPulse(HapticLevel.STRONG, available = false, onNowPlaying = true, stateChanged = true)
+            HapticPolicy.shouldPulse(HapticLevel.STRONG, available = false, accepted = true)
         )
     }
 
     @Test fun noPulseWhenTurnedOff() {
         assertFalse(
-            HapticPolicy.shouldPulse(HapticLevel.OFF, available = true, onNowPlaying = true, stateChanged = true)
+            HapticPolicy.shouldPulse(HapticLevel.OFF, available = true, accepted = true)
         )
     }
 
-    @Test fun noPulseWhenTheDetentChangedNothing() {
+    @Test fun noPulseWhenTheActionWasNotAccepted() {
         assertFalse(
-            HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, onNowPlaying = false, stateChanged = false)
+            HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, accepted = false)
         )
     }
 
     @Test fun pulseWhenTheSelectionMoved() {
         assertTrue(
-            HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, onNowPlaying = false, stateChanged = true)
+            HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, accepted = true)
         )
     }
 
-    @Test fun pulseOnNowPlayingEvenWithoutAStateChange() {
-        assertTrue(
-            HapticPolicy.shouldPulse(HapticLevel.MEDIUM, available = true, onNowPlaying = true, stateChanged = false)
-        )
+    @Test fun noPulseForAnUnacceptedNowPlayingAction() {
+        assertFalse(HapticPolicy.shouldPulse(HapticLevel.MEDIUM, available = true, accepted = false))
     }
 }

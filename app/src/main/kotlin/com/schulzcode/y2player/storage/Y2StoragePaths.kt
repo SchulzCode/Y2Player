@@ -6,6 +6,10 @@ import java.io.File
 
 data class StorageRoot(val id: String, val directory: File)
 
+internal fun preferredWritableRoot(roots: List<StorageRoot>): StorageRoot? =
+    roots.firstOrNull { it.id == "sdcard" && it.directory.canWrite() }
+        ?: roots.firstOrNull { it.directory.canWrite() }
+
 internal fun isFreshUptimeReading(nowMs: Long, readAtMs: Long, maxAgeMs: Long): Boolean =
     readAtMs >= 0L &&
         nowMs >= readAtMs &&

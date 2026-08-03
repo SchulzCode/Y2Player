@@ -38,19 +38,19 @@ data class Track(
     val favorite: Boolean = false,
     val playbackError: String? = null
 ) {
-    val displayArtist: String get() = artist?.takeIf { it.isNotBlank() } ?: "Unknown artist"
-    val displayAlbum: String get() = album?.takeIf { it.isNotBlank() } ?: "Unknown album"
+    val displayArtist: String get() = artist?.trim()?.takeIf { it.isNotEmpty() } ?: "Unknown artist"
+    val displayAlbum: String get() = album?.trim()?.takeIf { it.isNotEmpty() } ?: "Unknown album"
 
     val primaryArtist: String get() = ArtistCredit.primary(displayArtist)
 
     val featuredArtist: String? get() = ArtistCredit.featured(displayArtist)
 
-    val albumArtistName: String get() = albumArtist?.takeIf { it.isNotBlank() } ?: primaryArtist
+    val albumArtistName: String get() = albumArtist?.trim()?.takeIf { it.isNotEmpty() } ?: primaryArtist
 
     // Album membership answers to the album artist tag first, so one "feat." track
     // cannot break an album apart when browsing by artist.
     fun isCreditedTo(name: String): Boolean =
-        albumArtistName == name || ArtistCredit.credits(displayArtist, name)
+        albumArtistName.equals(name.trim(), ignoreCase = true) || ArtistCredit.credits(displayArtist, name)
 
     val extension: String get() = absolutePath.substringAfterLast('.', "").lowercase()
 
@@ -74,25 +74,29 @@ object ArtistCredit {
     private const val BRACKETED_MARKER = "with"
 
     fun primary(credit: String): String {
-        val at = markerStart(credit)
-        if (at < 0) return credit
-        val head = credit.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
-        return head.ifEmpty { credit }
+        val cleaned = credit.trim()
+        val at = markerStart(cleaned)
+        if (at < 0) return cleaned
+        val head = cleaned.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
+        return head.ifEmpty { cleaned }
     }
 
     fun featured(credit: String): String? {
-        val at = markerStart(credit)
+        val cleaned = credit.trim()
+        val at = markerStart(cleaned)
         if (at < 0) return null
-        val length = markerLengthAt(credit, at)
+        val length = markerLengthAt(cleaned, at)
         if (length <= 0) return null
-        val tail = credit.substring(at + length).trim().trim(')', ']').trim()
+        val tail = cleaned.substring(at + length).trim().trim(')', ']').trim()
         return tail.ifEmpty { null }
     }
 
     fun credits(credit: String, name: String): Boolean {
-        val at = markerStart(credit)
-        if (at < 0) return credit == name
-        return primary(credit) == name || featured(credit) == name
+        val expected = name.trim()
+        val at = markerStart(credit.trim())
+        if (at < 0) return credit.trim().equals(expected, ignoreCase = true)
+        return primary(credit).equals(expected, ignoreCase = true) ||
+            featured(credit)?.equals(expected, ignoreCase = true) == true
     }
 
     // Scans without allocating; the overwhelming majority of credits have no marker.

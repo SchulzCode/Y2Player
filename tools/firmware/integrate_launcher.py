@@ -32,6 +32,7 @@ import tempfile
 import zipfile
 
 import sparse
+import patch_mtk_keylayout as keylayout_patch
 import patch_primary_audio_hal as hal_patch
 import system_package_policy as package_policy
 
@@ -40,11 +41,13 @@ STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
 TARGET_APK = "/priv-app/Y2Player.apk"
 TARGET_NATIVE_LIBRARY = "/lib/liby2audio.so"
 TARGET_PRIMARY_AUDIO_HAL = hal_patch.HAL_SYSTEM_PATH
+TARGET_KEY_LAYOUT = keylayout_patch.KEYLAYOUT_SYSTEM_PATH
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 # Matches stock files in both /system/priv-app and /system/lib.
 SELINUX_CONTEXT = b"u:object_r:system_file:s0\x00"
 APK_MODE = "0100644"  # regular file, rw-r--r--
 NATIVE_LIBRARY_MODE = "0100644"
+KEY_LAYOUT_MODE = "0100644"
 
 def run(cmd, **kwargs):
     result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
@@ -254,7 +257,7 @@ def main():
     written, block_size, blocks = sparse.unpack(args.system, raw)
     log(f"      {written} bytes ({blocks} blocks x {block_size})")
 
-    log("\n[2/6] verifying stock contents and preparing guarded HAL patch")
+    log("\n[2/6] verifying stock contents and preparing guarded system patches")
     stock_stat = query(raw, f"stat {STOCK_LAUNCHER}")
     if "Inode" not in stock_stat:
         raise SystemExit(f"{STOCK_LAUNCHER} not found — is this the stock Y2 system image?")
@@ -322,6 +325,25 @@ def main():
         f"SHA-256 {hal_patch.PATCHED_SHA256}"
     )
     log("      DAC frequency hook: guarded numeric 44100/48000-Hz ioctl")
+    stock_keylayout = raw + ".stock-mtk-kpd.kl"
+    patched_keylayout = raw + ".patched-mtk-kpd.kl"
+    if not dump(raw, TARGET_KEY_LAYOUT, stock_keylayout):
+        raise SystemExit(f"could not read stock {TARGET_KEY_LAYOUT}")
+    try:
+        with open(stock_keylayout, "rb") as handle:
+            patched_keylayout_bytes = keylayout_patch.patch_keylayout(handle.read())
+        keylayout_patch.write_atomic(patched_keylayout, patched_keylayout_bytes)
+    except keylayout_patch.PatchError as error:
+        raise SystemExit(f"stock keypad layout rejected: {error}") from error
+    log(
+        f"      stock keypad: {keylayout_patch.STOCK_SIZE} bytes, "
+        f"SHA-256 {keylayout_patch.STOCK_SHA256}"
+    )
+    log(
+        f"      patched keypad: {len(patched_keylayout_bytes)} bytes, "
+        f"SHA-256 {keylayout_patch.PATCHED_SHA256}"
+    )
+    log("      physical volume scan codes 115/114: app-owned FF/REW surrogates")
     free_before = free_bytes(raw)
     log(f"      free space before: {free_before} bytes")
 
@@ -353,6 +375,16 @@ def main():
             f"ea_set -f {context_file} {os.path.basename(TARGET_PRIMARY_AUDIO_HAL)} "
             "security.selinux"
         ),
+        "cd /usr/keylayout",
+        f"rm {os.path.basename(TARGET_KEY_LAYOUT)}",
+        f"write {os.path.abspath(patched_keylayout)} {os.path.basename(TARGET_KEY_LAYOUT)}",
+        f"sif {os.path.basename(TARGET_KEY_LAYOUT)} mode {KEY_LAYOUT_MODE}",
+        f"sif {os.path.basename(TARGET_KEY_LAYOUT)} uid 0",
+        f"sif {os.path.basename(TARGET_KEY_LAYOUT)} gid 0",
+        (
+            f"ea_set -f {context_file} {os.path.basename(TARGET_KEY_LAYOUT)} "
+            "security.selinux"
+        ),
     ]
     if "Inode" in query(raw, f"stat {STOCK_LAUNCHER_ODEX}"):
         commands.insert(len(prune_paths) + 1, f"rm {STOCK_LAUNCHER_ODEX}")
@@ -363,7 +395,9 @@ def main():
     )
     result = debugfs(raw, commands, write=True)
     if result.returncode != 0:
-        for temporary in (context_file, stock_hal, patched_hal):
+        for temporary in (
+            context_file, stock_hal, patched_hal, stock_keylayout, patched_keylayout
+        ):
             if os.path.exists(temporary):
                 os.unlink(temporary)
         raise SystemExit(f"debugfs failed:\n{result.stdout}\n{result.stderr}")
@@ -374,6 +408,8 @@ def main():
     os.unlink(context_file)
     os.unlink(stock_hal)
     os.unlink(patched_hal)
+    os.unlink(stock_keylayout)
+    os.unlink(patched_keylayout)
 
     log("\n[4/6] reconciling filesystem and clearing freed blocks")
     # First reconcile metadata. Discard may punch holes on capable hosts, but
@@ -476,6 +512,35 @@ def main():
         problems.append("primary-audio HAL SELinux context missing or wrong")
     else:
         log(f"      HAL selinux: {hal_context.strip().splitlines()[-1]}")
+    keylayout_stat = query(raw, f"stat {TARGET_KEY_LAYOUT}")
+    if "Inode" not in keylayout_stat:
+        problems.append("patched keypad layout was not installed")
+    else:
+        mode_line = next((line for line in keylayout_stat.splitlines() if "Mode:" in line), "")
+        if "0644" not in mode_line:
+            problems.append(f"unexpected keypad-layout mode: {mode_line.strip()}")
+        if "User:     0" not in keylayout_stat or "Group:     0" not in keylayout_stat:
+            problems.append("unexpected keypad-layout ownership (expected root:root)")
+        installed_keylayout = raw + ".installed-mtk-kpd.kl"
+        if not dump(raw, TARGET_KEY_LAYOUT, installed_keylayout):
+            problems.append("installed keypad layout could not be read back")
+        else:
+            try:
+                with open(installed_keylayout, "rb") as handle:
+                    installed_keylayout_sha = keylayout_patch.verify_patched_keylayout(handle.read())
+                log(
+                    f"      {TARGET_KEY_LAYOUT}: {mode_line.strip()} "
+                    f"Size: {os.path.getsize(installed_keylayout)} SHA-256: {installed_keylayout_sha}"
+                )
+            except keylayout_patch.PatchError as error:
+                problems.append(f"installed keypad layout is invalid: {error}")
+            finally:
+                os.unlink(installed_keylayout)
+    keylayout_context = query(raw, f"ea_get {TARGET_KEY_LAYOUT} security.selinux")
+    if "system_file" not in keylayout_context:
+        problems.append("keypad-layout SELinux context missing or wrong")
+    else:
+        log(f"      keypad selinux: {keylayout_context.strip().splitlines()[-1]}")
     # Nothing else in priv-app may have changed.
     listing = query(raw, "ls /priv-app")
     if "MyLauncher" in listing:

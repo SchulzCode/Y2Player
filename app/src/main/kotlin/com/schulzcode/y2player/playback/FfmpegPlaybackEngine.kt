@@ -62,12 +62,12 @@ internal sealed interface EngineCommand {
         override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is Seek
     }
 
-    data class Volume(val value: Float) : EngineCommand {
-        override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is Volume
-    }
-
-    data class OutputGain(val value: Float) : EngineCommand {
-        override fun isSupersededBy(incoming: EngineCommand): Boolean = incoming is OutputGain
+    data class OutputGain(
+        val value: Float,
+        val onApplied: (() -> Unit)? = null
+    ) : EngineCommand {
+        override fun isSupersededBy(incoming: EngineCommand): Boolean =
+            onApplied == null && incoming is OutputGain
     }
 
     data class Balance(val value: Int) : EngineCommand {
@@ -243,6 +243,8 @@ internal class FfmpegPlaybackEngine(
     private val appContext = context.applicationContext
     private val thread = HandlerThread("y2-ffmpeg", Process.THREAD_PRIORITY_AUDIO).apply { start() }
     private val handler = Handler(thread.looper)
+    // This explicit mailbox is also the oracle that distinguishes an expected
+    // native abort from a decoder failure; ordinary Handler messages cannot do that.
     private val commandLock = Any()
 
     private val commands = ArrayDeque<EngineCommand>(MAX_PENDING_COMMANDS)
@@ -271,7 +273,6 @@ internal class FfmpegPlaybackEngine(
 
     private var current: Slot? = null
     private var next: Slot? = null
-    private var masterVolume = PcmGain.UNITY
     private var balance = AudioBalance.CENTRE
     private var replayGainMode = ReplayGainMode.OFF
     private var shuffling = false
@@ -356,14 +357,9 @@ internal class FfmpegPlaybackEngine(
         enqueue(EngineCommand.Seek(positionMs.coerceAtLeast(0L)), abortCurrent = true)
     }
 
-    override fun setVolume(volume: Float) {
+    override fun setOutputGain(gain: Float, onApplied: (() -> Unit)?) {
         if (releaseRequested) return
-        enqueue(EngineCommand.Volume(volume.coerceIn(0f, PcmGain.UNITY)))
-    }
-
-    override fun setOutputGain(gain: Float) {
-        if (releaseRequested) return
-        enqueue(EngineCommand.OutputGain(gain.coerceIn(0f, 1f)))
+        enqueue(EngineCommand.OutputGain(gain.coerceIn(0f, 1f), onApplied))
     }
 
     override fun setBalance(balance: Int) {
@@ -403,6 +399,8 @@ internal class FfmpegPlaybackEngine(
             }
             commands.addLast(command)
 
+            // Publish the superseding command before aborting old JNI work. Otherwise
+            // a late abort can poison the decoder opened for the new command.
             if (abortCurrent) currentDecoder?.requestAbort()
             if (abortNext) nextDecoder?.requestAbort()
 
@@ -491,8 +489,10 @@ internal class FfmpegPlaybackEngine(
             EngineCommand.Start -> performStart()
             EngineCommand.Pause -> performPause()
             is EngineCommand.Seek -> performSeek(command.positionMs)
-            is EngineCommand.Volume -> masterVolume = command.value
-            is EngineCommand.OutputGain -> output.setOutputGain(command.value)
+            is EngineCommand.OutputGain -> {
+                output.setOutputGain(command.value)
+                command.onApplied?.invoke()
+            }
             is EngineCommand.Balance -> balance = command.value
             is EngineCommand.ConfigureReplayGain -> {
                 replayGainMode = command.mode
@@ -566,6 +566,7 @@ internal class FfmpegPlaybackEngine(
         enterState(EngineState.PREPARING)
 
         val decoder = NativeDecoder()
+        // Publish before open so a superseding request can interrupt a cold-card open.
         currentDecoder = decoder
         try {
             val info = decoder.open(command.track.absolutePath, PcmFormat.SAMPLE_RATE, PcmFormat.CHANNELS)
@@ -869,7 +870,7 @@ internal class FfmpegPlaybackEngine(
             currentBlock.pcm,
             offsetSamples,
             sampleCount,
-            masterVolume * slot.replayGain.linearGain,
+            slot.replayGain.linearGain,
             balance
         )
         output.write(currentBlock.pcm, offsetSamples, sampleCount)
@@ -913,6 +914,8 @@ internal class FfmpegPlaybackEngine(
             return
         }
 
+        // Codecs return different AVFrame sizes. Consume only the overlap and keep
+        // the longer block's remainder; padding it would distort time and add silence.
         val mixFrameCount = min(currentRemaining, nextRemaining)
         val currentOffsetSamples = currentBlock.consumedSampleOffset
         PcmGain.crossfadeInto(
@@ -923,8 +926,8 @@ internal class FfmpegPlaybackEngine(
             mixFrameCount,
             transitionedFrames,
             transitionFrames,
-            masterVolume * currentSlot.replayGain.linearGain,
-            masterVolume * nextSlot.replayGain.linearGain,
+            currentSlot.replayGain.linearGain,
+            nextSlot.replayGain.linearGain,
             balance
         )
         output.write(

@@ -46,7 +46,7 @@ android {
         applicationId = "com.schulzcode.y2player"
         minSdk = 19
         targetSdk = 19
-        versionCode = 7
+        versionCode = 8
         versionName = "2.2"
 
         buildConfigField("String", "BUILD_ID", "\"$resolvedBuildId\"")

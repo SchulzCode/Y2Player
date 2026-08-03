@@ -73,6 +73,7 @@ data class PlayerPreferencesState(
     val volumeLevel: Int = VolumeCurve.STEPS,
     val replayGainMode: ReplayGainMode = ReplayGainMode.OFF,
     val hapticLevel: HapticLevel = HapticLevel.OFF,
+    val wrapLists: Boolean = true,
     val keepScreenOnWhilePlaying: Boolean = false,
     val extraTrackInfo: Boolean = false,
     val lightTheme: Boolean = false,

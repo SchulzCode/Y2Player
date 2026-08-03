@@ -471,19 +471,26 @@ class LibraryRepository(
         publish(current.copy(revision = revision, recentlyPlayedIds = ids))
     }
 
-    fun resetLibrary() {
+    fun resetLibrary(rescan: Boolean = true, onComplete: () -> Unit = {}) {
         cancelScan("library reset")
-        stateExecutor.execute {
-            database.resetLibrary()
-            logger.warn("Library", "library and user collections reset")
-            revision += 1
-            tracksRevision += 1
-            availabilityRevision += 1
-            publish(LibraryState(
-                revision = revision,
-                tracksRevision = tracksRevision,
-                availabilityRevision = availabilityRevision
-            ))
+        // Serialize behind the scanner. Otherwise an in-flight batch can recreate
+        // rows after the reset transaction has deleted them. The database operation
+        // stays on the state executor so queued user-state writes finish first.
+        scanExecutor.execute {
+            stateExecutor.execute {
+                database.resetLibrary()
+                logger.warn("Library", "library and user collections reset")
+                revision += 1
+                tracksRevision += 1
+                availabilityRevision += 1
+                publish(LibraryState(
+                    revision = revision,
+                    tracksRevision = tracksRevision,
+                    availabilityRevision = availabilityRevision
+                ))
+                if (rescan) scan(ScanReason.MANUAL)
+                mainHandler.post(onComplete)
+            }
         }
     }
 

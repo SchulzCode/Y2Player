@@ -11,7 +11,7 @@ class DiagnosticCodeTest {
     fun `action codes are snake case and carry no class name`() {
         assertEquals("play_pause", AppAction.PlayPause.code)
         assertEquals("show_now_playing", AppAction.ShowNowPlaying.code)
-        assertEquals("wheel_clockwise", AppAction.WheelClockwise.code)
+        assertEquals("wheel_clockwise", AppAction.WheelMoved(3).code)
         assertEquals("confirm_long", AppAction.ConfirmLong.code)
     }
 
@@ -83,7 +83,7 @@ class DiagnosticCodeTest {
     @Test
     fun `every action the reducer accepts has a unique code`() {
         val actions = listOf(
-            AppAction.WheelClockwise, AppAction.WheelCounterClockwise, AppAction.Confirm,
+            AppAction.WheelMoved(1), AppAction.WheelMoved(-1), AppAction.Confirm,
             AppAction.ConfirmLong, AppAction.ShowNowPlaying, AppAction.Back, AppAction.NavigateHome,
             AppAction.Left, AppAction.Right, AppAction.PlayPause, AppAction.MediaNext,
             AppAction.MediaPrevious, AppAction.MediaStop, AppAction.SeekBackward,

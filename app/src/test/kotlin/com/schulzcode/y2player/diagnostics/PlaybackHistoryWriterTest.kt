@@ -126,6 +126,21 @@ class PlaybackHistoryWriterTest {
     }
 
     @Test
+    fun `failed rotation keeps the active history instead of deleting it`() {
+        directory = temporary.newFolder("Y2Player")
+        val history = history()
+        val previous = "x".repeat((PlaybackHistory.MAX_ACTIVE_BYTES + 1).toInt())
+        activeFile().writeText(previous)
+        backupFile().mkdirs()
+        File(backupFile(), "prevents-delete").writeText("old")
+
+        assertTrue(history.append(session("AfterFailedRotation")))
+        val retained = activeFile().readText()
+        assertTrue(retained.startsWith(previous))
+        assertTrue(retained.contains("AfterFailedRotation"))
+    }
+
+    @Test
     fun `summary counts sessions across both files and ignores blank lines`() {
         directory = temporary.newFolder("Y2Player")
         activeFile().writeText("{\"a\":1}\n\n{\"a\":2}\n")
@@ -142,7 +157,7 @@ class PlaybackHistoryWriterTest {
         directory = temporary.newFolder("Y2Player")
         activeFile().writeText("{\"a\":1}\n{\"a\":2}\n{\"trunca")
 
-        assertEquals(3, history().summary().sessions)
+        assertEquals(2, history().summary().sessions)
     }
 
     @Test
@@ -162,6 +177,25 @@ class PlaybackHistoryWriterTest {
         assertFalse(activeFile().exists())
         assertFalse(backupFile().exists())
         assertFalse("nothing left to clear", history.clear())
+    }
+
+    @Test
+    fun `summary and clear cover history split across storage volumes`() {
+        val internal = temporary.newFolder("internal", "Y2Player")
+        val sdcard = temporary.newFolder("sdcard", "Y2Player")
+        File(internal, PlaybackHistory.ACTIVE_NAME).writeText("{\"title\":\"Internal\"}\n")
+        File(sdcard, PlaybackHistory.ACTIVE_NAME).writeText("{\"title\":\"SD\"}\n")
+        val history = PlaybackHistory(
+            directoryProvider = { sdcard },
+            appVersion = "2.2",
+            onWarning = {},
+            allDirectoriesProvider = { listOf(sdcard, internal) }
+        )
+
+        assertEquals(2, history.summary().sessions)
+        assertTrue(history.clear())
+        assertFalse(File(internal, PlaybackHistory.ACTIVE_NAME).exists())
+        assertFalse(File(sdcard, PlaybackHistory.ACTIVE_NAME).exists())
     }
 
     @Test

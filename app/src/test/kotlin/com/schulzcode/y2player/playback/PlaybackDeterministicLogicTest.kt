@@ -35,13 +35,16 @@ class PlaybackDeterministicLogicTest {
         assertTrue(EngineCommand.Pause.isSupersededBy(EngineCommand.Start))
     }
 
-    @Test fun repeatedVolumeAndBalanceStepsCoalesce() {
-        assertTrue(EngineCommand.Volume(0.2f).isSupersededBy(EngineCommand.Volume(0.9f)))
+    @Test fun repeatedOutputGainAndBalanceStepsCoalesce() {
         assertTrue(EngineCommand.OutputGain(0.2f).isSupersededBy(EngineCommand.OutputGain(0.9f)))
-        assertFalse(EngineCommand.OutputGain(0.2f).isSupersededBy(EngineCommand.Volume(0.9f)))
         assertTrue(EngineCommand.Balance(-10).isSupersededBy(EngineCommand.Balance(10)))
-        assertFalse(EngineCommand.Volume(0.2f).isSupersededBy(EngineCommand.Balance(10)))
-        assertFalse(EngineCommand.Balance(10).isSupersededBy(EngineCommand.Volume(0.2f)))
+        assertFalse(EngineCommand.OutputGain(0.2f).isSupersededBy(EngineCommand.Balance(10)))
+        assertFalse(EngineCommand.Balance(10).isSupersededBy(EngineCommand.OutputGain(0.2f)))
+    }
+
+    @Test fun outputGainAcknowledgementCannotBeCoalescedAway() {
+        val acknowledged = EngineCommand.OutputGain(0.2f) {}
+        assertFalse(acknowledged.isSupersededBy(EngineCommand.OutputGain(0.9f)))
     }
 
     @Test fun newLoadSkipInvalidatesEveryPendingPlaybackCommand() {
@@ -61,7 +64,7 @@ class PlaybackDeterministicLogicTest {
     @Test fun anExplicitSkipIsOnlyReplacedByAnotherSkip() {
         assertTrue(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.SkipToPrepared))
         assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.Start))
-        assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.Volume(1f)))
+        assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.OutputGain(1f)))
         assertFalse(EngineCommand.SkipToPrepared.isSupersededBy(EngineCommand.ClearNext))
     }
 

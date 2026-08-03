@@ -6,7 +6,7 @@ import android.graphics.Path
 import android.graphics.RectF
 
 enum class Y2Icon {
-    SONG, FAVORITE, RECENT, ALBUM, ARTIST, FOLDER, PLAYLIST, PLAYING, QUEUE,
+    SONG, FAVORITE, FAVORITE_FILLED, RECENT, ALBUM, ARTIST, FOLDER, PLAYLIST, PLAYING, QUEUE,
     BLUETOOTH, SETTINGS, STORAGE, DISPLAY, DIAGNOSTICS, SORT, ADD, INFO,
     ACTION, REFRESH, HEADPHONES, SPEAKER, DISCONNECTED, UNKNOWN, CHEVRON, PLAY, PAUSE,
     PREVIOUS, NEXT, CHECK, PREPARING, WARNING, SHUFFLE, REPEAT, TIMER, DAC,
@@ -30,6 +30,10 @@ class Y2IconPainter(private val paint: Paint, density: Float) {
         when (icon) {
             Y2Icon.SONG -> drawSong(canvas, left, top, size)
             Y2Icon.FAVORITE -> drawFavorite(canvas, left, top, size)
+            Y2Icon.FAVORITE_FILLED -> {
+                paint.style = Paint.Style.FILL
+                drawFavorite(canvas, left, top, size)
+            }
             Y2Icon.RECENT -> drawRecent(canvas, left, top, size)
             Y2Icon.ALBUM -> drawAlbum(canvas, left, top, size)
             Y2Icon.ARTIST -> drawArtist(canvas, left, top, size)

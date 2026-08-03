@@ -39,6 +39,30 @@ class QueueControllerTest {
     }
 
     @Test
+    fun enablingShuffleCannotStrandUnplayedQueueItemsBehindTheCurrentTrack() {
+        val queue = QueueController(listOf(10, 20, 30, 40, 50), initialIndex = 2)
+
+        queue.toggleShuffle()
+
+        val remaining = generateSequence { queue.next() }.toList()
+        assertEquals(setOf(40L, 50L), remaining.toSet())
+        assertEquals(2, remaining.size)
+    }
+
+    @Test
+    fun changingShuffleModePreservesTraversalProgress() {
+        val queue = QueueController(listOf(10, 20, 30, 40, 50), initialIndex = 0)
+        queue.toggleShuffle()
+        val firstShuffled = queue.next()!!
+
+        queue.toggleShuffle()
+
+        val remainder = generateSequence { queue.next() }.toList()
+        assertEquals(setOf(10L, 20L, 30L, 40L, 50L) - setOf(10L, firstShuffled), remainder.toSet())
+        assertEquals(3, remainder.size)
+    }
+
+    @Test
     fun shuffleAllStartsAtBeginningAndPlaysTheCompleteLibrary() {
         val queue = QueueController()
         val tracks = (1L..12L).toList()

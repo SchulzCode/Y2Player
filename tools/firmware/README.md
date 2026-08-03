@@ -12,6 +12,10 @@
   `/system/lib/libaudio.primary.default.so`; it refuses unknown or already
   modified inputs. `primary_audio_hal_hook.S` is the auditable ARM source for
   its independently assembled payload.
+- `patch_mtk_keylayout.py` validates the exact stock `mtk-kpd.kl` and remaps
+  only physical scan codes 115/114 to media surrogates. Y2Player recognizes
+  those surrogates only when the original scan code came from the local
+  keypad, leaving actual headset and Bluetooth transport keys unchanged.
 - `verify_images.py` independently reopens and verifies the finished image.
 - `sparse.py` converts Android sparse/ext4 representations.
 - `restore_stock_launcher.py` is a separate recovery utility, not a normal
@@ -27,6 +31,6 @@ payloads do not inflate the sparse output.
 
 These tools operate on `system.img` only. The immutable
 `OriginalFirmware/system.img` remains the recovery base; every generated image
-receives the HAL patch and is checked against its audited SHA-256. The normal
-entry point is `.\tools\build-firmware.ps1`; none of these tools flashes a
-device.
+receives the HAL and keypad patches and checks both against audited SHA-256
+values. The normal entry point is `.\tools\build-firmware.ps1`; none of these
+tools flashes a device.

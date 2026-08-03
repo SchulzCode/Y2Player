@@ -27,6 +27,7 @@ class AppPreferences(context: Context) {
         volumeLevel = VolumeCurve.clampLevel(integer(KEY_VOLUME_LEVEL, VolumeCurve.STEPS)),
         replayGainMode = ReplayGainMode.fromStorage(string(KEY_REPLAY_GAIN_MODE, null)),
         hapticLevel = HapticLevel.fromStorage(string(KEY_HAPTIC_LEVEL, null)),
+        wrapLists = boolean(KEY_WRAP_LISTS, true),
         keepScreenOnWhilePlaying = boolean(KEY_KEEP_SCREEN_ON, false),
         extraTrackInfo = boolean(KEY_EXTRA_TRACK_INFO, false),
         lightTheme = boolean(KEY_LIGHT_THEME, false),
@@ -74,6 +75,7 @@ class AppPreferences(context: Context) {
             putInt(KEY_VOLUME_LEVEL, VolumeCurve.clampLevel(appLevel))
         }
     }
+    fun toggleWrapLists() = updateBoolean(KEY_WRAP_LISTS, !snapshot().wrapLists)
 
     fun adjustVolumeLevel(direction: Int): PlayerPreferencesState {
         val current = snapshot()
@@ -177,6 +179,7 @@ class AppPreferences(context: Context) {
         private const val KEY_VOLUME_LEVEL = "volume_level"
         private const val KEY_REPLAY_GAIN_MODE = "replay_gain_mode"
         private const val KEY_HAPTIC_LEVEL = "haptic_level"
+        private const val KEY_WRAP_LISTS = "wrap_lists"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_EXTRA_TRACK_INFO = "extra_track_info"
         private const val KEY_LIGHT_THEME = "light_theme"

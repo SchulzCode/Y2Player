@@ -20,12 +20,16 @@ class MediaButtonReceiver : BroadcastReceiver() {
         logIncomingEvent(context, intent.action, event)
         event ?: return
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
-        val serviceRequest = MediaButtonPolicy.serviceRequest(event.keyCode, source)
-            ?: return logRejected(context, "unmapped_key", source, event)
         val fromLocalKeypad = HardwareKeyGate.isLocalKeypad(event.deviceId)
+        val serviceRequest = MediaButtonPolicy.serviceRequest(
+            keyCode = event.keyCode,
+            source = source,
+            scanCode = event.scanCode,
+            fromLocalKeypad = fromLocalKeypad
+        ) ?: return logRejected(context, "unmapped_key", source, event)
         val localKeysWhileScreenOff = (context.applicationContext as? Y2Application)
             ?.container?.preferences?.snapshot()?.localKeysWhileScreenOff ?: false
-        if (!HardwareKeyGate.isInputAllowed(
+        if (!serviceRequest.isVolumeAdjustment && !HardwareKeyGate.isInputAllowed(
                 context, event.keyCode, source, fromLocalKeypad, localKeysWhileScreenOff
             )
         ) {
@@ -41,17 +45,25 @@ class MediaButtonReceiver : BroadcastReceiver() {
                 downTime = event.downTime,
                 deviceId = event.deviceId,
                 repeatCount = event.repeatCount,
-                source = source
+                source = source,
+                allowRepeats = serviceRequest.isVolumeAdjustment
             )
         ) {
             return logRejected(context, "press_gate", source, event)
         }
         if (BuildConfig.DEBUG) {
-            InputProbe.log("BROADCAST", event, "intent=${intent.action} mapped=${serviceRequest.keyCode}")
+            InputProbe.log(
+                "BROADCAST",
+                event,
+                "intent=${intent.action} mapped=${serviceRequest.keyCode} volume=${serviceRequest.volumeDirection}"
+            )
         }
         val serviceIntent = Intent(context, PlaybackService::class.java).apply {
             action = serviceRequest.action
             putExtra(PlaybackService.EXTRA_MEDIA_KEY_CODE, serviceRequest.keyCode)
+            serviceRequest.volumeDirection?.let {
+                putExtra(PlaybackService.EXTRA_VOLUME_DIRECTION, it)
+            }
         }
         context.startService(serviceIntent)
     }
@@ -118,12 +130,27 @@ class MediaButtonReceiver : BroadcastReceiver() {
 }
 
 internal object MediaButtonPolicy {
-    data class ServiceRequest(val action: String, val keyCode: Int)
+    data class ServiceRequest(
+        val action: String,
+        val keyCode: Int,
+        val volumeDirection: Int? = null
+    ) {
+        val isVolumeAdjustment: Boolean get() = volumeDirection != null
+    }
 
-    fun serviceRequest(keyCode: Int, source: HardwareKeyGate.Source): ServiceRequest? =
-        playbackKeyCode(keyCode, source)?.let {
+    fun serviceRequest(
+        keyCode: Int,
+        source: HardwareKeyGate.Source,
+        scanCode: Int = 0,
+        fromLocalKeypad: Boolean = false
+    ): ServiceRequest? {
+        LocalVolumeKeyPolicy.direction(keyCode, scanCode, fromLocalKeypad)?.let { direction ->
+            return ServiceRequest(PlaybackService.ACTION_ADJUST_VOLUME, keyCode, direction)
+        }
+        return playbackKeyCode(keyCode, source)?.let {
             ServiceRequest(PlaybackService.ACTION_MEDIA_BUTTON, it)
         }
+    }
 
     fun playbackKeyCode(keyCode: Int, source: HardwareKeyGate.Source): Int? {
         if (source == HardwareKeyGate.Source.MEDIA_BROADCAST &&
@@ -146,6 +173,26 @@ internal object MediaButtonPolicy {
         }
         return if (mediaKey) keyCode else null
     }
+}
+
+/**
+ * The firmware maps only mtk-kpd scan codes 115/114 away from Android's
+ * framework-owned volume keys. Both the originating keypad and the unchanged
+ * Linux scan code are required here so real headset/Bluetooth transport keys
+ * retain their normal fast-forward/rewind behavior.
+ */
+internal object LocalVolumeKeyPolicy {
+    fun direction(keyCode: Int, scanCode: Int, fromLocalKeypad: Boolean): Int? {
+        if (!fromLocalKeypad) return null
+        return when {
+            keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD && scanCode == SCAN_VOLUME_UP -> 1
+            keyCode == KeyEvent.KEYCODE_MEDIA_REWIND && scanCode == SCAN_VOLUME_DOWN -> -1
+            else -> null
+        }
+    }
+
+    private const val SCAN_VOLUME_UP = 115
+    private const val SCAN_VOLUME_DOWN = 114
 }
 
 // Vendor delivery is not guaranteed to be a DOWN/UP pair. A DOWN dispatches
@@ -171,12 +218,20 @@ internal object MediaButtonPressGate {
         downTime: Long,
         deviceId: Int,
         repeatCount: Int,
-        source: HardwareKeyGate.Source
+        source: HardwareKeyGate.Source,
+        allowRepeats: Boolean = false
     ): Boolean {
         val edge = Edge(keyCode, eventTime, downTime, deviceId, source)
         return when (action) {
             KeyEvent.ACTION_DOWN -> {
-                if (repeatCount > 0 || isRepeatedDown(edge)) return false
+                if (repeatCount > 0) {
+                    if (!allowRepeats) return false
+                    pendingDown = edge
+                    lastDispatched = edge
+                    lastDispatchedAction = action
+                    return true
+                }
+                if (isRepeatedDown(edge)) return false
                 pendingDown = edge
                 dispatchUnlessBounce(edge, action)
             }

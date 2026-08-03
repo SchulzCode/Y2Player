@@ -2,8 +2,10 @@ package com.schulzcode.y2player.ui
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.media.AudioManager
 import android.os.Bundle
@@ -23,6 +25,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppEffect
 import com.schulzcode.y2player.core.state.AppStore
+import com.schulzcode.y2player.core.state.ListNavigationPolicy
 import com.schulzcode.y2player.core.state.code
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
@@ -39,6 +42,7 @@ import com.schulzcode.y2player.input.HardwareKeyGate
 import com.schulzcode.y2player.input.InputProbe
 import com.schulzcode.y2player.input.Y2InputController
 import com.schulzcode.y2player.library.LibraryRepository
+import com.schulzcode.y2player.playback.LocalVolumeKeyPolicy
 import com.schulzcode.y2player.playback.PlaybackService
 import com.schulzcode.y2player.playback.VolumeCurve
 import com.schulzcode.y2player.playback.VolumeMode
@@ -86,7 +90,17 @@ class MainActivity : Activity() {
     private var lastTransientMessage: String? = null
     private var lastKeepScreenOn = false
     private var lastAvailabilityRevision = Long.MIN_VALUE
+    private var screenReceiverRegistered = false
     @Volatile private var destroyed = false
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> playerView.setTextAnimationsVisible(false)
+                Intent.ACTION_SCREEN_ON -> playerView.setTextAnimationsVisible(true)
+            }
+        }
+    }
 
     private val stateListener = AppStore.StateListener { state ->
         playerView.render(state)
@@ -110,7 +124,7 @@ class MainActivity : Activity() {
     private val effectListener = AppStore.EffectListener(::handleEffect)
 
     private val actionLogger = AppStore.ActionListener { action, state ->
-        val wheel = action == AppAction.WheelClockwise || action == AppAction.WheelCounterClockwise
+        val wheel = action is AppAction.WheelMoved
         if (wheel) {
             eventLog.logRateLimited(
                 "wheel_action", WHEEL_LOG_WINDOW_MS,
@@ -193,12 +207,22 @@ class MainActivity : Activity() {
         uiSoundEffectsController = UiSoundEffectsController(this)
         bluetoothController = container.bluetoothController
         if (startupSafeMode) bluetoothController.stop()
-        hapticController = HapticController(this, container.eventLog)
+        hapticController = container.hapticController
         hapticController.setLevel(preferences.snapshot().hapticLevel)
-        inputController = Y2InputController(::dispatchInput)
-        playerView = Y2PlayerView(this, store::dispatch, container.artworkLoader)
+        inputController = Y2InputController(::dispatchInput) {
+            val current = store.state
+            ListNavigationPolicy.allowsAcceleration(current.currentScreen, ScreenContent.rows(current).size)
+        }
+        playerView = Y2PlayerView(this, { action -> store.dispatch(action) }, container.artworkLoader)
         playerView.isSoundEffectsEnabled = preferences.snapshot().uiSoundEffectsEnabled
         setContentView(playerView)
+        screenReceiverRegistered = runCatching {
+            registerReceiver(
+                screenStateReceiver,
+                IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) }
+            )
+            true
+        }.getOrDefault(false)
         startupSafeModeDeadline = SystemClock.uptimeMillis() + SAFE_MODE_KEY_WINDOW_MS
 
         storageMonitor = container.storageMonitor
@@ -269,11 +293,12 @@ class MainActivity : Activity() {
         val controller = uiSoundEffectsController
         backgroundExecutor.execute { controller.apply(uiSounds) }
         hapticController.setLevel(currentPreferences.hapticLevel)
-        hapticController.resume()
+        playerView.setTextAnimationsVisible(true)
     }
 
     override fun onPause() {
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_PAUSE)
+        playerView.setTextAnimationsVisible(false)
         super.onPause()
     }
 
@@ -285,7 +310,6 @@ class MainActivity : Activity() {
         unregisterVisibleStateListeners()
         inputController.resetHeldKeys()
         HardwareKeyGate.invalidateScreenState()
-        hapticController.suspend()
         super.onStop()
     }
 
@@ -316,17 +340,29 @@ class MainActivity : Activity() {
         unregisterVisibleStateListeners()
         store.removeEffectListener(effectListener)
         store.removeActionListener(actionLogger)
+        if (screenReceiverRegistered) runCatching { unregisterReceiver(screenStateReceiver) }
         playerView.release()
-        hapticController.release()
         backgroundExecutor.shutdownNow()
         super.onDestroy()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            if (store.state.preferences.volumeMode != VolumeMode.PERCEPTUAL) return super.dispatchKeyEvent(event)
+        val remappedVolumeDirection = LocalVolumeKeyPolicy.direction(
+            event.keyCode,
+            event.scanCode,
+            HardwareKeyGate.isLocalKeypad(event.deviceId)
+        )
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            remappedVolumeDirection != null
+        ) {
+            if (remappedVolumeDirection != null &&
+                !HardwareKeyGate.accept(event, HardwareKeyGate.Source.ACTIVITY)
+            ) return true
             if (event.action == KeyEvent.ACTION_DOWN) {
-                handleEffect(AppEffect.AdjustVolume(if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) 1 else -1))
+                val direction = remappedVolumeDirection
+                    ?: if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) 1 else -1
+                handleEffect(AppEffect.AdjustVolume(direction))
             }
             return true
         }
@@ -438,12 +474,12 @@ class MainActivity : Activity() {
                 val value = preferences.cycleHapticLevel()
                 applyPlaybackPreferences(value)
                 hapticController.setLevel(value.hapticLevel)
-                hapticController.wheelDetent()
                 showMessage(
-                    if (value.hapticLevel == HapticLevel.OFF) "Wheel haptics off"
-                    else "Wheel haptics ${value.hapticLevel.label.lowercase()} · ${value.hapticLevel.durationMs} ms pulse (API 19 has no amplitude control)"
+                    if (value.hapticLevel == HapticLevel.OFF) "Haptics off"
+                    else "Haptics ${value.hapticLevel.label.lowercase()} · ${value.hapticLevel.durationMs} ms pulse (API 19 has no amplitude control)"
                 )
             }
+            AppEffect.ToggleWrapLists -> applyPlaybackPreferences(preferences.toggleWrapLists())
             AppEffect.CycleVolumeMode -> cycleVolumeMode()
             AppEffect.CycleReplayGain -> applyPlaybackPreferences(preferences.cycleReplayGain())
             AppEffect.CycleSleepTimer -> requirePlayback { it.cycleSleepTimer() }
@@ -482,14 +518,17 @@ class MainActivity : Activity() {
             AppEffect.RefreshPlaybackHistory -> refreshPlaybackHistory()
             AppEffect.RefreshAudiobooks -> libraryRepository.refreshAudiobookProgress()
             is AppEffect.ClearAudiobookProgress -> {
-                requirePlayback { it.clearAudiobookProgress(effect.folderKey) }
-                libraryRepository.refreshAudiobookProgress()
-                showMessage("Progress cleared")
+                val binder = playbackBinder
+                if (binder == null) showMessage("Playback is starting") else binder.clearAudiobookProgress(effect.folderKey) { success ->
+                    if (success) {
+                        libraryRepository.refreshAudiobookProgress()
+                        showMessage("Progress cleared")
+                    } else showMessage("Could not clear progress")
+                }
             }
             AppEffect.ClearPlaybackHistory -> {
                 val binder = playbackBinder
-                if (binder == null) showMessage("Playback is starting") else backgroundExecutor.execute {
-                    val cleared = binder.clearHistory()
+                if (binder == null) showMessage("Playback is starting") else binder.clearHistory { cleared ->
                     showMessage(if (cleared) "Playback history cleared" else "No history to clear")
                     diagnosticsRepository.setPlaybackHistory(0, 0)
                 }
@@ -499,9 +538,13 @@ class MainActivity : Activity() {
                     .onFailure { showMessage(it.message ?: "Export failed") }
             }
             AppEffect.ResetLibrary -> {
-                requirePlayback { it.clearQueue() }
-                libraryRepository.resetLibrary()
-                showMessage("Library reset")
+                val binder = playbackBinder
+                if (binder == null) showMessage("Playback is starting") else binder.prepareLibraryReset {
+                    libraryRepository.resetLibrary(rescan = !safeModeManager.isSafeMode()) {
+                        diagnosticsRepository.setPlaybackHistory(0, 0)
+                        showMessage(if (safeModeManager.isSafeMode()) "Library reset" else "Library reset · scanning")
+                    }
+                }
             }
             AppEffect.EnterSafeMode -> {
                 safeModeManager.forceSafeMode()
@@ -530,34 +573,30 @@ class MainActivity : Activity() {
     }
 
     private fun dispatchInput(action: AppAction) {
-        if (action != AppAction.WheelClockwise && action != AppAction.WheelCounterClockwise) {
-            store.dispatch(action)
-            return
-        }
-        val before = store.state
-        store.dispatch(action)
-        val pulse = HapticPolicy.shouldPulse(
-            before.preferences.hapticLevel,
-            hapticController.available,
-            before.currentScreen == Screen.NowPlaying,
-            store.state !== before
-        )
-        if (pulse) hapticController.wheelDetent()
+        val wheel = action is AppAction.WheelMoved
+        val adjustsNowPlayingVolume = wheel && store.state.currentScreen == Screen.NowPlaying
+        if (wheel) playerView.onNavigationInput()
+        val accepted = store.dispatch(action)
+        if (accepted && !adjustsNowPlayingVolume) pulseAcceptedAction()
     }
 
     private fun adjustVolume(direction: Int) {
         if (store.state.preferences.volumeMode != VolumeMode.PERCEPTUAL) {
-            (getSystemService(Context.AUDIO_SERVICE) as AudioManager).adjustStreamVolume(
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            audioManager.adjustStreamVolume(
                 AudioManager.STREAM_MUSIC,
                 if (direction > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-                0
+                AudioManager.FLAG_SHOW_UI
             )
+            if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != before) pulseAcceptedAction()
             return
         }
         val before = store.state.preferences.volumeLevel
         val value = preferences.adjustVolumeLevel(direction)
         if (value.volumeLevel == before) return
         applyPlaybackPreferences(value)
+        pulseAcceptedAction()
         showMessage("Volume ${VolumeCurve.percentForLevel(value.volumeLevel)}%")
         eventLog.logRateLimited(
             "volume_level",
@@ -568,6 +607,15 @@ class MainActivity : Activity() {
             "level" to value.volumeLevel,
             "pct" to VolumeCurve.percentForLevel(value.volumeLevel)
         )
+    }
+
+    private fun pulseAcceptedAction() {
+        if (HapticPolicy.shouldPulse(
+                store.state.preferences.hapticLevel,
+                hapticController.available,
+                accepted = true
+            )
+        ) hapticController.acceptedAction()
     }
 
     private fun refreshPlaybackHistory() {

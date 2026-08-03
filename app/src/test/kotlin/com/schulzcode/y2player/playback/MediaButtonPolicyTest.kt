@@ -82,6 +82,44 @@ class MediaButtonPolicyTest {
         assertNull(MediaButtonPolicy.playbackKeyCode(KeyEvent.KEYCODE_ENTER, HardwareKeyGate.Source.Y2_BROADCAST))
     }
 
+    @Test fun remappedLocalKeypadVolumeKeysBecomeVolumeRequests() {
+        val up = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            scanCode = 115,
+            fromLocalKeypad = true
+        )
+        val down = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            scanCode = 114,
+            fromLocalKeypad = true
+        )
+        assertEquals(PlaybackService.ACTION_ADJUST_VOLUME, up?.action)
+        assertEquals(1, up?.volumeDirection)
+        assertEquals(PlaybackService.ACTION_ADJUST_VOLUME, down?.action)
+        assertEquals(-1, down?.volumeDirection)
+    }
+
+    @Test fun remoteAndOrdinaryMediaTransportKeysAreNotClaimedAsVolume() {
+        val remote = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            scanCode = 115,
+            fromLocalKeypad = false
+        )
+        val localMediaKey = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            scanCode = 168,
+            fromLocalKeypad = true
+        )
+        assertEquals(PlaybackService.ACTION_MEDIA_BUTTON, remote?.action)
+        assertNull(remote?.volumeDirection)
+        assertEquals(PlaybackService.ACTION_MEDIA_BUTTON, localMediaKey?.action)
+        assertNull(localMediaKey?.volumeDirection)
+    }
+
     @Test fun normalDownAndUpDispatchExactlyOnce() {
         assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 100L, downTime = 100L))
         assertFalse(edge(KeyEvent.ACTION_UP, eventTime = 180L, downTime = 100L))
@@ -105,11 +143,19 @@ class MediaButtonPolicyTest {
         assertFalse(edge(KeyEvent.ACTION_UP, eventTime = 340L, downTime = 290L))
     }
 
+    @Test fun volumeHoldDispatchesFrameworkRepeatEvents() {
+        assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 100L, downTime = 100L, allowRepeats = true))
+        assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 600L, downTime = 100L, repeatCount = 1, allowRepeats = true))
+        assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 650L, downTime = 100L, repeatCount = 2, allowRepeats = true))
+        assertFalse(edge(KeyEvent.ACTION_UP, eventTime = 700L, downTime = 100L, allowRepeats = true))
+    }
+
     private fun edge(
         action: Int,
         eventTime: Long,
         downTime: Long,
-        repeatCount: Int = 0
+        repeatCount: Int = 0,
+        allowRepeats: Boolean = false
     ): Boolean = MediaButtonPressGate.shouldDispatch(
         keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
         action = action,
@@ -117,6 +163,7 @@ class MediaButtonPolicyTest {
         downTime = downTime,
         deviceId = 7,
         repeatCount = repeatCount,
-        source = HardwareKeyGate.Source.MEDIA_BROADCAST
+        source = HardwareKeyGate.Source.MEDIA_BROADCAST,
+        allowRepeats = allowRepeats
     )
 }

@@ -3,6 +3,7 @@ package com.schulzcode.y2player.library
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.storage.StorageRoot
+import com.schulzcode.y2player.storage.preferredWritableRoot
 import java.io.File
 
 class PlaylistFileManager(private val database: LibraryDatabase) {
@@ -64,9 +65,7 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
     }
 
     fun exportAll(state: LibraryState, roots: List<StorageRoot>): ExportResult {
-        val root = roots.firstOrNull { it.id == "sdcard" && it.directory.canWrite() }
-            ?: roots.firstOrNull { it.directory.canWrite() }
-            ?: return ExportResult(0, null)
+        val root = preferredWritableRoot(roots) ?: return ExportResult(0, null)
         val directory = File(root.directory, "Y2Player/Playlists")
         if (!directory.exists() && !directory.mkdirs()) return ExportResult(0, null)
         var exported = 0

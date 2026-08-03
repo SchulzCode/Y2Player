@@ -317,7 +317,7 @@ class QueueController(
     fun toggleShuffle(): Boolean {
         shuffleEnabled = !shuffleEnabled
         if (shuffleEnabled) shuffleSeed = System.nanoTime()
-        rebuildOrderKeepingCurrent()
+        rebuildOrderKeepingProgress()
         return shuffleEnabled
     }
 
@@ -395,6 +395,31 @@ class QueueController(
         playOrder = buildPlayOrder()
         touchPlayOrder()
         cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+    }
+
+    private fun rebuildOrderKeepingProgress() {
+        val completedThrough = cursor
+        if (completedThrough == null || currentIndex == null) {
+            rebuildOrderKeepingCurrent()
+            return
+        }
+
+        val rebuilt = ArrayList<Int>(items.size)
+        val traversed = BooleanArray(items.size)
+        for (position in 0..completedThrough.coerceAtMost(playOrder.lastIndex)) {
+            val index = playOrder[position]
+            rebuilt += index
+            traversed[index] = true
+        }
+        val remaining = ArrayList<Int>(items.size - rebuilt.size)
+        for (index in items.indices) if (!traversed[index]) remaining += index
+        if (shuffleEnabled && remaining.size > 1) Collections.shuffle(remaining, Random(shuffleSeed))
+        rebuilt.addAll(remaining)
+
+        playOrder = rebuilt
+        touchPlayOrder()
+        cursor = completedThrough.coerceAtMost(playOrder.lastIndex)
+        currentIndex = cursor?.let(playOrder::get)
     }
 
     private fun buildPlayOrder(): MutableList<Int> = buildShuffleOrder(shuffleSeed)

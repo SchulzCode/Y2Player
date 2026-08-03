@@ -176,11 +176,15 @@ class AppReducerNowPlayingTest {
         assertEquals(AppEffect.ShuffleAll, result.effects.single())
     }
 
-    @Test fun rightOnHomeOpensThePlayerOnlyWhenATrackIsLoaded() {
+    @Test fun rightOnHomeAlwaysRequestsTheNextTrackWithoutOpeningThePlayer() {
         val idle = AppState(library = LibraryState(tracks = listOf(track)))
-        assertEquals(Screen.MainMenu, AppReducer.reduce(idle, AppAction.Right).state.currentScreen)
+        val idleResult = AppReducer.reduce(idle, AppAction.Right)
+        assertEquals(Screen.MainMenu, idleResult.state.currentScreen)
+        assertEquals(AppEffect.NextTrack, idleResult.effects.single())
         val playing = idle.copy(playback = PlaybackSnapshot(currentTrackId = 1, queue = listOf(1L), currentQueueIndex = 0))
-        assertEquals(Screen.NowPlaying, AppReducer.reduce(playing, AppAction.Right).state.currentScreen)
+        val playingResult = AppReducer.reduce(playing, AppAction.Right)
+        assertEquals(Screen.MainMenu, playingResult.state.currentScreen)
+        assertEquals(AppEffect.NextTrack, playingResult.effects.single())
     }
 
     @Test fun playlistsScreenHoldsOnlyUserPlaylists() {

@@ -30,18 +30,25 @@ class AppStore(
     var state: AppState = initialState
         private set
 
-    fun dispatch(action: AppAction) {
+    fun dispatch(action: AppAction): Boolean {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { dispatch(action) }
-            return
+            return false
         }
         pendingActions.addLast(action)
-        if (dispatching) return
+        if (dispatching) return false
         dispatching = true
+        var firstAction = true
+        var accepted = false
         try {
             while (pendingActions.isNotEmpty()) {
                 val next = pendingActions.removeFirst()
-                val reduction = AppReducer.reduce(state, next)
+                val before = state
+                val reduction = AppReducer.reduce(before, next)
+                if (firstAction) {
+                    accepted = reduction.state != before || reduction.effects.isNotEmpty()
+                    firstAction = false
+                }
                 state = reduction.state
                 actionListeners.forEach { it.onAction(next, state) }
                 stateListeners.forEach { it.onStateChanged(state) }
@@ -52,6 +59,7 @@ class AppStore(
         } finally {
             dispatching = false
         }
+        return accepted
     }
 
     fun addStateListener(listener: StateListener, emitImmediately: Boolean = true) {

@@ -118,6 +118,31 @@ class NavigationCorrectnessTest {
         assertEquals(1, state.screenStack.count { it.screen == Screen.NowPlaying })
     }
 
+    @Test fun `short Confirm on Now Playing only keeps the display active`() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.MainMenu), ScreenEntry(Screen.NowPlaying)),
+            library = library,
+            playback = playing
+        )
+
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+
+        assertEquals(state, result.state)
+        assertTrue(result.effects.isEmpty())
+    }
+
+    @Test fun `media Play Pause still controls playback from Now Playing`() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.MainMenu), ScreenEntry(Screen.NowPlaying)),
+            library = library,
+            playback = playing
+        )
+
+        val result = AppReducer.reduce(state, AppAction.PlayPause)
+
+        assertEquals(AppEffect.TogglePlayback, result.effects.single())
+    }
+
     @Test fun `shuffle all from the main menu opens Now Playing once`() {
         val state = selectKey(AppState(library = library), "shuffle_all")
         val result = AppReducer.reduce(state, AppAction.Confirm)
@@ -126,26 +151,15 @@ class NavigationCorrectnessTest {
         assertTrue(result.effects.contains(AppEffect.ShuffleAll))
     }
 
-    @Test fun `repeated Right from the main menu never stacks Now Playing twice`() {
-        var state = AppState(library = library, playback = playing)
-        repeat(4) {
-            state = AppReducer.reduce(state, AppAction.Right).state
-            state = AppReducer.reduce(state, AppAction.Back).state
-            state = AppReducer.reduce(state, AppAction.Right).state
-        }
-        assertEquals(Screen.NowPlaying, state.currentScreen)
-        assertEquals(2, state.screenStack.size)
-    }
+    // ---- contextual options stay on long center --------------------------------
 
-    // ---- Bluetooth is no longer destructive on Right ---------------------------
-
-    @Test fun `Right on a Bluetooth device opens Device Options and forgets nothing`() {
+    @Test fun `long center on a Bluetooth device opens Device Options and forgets nothing`() {
         val state = selectKey(bluetoothState(listOf(pairedDevice)), "bt_device:${pairedDevice.address}")
 
-        val result = AppReducer.reduce(state, AppAction.Right)
+        val result = AppReducer.reduce(state, AppAction.ConfirmLong)
 
         assertEquals(Screen.BluetoothDevice(pairedDevice.address), result.state.currentScreen)
-        assertTrue("Right must not act on the device", result.effects.isEmpty())
+        assertTrue("long center must not act on the device", result.effects.isEmpty())
     }
 
     @Test fun `long Confirm on a Bluetooth device forgets nothing`() {
@@ -255,7 +269,7 @@ class NavigationCorrectnessTest {
         assertTrue(prompt.title.contains("Headphones"))
     }
 
-    @Test fun `Right does nothing on the confirmation screen`() {
+    @Test fun `Right skips tracks without acting on the confirmation screen`() {
         val stack = listOf(
             ScreenEntry(Screen.Bluetooth),
             ScreenEntry(Screen.BluetoothDevice(pairedDevice.address)),
@@ -265,7 +279,7 @@ class NavigationCorrectnessTest {
             val state = selectKey(bluetoothState(listOf(pairedDevice), stack), key)
             val result = AppReducer.reduce(state, AppAction.Right)
             assertEquals("Right moved from $key", state.screenStack, result.state.screenStack)
-            assertTrue("Right acted on $key", result.effects.isEmpty())
+            assertEquals(AppEffect.NextTrack, result.effects.single())
         }
     }
 

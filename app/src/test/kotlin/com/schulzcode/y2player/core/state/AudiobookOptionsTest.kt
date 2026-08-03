@@ -64,19 +64,18 @@ class AudiobookOptionsTest {
 
     // ---- reaching Book Options ---------------------------------------------------
 
-    @Test fun `Right on a book opens Book Options without playing`() {
+    @Test fun `long center on a book opens Book Options without playing`() {
         val list = AppState(screenStack = listOf(ScreenEntry(Screen.Audiobooks)), library = library())
-        val result = AppReducer.reduce(list, AppAction.Right)
+        val result = AppReducer.reduce(list, AppAction.ConfirmLong)
         assertEquals(Screen.AudiobookOptions(dune), result.state.currentScreen)
-        assertTrue("Right must not start playback", result.effects.isEmpty())
+        assertTrue("long center must not start playback", result.effects.isEmpty())
     }
 
-    @Test fun `long Confirm matches Right`() {
+    @Test fun `Right skips tracks instead of opening Book Options`() {
         val list = AppState(screenStack = listOf(ScreenEntry(Screen.Audiobooks)), library = library())
-        assertEquals(
-            AppReducer.reduce(list, AppAction.Right).state.currentScreen,
-            AppReducer.reduce(list, AppAction.ConfirmLong).state.currentScreen
-        )
+        val result = AppReducer.reduce(list, AppAction.Right)
+        assertEquals(Screen.Audiobooks, result.state.currentScreen)
+        assertEquals(AppEffect.NextTrack, result.effects.single())
     }
 
     @Test fun `Confirm still resumes rather than opening options`() {
@@ -216,12 +215,12 @@ class AudiobookOptionsTest {
         assertEquals(10, effect.trackIds.size)
     }
 
-    @Test fun `Right on a chapter opens Track Options`() {
+    @Test fun `long center on a chapter opens Track Options`() {
         val chaptersScreen = AppState(
             screenStack = listOf(ScreenEntry(Screen.AudiobookChapters(dune), 2)),
             library = library()
         )
-        val result = AppReducer.reduce(chaptersScreen, AppAction.Right)
+        val result = AppReducer.reduce(chaptersScreen, AppAction.ConfirmLong)
         assertEquals(Screen.TrackOptions(chapters[2].id), result.state.currentScreen)
     }
 

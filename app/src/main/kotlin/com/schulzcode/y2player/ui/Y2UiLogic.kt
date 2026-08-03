@@ -116,8 +116,8 @@ object Y2UiLogic {
         else -> "Chapter $chapterNumber of $chapterCount"
     }
 
-    fun albumLine(album: String, artist: String, year: Int?, includeYear: Boolean): String {
-        if (album.isEmpty() || album == artist) return ""
+    fun albumLine(album: String, year: Int?, includeYear: Boolean): String {
+        if (album.isEmpty()) return ""
         val validYear = year?.takeIf { it > 0 }
         return if (includeYear && validYear != null) "$album ($validYear)" else album
     }

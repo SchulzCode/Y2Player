@@ -20,6 +20,7 @@ import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.core.model.AudioEffectsState
 import com.schulzcode.y2player.core.model.AudioOutputRouteResolver
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.AudiobookProgress
 import com.schulzcode.y2player.core.model.DacState
 import com.schulzcode.y2player.core.model.PauseReason
 import com.schulzcode.y2player.core.model.PlaybackExitReason
@@ -28,6 +29,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.Track
+import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.DeviceState
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
@@ -38,16 +40,18 @@ import com.schulzcode.y2player.diagnostics.PlaybackSession
 import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
+import com.schulzcode.y2player.input.HapticController
 import com.schulzcode.y2player.queue.QueueController
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.storage.StorageMonitor
 import com.schulzcode.y2player.storage.Y2StoragePaths
+import com.schulzcode.y2player.storage.preferredWritableRoot
 import com.schulzcode.y2player.ui.MainActivity
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
@@ -78,8 +82,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             prepareCurrent(autoPlay = true, positionMs = prepareAudiobookStart(ignoreSavedPosition = fromStart))
         }
 
-        fun clearAudiobookProgress(folderKey: String) = post {
-            submitPersistence("audiobook progress cleared") { database.deleteAudiobookProgress(folderKey) }
+        fun clearAudiobookProgress(folderKey: String, onComplete: (Boolean) -> Unit) = post {
+            recentAudiobookProgress.remove(folderKey)
+            submitPersistence("audiobook progress cleared") {
+                val success = runCatching { database.deleteAudiobookProgress(folderKey) }.isSuccess
+                mainHandler.post { onComplete(success) }
+            }
         }
 
         fun playCollectionShuffled(trackIds: List<Long>) = post {
@@ -102,9 +110,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
         }
 
-        fun togglePlayback() = post(::togglePlaybackInternal)
+        fun togglePlayback() = post { togglePlaybackInternal() }
         fun next() = post { nextInternal(userInitiated = true) }
-        fun previous() = post(::previousInternal)
+        fun previous() = post { previousInternal() }
         fun seekBy(deltaMs: Long) = post { seekByInternal(deltaMs) }
         fun removeQueueIndex(index: Int) = post { removeQueueIndexInternal(index) }
 
@@ -146,9 +154,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             normalizeSystemVolumeForAppControl()
         }
 
-        fun applyVolumeModeTransition(value: PlayerPreferencesState, systemVolumeIndex: Int) = post {
-            applyVolumeModeTransitionInternal(value, systemVolumeIndex)
-        }
+        fun applyVolumeModeTransition(value: PlayerPreferencesState, systemVolumeIndex: Int) =
+            post { applyVolumeModeTransitionInternal(value, systemVolumeIndex) }
 
         fun reconcileAvailability(availableTrackIds: Set<Long>) = post {
             reconcileAvailabilityInternal(availableTrackIds)
@@ -156,7 +163,23 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
         internal fun historySummary(): PlaybackHistory.Summary = this@PlaybackService.historySummary()
 
-        fun clearHistory(): Boolean = this@PlaybackService.clearHistory()
+        fun clearHistory(onComplete: (Boolean) -> Unit) = post {
+            submitPersistence("playback history cleared") {
+                val cleared = playbackHistory.clear()
+                mainHandler.post { onComplete(cleared) }
+            }
+        }
+
+        fun prepareLibraryReset(onComplete: () -> Unit) = post {
+            clearQueueInternal()
+            recentAudiobookProgress.clear()
+            // Queue, progress and history writes submitted above this barrier finish
+            // before the database is reset, so none can recreate deleted state later.
+            submitPersistence("library reset preparation") {
+                playbackHistory.clear()
+                mainHandler.post(onComplete)
+            }
+        }
 
         fun setSafeMode(enabled: Boolean) = post {
             if (enabled) enterSafeModeInternal() else exitSafeModeInternal()
@@ -174,9 +197,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val persistenceExecutor = ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(16),
+        1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
         { runnable -> Thread(runnable, "y2-playback-state").apply { isDaemon = true } },
-        ThreadPoolExecutor.DiscardOldestPolicy()
+        ThreadPoolExecutor.AbortPolicy()
     )
     private lateinit var playbackThread: HandlerThread
     private lateinit var playbackHandler: Handler
@@ -185,6 +208,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private lateinit var audioEffectsController: AudioEffectsController
     private lateinit var dacController: DacController
     private lateinit var remoteControl: LegacyRemoteControlController
+    private lateinit var hapticController: HapticController
     private lateinit var database: LibraryDatabase
     private lateinit var libraryRepository: LibraryRepository
     private lateinit var queue: QueueController
@@ -217,6 +241,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var lastReleasedRequestId = 0L
     private lateinit var playbackHistory: PlaybackHistory
     private var listeningSession: ListeningSession? = null
+    private val recentAudiobookProgress = HashMap<String, AudiobookProgress>()
 
     private var appliedCrossfadeMs = -1L
     private var appliedGapless: Boolean? = null
@@ -241,6 +266,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private val fadeGeneration = GenerationGuard()
     private var outputVolume = 1f
     private var transientOutputGain = 1f
+    private var volumeOwnershipGeneration = 0L
     private var sleepTimerMode = SleepTimerMode.OFF
     private var sleepTimerDeadlineElapsed: Long? = null
     private var sleepTimerCallback: Runnable? = null
@@ -257,6 +283,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         database = container.database
         libraryRepository = container.libraryRepository
         preferences = container.preferences
+        hapticController = container.hapticController
         requestedPreferences = preferences.snapshot()
         currentPreferences = runtimePreferences(requestedPreferences)
         safeModeManager = container.safeModeManager
@@ -265,10 +292,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         dacController = DacController(this, logger)
         playbackHistory = PlaybackHistory(
             directoryProvider = {
-                Y2StoragePaths.availableRoots().firstOrNull()?.let { File(it.directory, "Y2Player") }
+                preferredWritableRoot(Y2StoragePaths.availableRoots())?.let { File(it.directory, "Y2Player") }
             },
             appVersion = com.schulzcode.y2player.BuildConfig.VERSION_NAME,
-            onWarning = { message -> logger.warn("History", message) }
+            onWarning = { message -> logger.warn("History", message) },
+            allDirectoriesProvider = {
+                Y2StoragePaths.availableRoots().map { File(it.directory, "Y2Player") }
+            }
         )
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -356,9 +386,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStartId = startId
-        if (intent?.action == ACTION_MEDIA_BUTTON) {
-            val keyCode = intent.getIntExtra(EXTRA_MEDIA_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN)
-            if (keyCode != KeyEvent.KEYCODE_UNKNOWN) handleMediaKey(keyCode)
+        when (intent?.action) {
+            ACTION_MEDIA_BUTTON -> {
+                val keyCode = intent.getIntExtra(EXTRA_MEDIA_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN)
+                if (keyCode != KeyEvent.KEYCODE_UNKNOWN) handleMediaKey(keyCode)
+            }
+            ACTION_ADJUST_VOLUME -> {
+                val direction = intent.getIntExtra(EXTRA_VOLUME_DIRECTION, 0)
+                if (direction != 0) handleHardwareVolume(direction)
+            }
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
             START_STICKY
@@ -376,7 +412,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
         if (::playbackHandler.isInitialized) {
             playbackHandler.removeCallbacksAndMessages(null)
-            persistenceExecutor.queue.clear()
             val cleanup = Runnable {
                 runCatching { releaseCurrentTrack(PlaybackExitReason.SERVICE_SHUTDOWN) }
                 if (::queue.isInitialized) runCatching {
@@ -735,39 +770,90 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun handleMediaKey(keyCode: Int) {
         logger.info("MediaButton", "keyCode=$keyCode")
-        when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY -> post {
-                if (snapshot.status != PlaybackStatus.PLAYING) togglePlaybackInternal()
-            }
-            KeyEvent.KEYCODE_MEDIA_PAUSE -> post {
-                if (snapshot.status in ACTIVE_STATUSES) pauseInternal(PauseReason.USER)
-                else {
-                    safetyPolicy.onManualPause()
-                    duckedForFocus = false
-                    audioFocus.abandon()
-                    stopSelfIfIdle()
+        post {
+            val accepted = when (keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY ->
+                    snapshot.status != PlaybackStatus.PLAYING && togglePlaybackInternal()
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    if (snapshot.status in ACTIVE_STATUSES) {
+                        pauseInternal(PauseReason.USER)
+                        true
+                    } else {
+                        safetyPolicy.onManualPause()
+                        duckedForFocus = false
+                        audioFocus.abandon()
+                        stopSelfIfIdle()
+                        false
+                    }
                 }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_HEADSETHOOK -> togglePlaybackInternal()
+                KeyEvent.KEYCODE_MEDIA_NEXT,
+                KeyEvent.KEYCODE_DPAD_RIGHT -> nextInternal(userInitiated = true)
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                KeyEvent.KEYCODE_DPAD_LEFT -> previousInternal()
+                KeyEvent.KEYCODE_MEDIA_STOP -> if (snapshot.status in ACTIVE_STATUSES) {
+                    pauseInternal(PauseReason.USER)
+                    true
+                } else false
+                KeyEvent.KEYCODE_MEDIA_REWIND -> seekByInternal(-currentPreferences.longSeekStepMs.toLong())
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seekByInternal(currentPreferences.longSeekStepMs.toLong())
+                else -> false
             }
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_HEADSETHOOK -> post(::togglePlaybackInternal)
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_DPAD_RIGHT -> post { nextInternal(userInitiated = true) }
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_DPAD_LEFT -> post(::previousInternal)
-            KeyEvent.KEYCODE_MEDIA_STOP -> post { pauseInternal(PauseReason.USER) }
-            KeyEvent.KEYCODE_MEDIA_REWIND -> post { seekByInternal(-currentPreferences.longSeekStepMs.toLong()) }
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> post { seekByInternal(currentPreferences.longSeekStepMs.toLong()) }
+            if (accepted) hapticController.acceptedAction()
         }
     }
 
-    private fun togglePlaybackInternal() {
+    private fun handleHardwareVolume(direction: Int) {
+        val normalizedDirection = if (direction > 0) 1 else -1
+        logger.info("VolumeButton", "direction=$normalizedDirection")
+        post {
+            val stored = preferences.snapshot()
+            val accepted = if (stored.volumeMode == VolumeMode.PERCEPTUAL) {
+                val updated = preferences.adjustVolumeLevel(normalizedDirection)
+                if (updated.volumeLevel == stored.volumeLevel) {
+                    false
+                } else {
+                    // The Android music stream remains fixed at its app-control
+                    // ceiling; this path changes only the player's live gain.
+                    applyPreferencesInternal(updated)
+                    mainHandler.post {
+                        (application as Y2Application).container.appStore.dispatch(
+                            AppAction.PreferencesChanged(updated)
+                        )
+                    }
+                    eventLog.info(
+                        Sub.PLAYBACK,
+                        Ev.VOLUME_LEVEL,
+                        "level" to updated.volumeLevel,
+                        "pct" to VolumeCurve.percentForLevel(updated.volumeLevel),
+                        "source" to "hardware_key"
+                    )
+                    true
+                }
+            } else {
+                val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                audioManager.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    if (normalizedDirection > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                    0
+                )
+                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != before
+            }
+            if (accepted) hapticController.acceptedAction()
+            stopSelfIfIdle()
+        }
+    }
+
+    private fun togglePlaybackInternal(): Boolean {
+        val before = snapshot
         when (snapshot.status) {
             PlaybackStatus.PLAYING -> pauseInternal(PauseReason.USER)
             PlaybackStatus.PREPARING -> pauseInternal(PauseReason.USER)
             PlaybackStatus.PAUSED -> {
                 beginExplicitPlaybackRequest()
                 val restored = queue.currentTrackId()?.let(libraryRepository::findTrack)
-                val track = restored ?: currentTrack ?: return
+                val track = restored ?: currentTrack ?: return false
                 currentTrack = track
                 val playable = resolvePlayableTrack(track)
                 if (playable == null) {
@@ -784,7 +870,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                     )
                     snapshot = snapshot.copy(errorMessage = "Track is unavailable", pauseReason = PauseReason.STORAGE_REMOVED)
                     publishSnapshot()
-                    return
+                    return false
                 }
                 currentTrack = playable
                 if (engine.state !in RESUMABLE_ENGINE_STATES || engine.durationMs() <= 0) {
@@ -797,6 +883,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 prepareCurrent(autoPlay = true, positionMs = snapshot.positionMs)
             }
         }
+        return snapshot != before
     }
 
     private fun startInternal() {
@@ -884,16 +971,20 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         stopSelfIfIdle()
     }
 
-    private fun seekByInternal(deltaMs: Long) {
+    private fun seekByInternal(deltaMs: Long): Boolean {
         val duration = currentDuration()
-        if (duration <= 0) return
-        seekAbsoluteInternal((currentPosition() + deltaMs).coerceIn(0, duration))
+        if (duration <= 0) return false
+        val position = currentPosition()
+        val target = (position + deltaMs).coerceIn(0, duration)
+        if (target == position) return false
+        seekAbsoluteInternal(target)
+        return true
     }
 
     private fun seekAbsoluteInternal(positionMs: Long) {
         val duration = currentDuration()
         if (duration <= 0) return
-        val target = positionMs.coerceIn(0, duration)
+        val target = PlaybackPositionPolicy.clampSeek(positionMs, duration)
         if (snapshot.status == PlaybackStatus.PREPARING) {
             pendingPositionMs = target
             snapshot = buildSnapshot(PlaybackStatus.PREPARING, target, duration, snapshot.pauseReason, snapshot.errorMessage)
@@ -909,7 +1000,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         publishSnapshot()
     }
 
-    private fun previousInternal() {
+    private fun previousInternal(): Boolean {
+        val before = snapshot
         releaseCurrentTrack(PlaybackExitReason.MANUAL_PREVIOUS)
         beginExplicitPlaybackRequest()
         consecutiveErrors = 0
@@ -919,14 +1011,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (threshold > 0 && engine.currentPositionMs() > threshold) {
             if (snapshot.status == PlaybackStatus.PLAYING) seekAbsoluteInternal(0)
             else prepareCurrent(autoPlay, 0)
-            return
+            return true
         }
         if (queue.previousIgnoringRepeatOne() != null) {
             prepareCurrent(autoPlay, 0)
+            return true
         }
+        return snapshot != before
     }
 
-    private fun nextInternal(userInitiated: Boolean) {
+    private fun nextInternal(userInitiated: Boolean): Boolean {
+        val before = snapshot
         releaseCurrentTrack(
             if (userInitiated) PlaybackExitReason.MANUAL_NEXT else PlaybackExitReason.COMPLETED
         )
@@ -936,15 +1031,16 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (preloadedRequestId != null && (!shouldAutoPlay || audioFocus.request()) &&
             engine.skipToPreparedNext()
         ) {
-            return
+            return true
         }
         val currentPassOnly = !userInitiated && sleepTimerMode in PASS_BOUNDED_SLEEP_MODES
         if (!moveToNextAvailable(ignoreRepeatOne = userInitiated, currentPassOnly = currentPassOnly)) {
             finishQueue(endedBySleepTimer = sleepTimerMode in PASS_BOUNDED_SLEEP_MODES)
-            return
+            return snapshot != before
         }
         currentRetryCount = 0
         prepareCurrent(shouldAutoPlay, 0)
+        return true
     }
 
     private fun finishQueue(endedBySleepTimer: Boolean) {
@@ -1228,12 +1324,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     internal fun historySummary(): PlaybackHistory.Summary =
         if (::playbackHistory.isInitialized) playbackHistory.summary() else PlaybackHistory.Summary()
 
-    fun clearHistory(): Boolean =
-        ::playbackHistory.isInitialized && playbackHistory.clear()
-
     private fun saveAudiobookProgress(track: Track, positionMs: Long, durationMs: Long) {
         val folderKey = track.audiobookFolderKey ?: return
         val storedPosition = PlaybackPositionPolicy.audiobookSavePosition(positionMs, durationMs)
+        recentAudiobookProgress[folderKey] = AudiobookProgress(
+            folderKey = folderKey,
+            trackId = track.id,
+            positionMs = storedPosition,
+            updatedAt = System.currentTimeMillis()
+        )
         submitPersistence("audiobook progress") {
             database.saveAudiobookProgress(folderKey, track.id, storedPosition)
         }
@@ -1242,6 +1341,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private fun clearAudiobookProgressForCurrent() {
         val folderKey = currentTrack?.audiobookFolderKey ?: return
         logger.info("Playback", "audiobook finished key=$folderKey")
+        recentAudiobookProgress.remove(folderKey)
         submitPersistence("audiobook progress cleared") {
             database.deleteAudiobookProgress(folderKey)
         }
@@ -1259,11 +1359,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             syncTransition()
         }
         if (ignoreSavedPosition) return 0
-        val progress = runCatching { database.loadAudiobookProgress(folderKey) }
-            .onFailure { logger.warn("Playback", "audiobook progress unreadable: ${it.javaClass.simpleName}") }
-            .getOrNull() ?: return 0
+        val progress = recentAudiobookProgress[folderKey]
+            ?: runCatching { database.loadAudiobookProgress(folderKey) }
+                .onFailure { logger.warn("Playback", "audiobook progress unreadable: ${it.javaClass.simpleName}") }
+                .getOrNull()
+            ?: return 0
         if (libraryRepository.findTrack(progress.trackId) == null) {
             logger.info("Playback", "audiobook progress dropped; track ${progress.trackId} is gone")
+            recentAudiobookProgress.remove(folderKey)
             submitPersistence("audiobook progress cleanup") {
                 database.deleteAudiobookProgress(folderKey)
             }
@@ -1612,9 +1715,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             )
             return
         }
+        volumeOwnershipGeneration += 1
         if (value.volumeMode == VolumeMode.PERCEPTUAL) {
             applyPreferencesInternal(value)
-            setMusicStreamVolume(systemVolumeIndex)
+            raiseSystemVolumeAfterOutputGain(systemVolumeIndex)
         } else {
             setMusicStreamVolume(systemVolumeIndex)
             applyPreferencesInternal(value)
@@ -1622,25 +1726,26 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun normalizeSystemVolumeForAppControl() {
-        if (currentPreferences.volumeMode != VolumeMode.PERCEPTUAL || fadeInProgress) return
+        if (!::engine.isInitialized || currentPreferences.volumeMode != VolumeMode.PERCEPTUAL || fadeInProgress) return
         val maximum = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
             .onFailure { logger.warn("Volume", "unable to read music-stream maximum: ${it.javaClass.simpleName}") }
             .getOrNull() ?: return
-        setMusicStreamVolume(maximum)
+        raiseSystemVolumeAfterOutputGain(maximum)
     }
 
-    private fun setMusicStreamVolume(requestedIndex: Int) {
+    private fun setMusicStreamVolume(requestedIndex: Int): Boolean {
         val maximum = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
             .getOrElse {
                 logger.warn("Volume", "unable to read music-stream maximum: ${it.javaClass.simpleName}")
-                return
+                return false
             }
         val target = requestedIndex.coerceIn(0, maximum.coerceAtLeast(0))
         val current = runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrNull()
-        if (current == target) return
-        runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+        if (current == target) return true
+        return runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
             .onSuccess { logger.info("Volume", "music stream transferred ${current ?: "?"}/$maximum -> $target/$maximum") }
             .onFailure { logger.warn("Volume", "unable to set music-stream volume: ${it.javaClass.simpleName}") }
+            .isSuccess
     }
 
     private fun appVolumeGain(): Float =
@@ -1718,12 +1823,27 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun setOutputVolume(value: Float) {
         outputVolume = value.coerceIn(0f, 1f)
-        engine.setVolume(outputVolume)
+        applyLiveOutputGain()
     }
 
     private fun setTransientOutputGain(value: Float) {
         transientOutputGain = value.coerceIn(0f, 1f)
-        engine.setOutputGain(transientOutputGain)
+        applyLiveOutputGain()
+    }
+
+    private fun applyLiveOutputGain(onApplied: (() -> Unit)? = null) {
+        engine.setOutputGain(outputVolume * transientOutputGain, onApplied)
+    }
+
+    private fun raiseSystemVolumeAfterOutputGain(systemVolumeIndex: Int) {
+        val generation = volumeOwnershipGeneration
+        applyLiveOutputGain {
+            post {
+                if (generation == volumeOwnershipGeneration &&
+                    currentPreferences.volumeMode == VolumeMode.PERCEPTUAL
+                ) setMusicStreamVolume(systemVolumeIndex)
+            }
+        }
     }
 
     private fun beginExplicitPlaybackRequest() {
@@ -1955,7 +2075,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun stopSelfIfIdle() {
-        if (boundClients != 0 || snapshot.status in ACTIVE_STATUSES || safetyPolicy.hasPendingFocusResume()) return
+        val hasResumablePausedTrack = snapshot.status == PlaybackStatus.PAUSED &&
+            currentTrack != null &&
+            (snapshot.durationMs <= 0L || snapshot.positionMs < snapshot.durationMs) &&
+            ::engine.isInitialized && engine.state in RESUMABLE_ENGINE_STATES
+        if (!shouldStopPlaybackService(
+                hasBoundClient = boundClients != 0,
+                isActive = snapshot.status in ACTIVE_STATUSES,
+                hasPendingFocusResume = safetyPolicy.hasPendingFocusResume(),
+                hasResumablePausedTrack = hasResumablePausedTrack
+            )
+        ) return
         val startId = lastStartId
         val stopped = if (startId == 0) { stopSelf(); true } else stopSelfResult(startId)
         logger.info("Playback", "idle with no bound clients: startId=$startId stopped=$stopped")
@@ -1975,7 +2105,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     companion object {
         const val ACTION_MEDIA_BUTTON = "com.schulzcode.y2player.action.MEDIA_BUTTON"
+        const val ACTION_ADJUST_VOLUME = "com.schulzcode.y2player.action.ADJUST_VOLUME"
         const val EXTRA_MEDIA_KEY_CODE = "com.schulzcode.y2player.extra.MEDIA_KEY_CODE"
+        const val EXTRA_VOLUME_DIRECTION = "com.schulzcode.y2player.extra.VOLUME_DIRECTION"
         private const val NOTIFICATION_ID = 19
         private const val PROGRESS_INTERVAL_MS = 250L
         private const val BACKGROUND_PROGRESS_INTERVAL_MS = 5_000L
@@ -2000,3 +2132,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         private val PASS_BOUNDED_SLEEP_MODES = setOf(SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE)
     }
 }
+
+internal fun shouldStopPlaybackService(
+    hasBoundClient: Boolean,
+    isActive: Boolean,
+    hasPendingFocusResume: Boolean,
+    hasResumablePausedTrack: Boolean
+): Boolean = !hasBoundClient && !isActive && !hasPendingFocusResume && !hasResumablePausedTrack

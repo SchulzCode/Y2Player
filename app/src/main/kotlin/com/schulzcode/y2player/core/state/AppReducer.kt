@@ -11,8 +11,7 @@ import com.schulzcode.y2player.playback.AudioBalance
 
 object AppReducer {
     fun reduce(state: AppState, action: AppAction): Reduction = when (action) {
-        AppAction.WheelClockwise -> moveSelection(state, 1)
-        AppAction.WheelCounterClockwise -> moveSelection(state, -1)
+        is AppAction.WheelMoved -> moveSelection(state, action.delta)
         AppAction.Confirm -> confirm(state)
         AppAction.ConfirmLong -> confirmLong(state)
         AppAction.ShowNowPlaying -> showNowPlaying(state)
@@ -21,16 +20,16 @@ object AppReducer {
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) state
             else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
         )
-        AppAction.Left -> left(state)
-        AppAction.Right -> right(state)
+        AppAction.Left -> Reduction(state, listOf(PreviousTrack))
+        AppAction.Right -> Reduction(state, listOf(NextTrack))
         AppAction.PlayPause -> Reduction(state, listOf(TogglePlayback))
         AppAction.MediaNext -> Reduction(state, listOf(NextTrack))
         AppAction.MediaPrevious -> Reduction(state, listOf(PreviousTrack))
         AppAction.MediaStop -> if (state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PLAYING || state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PREPARING) Reduction(state, listOf(TogglePlayback)) else Reduction(state)
-        AppAction.SeekBackward -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(-state.preferences.seekStepMs.toLong()))) else Reduction(state)
-        AppAction.SeekForward -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong()))) else Reduction(state)
-        AppAction.SeekBackwardLong -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(-state.preferences.longSeekStepMs.toLong()))) else Reduction(state)
-        AppAction.SeekForwardLong -> if (state.currentScreen == Screen.NowPlaying) Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong()))) else Reduction(state)
+        AppAction.SeekBackward -> Reduction(state, listOf(SeekBy(-state.preferences.seekStepMs.toLong())))
+        AppAction.SeekForward -> Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong())))
+        AppAction.SeekBackwardLong -> Reduction(state, listOf(SeekBy(-state.preferences.longSeekStepMs.toLong())))
+        AppAction.SeekForwardLong -> Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong())))
         is AppAction.LibraryChanged -> Reduction(preserveSelection(state, state.copy(library = action.library)))
         is AppAction.PlaybackChanged -> Reduction(playbackChanged(state, action.playback))
         is AppAction.DeviceChanged -> Reduction(preserveSelection(state, state.copy(device = action.device)))
@@ -55,13 +54,22 @@ object AppReducer {
     }
 
     private fun moveSelection(state: AppState, delta: Int): Reduction {
+        if (delta == 0) return Reduction(state)
         if (state.currentScreen == Screen.NowPlaying) return Reduction(state, listOf(AdjustVolume(if (delta > 0) 1 else -1)))
         val count = ScreenContent.rows(state).size
-        return if (count == 0) Reduction(state) else Reduction(setSelected(state, (state.selectedIndex + delta).floorMod(count)))
+        if (count == 0) return Reduction(state)
+        val next = ListNavigationPolicy.nextIndex(
+            screen = state.currentScreen,
+            currentIndex = state.selectedIndex,
+            delta = delta,
+            itemCount = count,
+            wrapLists = state.preferences.wrapLists
+        )
+        return if (next == state.selectedIndex) Reduction(state) else Reduction(setSelected(state, next))
     }
 
     private fun confirm(state: AppState): Reduction {
-        if (state.currentScreen == Screen.NowPlaying) return Reduction(state, listOf(TogglePlayback))
+        if (state.currentScreen == Screen.NowPlaying) return Reduction(state)
         val screenRows = ScreenContent.rows(state)
         if (screenRows.isEmpty()) return confirmEmptyScreen(state)
         val row = screenRows.getOrNull(state.selectedIndex) ?: return Reduction(state)
@@ -126,7 +134,7 @@ object AppReducer {
             Screen.Diagnostics -> confirmDiagnostics(state, row)
             Screen.Reset -> confirmReset(state, row)
             Screen.About -> Reduction(state)
-            Screen.NowPlaying -> Reduction(state, listOf(TogglePlayback))
+            Screen.NowPlaying -> Reduction(state)
         }
     }
 
@@ -135,8 +143,6 @@ object AppReducer {
         return when (key) {
             "music" -> push(state, Screen.Music)
             "audiobooks" -> Reduction(pushState(state, Screen.Audiobooks), listOf(RefreshAudiobooks))
-            "now_playing" -> if (state.playback.currentTrackId != null) Reduction(toNowPlaying(state))
-                else Reduction(toNowPlaying(state), listOf(PlayQueueIndex(state.playback.currentQueueIndex ?: 0)))
             "shuffle_all" -> Reduction(toNowPlaying(state), listOf(ShuffleAll))
             "settings" -> push(state, Screen.Settings)
             else -> Reduction(state)
@@ -506,6 +512,7 @@ object AppReducer {
             "ui_sounds" -> Reduction(state, listOf(ToggleUiSoundEffects))
             "playback_seeking" -> push(state, Screen.PlaybackSeeking)
             "haptics" -> Reduction(state, listOf(CycleHapticLevel))
+            "wrap_lists" -> Reduction(state, listOf(ToggleWrapLists))
             "screen_off_keys" -> Reduction(state, listOf(ToggleLocalKeysWhileScreenOff))
             else -> Reduction(state)
         }
@@ -554,7 +561,8 @@ object AppReducer {
 
     private fun confirmLong(state: AppState): Reduction = when (state.currentScreen) {
         Screen.NowPlaying -> push(state, Screen.NowPlayingOptions)
-        else -> right(state)
+        Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
+        else -> openContextOptions(state)
     }
 
     private fun showNowPlaying(state: AppState): Reduction = when {
@@ -624,16 +632,7 @@ object AppReducer {
         }
     }
 
-    private fun left(state: AppState): Reduction = when (state.currentScreen) {
-        Screen.NowPlaying -> Reduction(state, listOf(PreviousTrack))
-        Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
-        else -> back(state)
-    }
-
-    private fun right(state: AppState): Reduction = when (val screen = state.currentScreen) {
-        Screen.MainMenu -> if (state.playback.currentTrackId != null) Reduction(toNowPlaying(state)) else Reduction(state)
-        Screen.NowPlaying -> Reduction(state, listOf(NextTrack))
-        Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, 1)))
+    private fun openContextOptions(state: AppState): Reduction = when (val screen = state.currentScreen) {
         Screen.Queue -> if (state.playback.queue.isEmpty()) Reduction(state) else push(state, Screen.QueueOptions(state.selectedIndex), selectedIndex = 1)
         Screen.Bluetooth -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? Action
@@ -644,7 +643,7 @@ object AppReducer {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs,
         is Screen.ArtistSongs, is Screen.AudiobookChapters -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
-            if (row == null) deeperNavigation(state) else push(state, Screen.TrackOptions(row.track.id))
+            if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id))
         }
         Screen.Audiobooks -> {
             val key = (ScreenContent.rows(state).getOrNull(state.selectedIndex) as? Action)?.key
@@ -653,21 +652,13 @@ object AppReducer {
         }
         is Screen.Folders -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex)
-            if (row is TrackRow) push(state, Screen.TrackOptions(row.track.id)) else deeperNavigation(state)
+            if (row is TrackRow) push(state, Screen.TrackOptions(row.track.id)) else Reduction(state)
         }
         is Screen.PlaylistTracks -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
-            if (row == null) deeperNavigation(state) else push(state, Screen.TrackOptions(row.track.id, screen.playlistId))
+            if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id, screen.playlistId))
         }
-        else -> deeperNavigation(state)
-    }
-
-    private fun deeperNavigation(state: AppState): Reduction {
-        val candidate = confirm(state)
-        val pushedChild = candidate.state.screenStack.size > state.screenStack.size
-        return if (candidate.effects.isEmpty() && pushedChild && candidate.state.currentScreen != Screen.NowPlaying) {
-            candidate
-        } else Reduction(state)
+        else -> Reduction(state)
     }
 
     private fun back(state: AppState): Reduction {
@@ -698,7 +689,8 @@ object AppReducer {
     private fun setSelected(state: AppState, index: Int): AppState = state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index))
     private fun normalizeSelection(state: AppState): AppState {
         val count = ScreenContent.rows(state).size
-        return setSelected(state, if (count == 0) 0 else state.selectedIndex.coerceIn(0, count - 1))
+        val first = ListNavigationPolicy.firstSelectableIndex(state.currentScreen, count)
+        return setSelected(state, if (count == 0) 0 else state.selectedIndex.coerceIn(first, count - 1))
     }
 
     private fun preserveSelection(previous: AppState, updated: AppState): AppState {
@@ -708,5 +700,4 @@ object AppReducer {
         val restoredIndex = newRows.indexOfFirst { ScreenContent.sameRowIdentity(selectedRow, it) }
         return if (restoredIndex >= 0) setSelected(updated, restoredIndex) else normalizeSelection(updated)
     }
-    private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
 }

@@ -182,6 +182,19 @@ class FeaturedArtistTest {
         assertNull(ArtistCredit.featured("Daft Punk feat."))
     }
 
+    @Test fun `artist identity ignores surrounding whitespace and case`() {
+        val tracks = listOf(
+            song("One", "  Daft Punk feat. Guest  ", number = 1),
+            song("Two", "daft punk feat. guest", albumArtist = " DAFT PUNK ", number = 2)
+        )
+        val artists = keys(onScreen(Screen.Artists, tracks))
+        assertEquals(listOf("Daft Punk", "Guest"), artists)
+
+        val guestSongs = ScreenContent.rows(onScreen(Screen.ArtistSongs("Guest"), tracks))
+            .filterIsInstance<ScreenRow.TrackRow>()
+        assertEquals(2, guestSongs.size)
+    }
+
     // ---- album artist as the tie breaker ---------------------------------------------
 
     @Test fun `album artist keeps a compilation whole without any parsing`() {
@@ -200,6 +213,14 @@ class FeaturedArtistTest {
             song("Two", "Massive Attack", album = "Chillout", albumArtist = "Various Artists")
         )
         assertEquals(listOf("Massive Attack", "Portishead"), keys(onScreen(Screen.Artists, comp)))
+    }
+
+    @Test fun `a literal Various Artists track credit is still not a performer row`() {
+        val comp = listOf(
+            song("Unknown Credit", "Various Artists", album = "Chillout", albumArtist = "Various Artists"),
+            song("Known Credit", "Portishead", album = "Chillout", albumArtist = "Various Artists")
+        )
+        assertEquals(listOf("Portishead"), keys(onScreen(Screen.Artists, comp)))
     }
 
     @Test fun `a guest only track still belongs to the album artist`() {

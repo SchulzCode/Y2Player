@@ -64,23 +64,16 @@ class MainMenuHierarchyTest {
         assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(AppState(library = library)))
     }
 
-    @Test fun `the main menu offers Now Playing once a track is loaded`() {
+    @Test fun `the main menu removes the duplicate Now Playing row during a session`() {
         val state = AppState(library = library, playback = playing)
-        assertEquals(listOf("music", "audiobooks", "now_playing", "settings"), keys(state))
+        assertEquals(listOf("music", "audiobooks", "settings"), keys(state))
     }
 
-    @Test fun `the Now Playing row names the current track`() {
+    @Test fun `right from the main menu skips to the next track`() {
         val state = AppState(library = library, playback = playing)
-        val row = ScreenContent.rows(state)[2] as ScreenRow.Action
-        assertEquals("Now Playing", row.title)
-        assertTrue(row.subtitle.orEmpty().contains("Song"))
-    }
-
-    @Test fun `the Now Playing row opens Now Playing`() {
-        val state = AppState(library = library, playback = playing)
-        val result = open(state, "now_playing")
-        assertEquals(Screen.NowPlaying, result.state.currentScreen)
-        assertTrue(result.effects.isEmpty())
+        val result = AppReducer.reduce(state, AppAction.Right)
+        assertEquals(Screen.MainMenu, result.state.currentScreen)
+        assertEquals(AppEffect.NextTrack, result.effects.single())
     }
 
     @Test fun `Shuffle All from the main menu still shuffles`() {

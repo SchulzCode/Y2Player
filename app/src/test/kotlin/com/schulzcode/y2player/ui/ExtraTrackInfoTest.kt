@@ -67,7 +67,7 @@ class ExtraTrackInfoTest {
     fun `album is unchanged when the setting is off`() {
         assertEquals(
             "Kind of Blue",
-            Y2UiLogic.albumLine("Kind of Blue", "Miles Davis", year = 1959, includeYear = false)
+            Y2UiLogic.albumLine("Kind of Blue", year = 1959, includeYear = false)
         )
     }
 
@@ -75,7 +75,7 @@ class ExtraTrackInfoTest {
     fun `album carries the year when the setting is on`() {
         assertEquals(
             "Kind of Blue (1959)",
-            Y2UiLogic.albumLine("Kind of Blue", "Miles Davis", year = 1959, includeYear = true)
+            Y2UiLogic.albumLine("Kind of Blue", year = 1959, includeYear = true)
         )
     }
 
@@ -83,17 +83,17 @@ class ExtraTrackInfoTest {
     fun `a missing year leaves the album alone`() {
         assertEquals(
             "Kind of Blue",
-            Y2UiLogic.albumLine("Kind of Blue", "Miles Davis", year = null, includeYear = true)
+            Y2UiLogic.albumLine("Kind of Blue", year = null, includeYear = true)
         )
         assertEquals(
             "Kind of Blue",
-            Y2UiLogic.albumLine("Kind of Blue", "Miles Davis", year = 0, includeYear = true)
+            Y2UiLogic.albumLine("Kind of Blue", year = 0, includeYear = true)
         )
     }
 
     @Test
-    fun `an album that only repeats the artist stays suppressed`() {
-        assertEquals("", Y2UiLogic.albumLine("Miles Davis", "Miles Davis", year = 1959, includeYear = true))
-        assertEquals("", Y2UiLogic.albumLine("", "Miles Davis", year = 1959, includeYear = true))
+    fun `an album that matches the artist remains visible`() {
+        assertEquals("Miles Davis (1959)", Y2UiLogic.albumLine("Miles Davis", year = 1959, includeYear = true))
+        assertEquals("", Y2UiLogic.albumLine("", year = 1959, includeYear = true))
     }
 }

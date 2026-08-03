@@ -18,6 +18,13 @@ NATIVE_LIBRARY_PATH = "/lib/liby2audio.so"
 PRIMARY_AUDIO_HAL_PATH = "/lib/libaudio.primary.default.so"
 PRIMARY_AUDIO_HAL_SIZE = 753072
 PRIMARY_AUDIO_HAL_SHA256 = "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
+KEY_LAYOUT_PATH = "/usr/keylayout/mtk-kpd.kl"
+KEY_LAYOUT_SIZE = 1684
+KEY_LAYOUT_SHA256 = "b85deb46f0ac9ebeb49f22a442ef442fc7adc612dbf075e52ddf178695969ec4"
+KEY_LAYOUT_MAPPINGS = (
+    b"key 115   MEDIA_FAST_FORWARD  WAKE_DROPPED",
+    b"key 114   MEDIA_REWIND        WAKE_DROPPED",
+)
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 STOCK_LAUNCHER = "/priv-app/MyLauncher.apk"
 STOCK_LAUNCHER_ODEX = "/priv-app/MyLauncher.odex"
@@ -307,6 +314,34 @@ def main():
             log("      HAL sha    : %s" % embedded_hal_sha)
             if embedded_hal_elf:
                 log("      HAL ELF    : %s" % embedded_hal_elf["description"])
+
+        keylayout_stat = query(raw, "stat %s" % KEY_LAYOUT_PATH)
+        check("Inode" in keylayout_stat, "%s exists" % KEY_LAYOUT_PATH)
+        check(stat_size(keylayout_stat) == KEY_LAYOUT_SIZE,
+              "patched keypad layout size is %d bytes" % KEY_LAYOUT_SIZE)
+        keylayout_mode = next(
+            (line for line in keylayout_stat.splitlines() if "Mode:" in line), ""
+        )
+        check("0644" in keylayout_mode, "patched keypad layout mode is 0644")
+        check("User:     0" in keylayout_stat and "Group:     0" in keylayout_stat,
+              "patched keypad layout ownership is root:root")
+        check("system_file" in query(
+            raw, "ea_get %s security.selinux" % KEY_LAYOUT_PATH
+        ), "patched keypad layout SELinux context is system_file")
+        embedded_keylayout = os.path.join(work, "mtk-kpd.kl")
+        check(dump(raw, KEY_LAYOUT_PATH, embedded_keylayout),
+              "patched keypad layout can be read back")
+        if os.path.isfile(embedded_keylayout):
+            with open(embedded_keylayout, "rb") as handle:
+                keylayout_data = handle.read()
+            check(sha256_file(embedded_keylayout) == KEY_LAYOUT_SHA256,
+                  "patched keypad layout SHA-256 matches the audited patch")
+            check(all(keylayout_data.count(mapping) == 1 for mapping in KEY_LAYOUT_MAPPINGS),
+                  "physical volume scan codes map to app-owned media surrogates")
+            check(b"key 115   VOLUME_UP" not in keylayout_data
+                  and b"key 114   VOLUME_DOWN" not in keylayout_data,
+                  "framework volume mappings are absent for physical scan codes 115/114")
+            log("      keypad sha : %s" % sha256_file(embedded_keylayout))
 
         check(query(raw, "ls -p /lib").count("liby2audio.so") == 1,
               "liby2audio.so exists exactly once under /system/lib")

@@ -3,9 +3,13 @@ package com.schulzcode.y2player.input
 import android.view.KeyEvent
 import com.schulzcode.y2player.core.state.AppAction
 
-class Y2InputController(private val dispatch: (AppAction) -> Unit) {
+class Y2InputController(
+    private val dispatch: (AppAction) -> Unit,
+    private val wheelAccelerationAllowed: () -> Boolean = { false }
+) {
     private val longPressedKeys = HashSet<Int>()
     private val pressedKeys = HashSet<Int>()
+    private val wheelAcceleration = WheelAcceleration()
 
     fun handle(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
@@ -15,6 +19,9 @@ class Y2InputController(private val dispatch: (AppAction) -> Unit) {
             if (event.repeatCount == 0) {
                 longPressedKeys.remove(keyCode)
                 pressedKeys.add(keyCode)
+                if (keyCode != KeyEvent.KEYCODE_DPAD_UP && keyCode != KeyEvent.KEYCODE_DPAD_DOWN) {
+                    wheelAcceleration.reset()
+                }
             }
             val heldFor = (event.eventTime - event.downTime).coerceAtLeast(0)
             val longPress = InputPressClassifier.isLongPress(event.isLongPress, event.repeatCount, heldFor)
@@ -53,8 +60,12 @@ class Y2InputController(private val dispatch: (AppAction) -> Unit) {
         }
 
         val action = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> AppAction.WheelCounterClockwise
-            KeyEvent.KEYCODE_DPAD_DOWN -> AppAction.WheelClockwise
+            KeyEvent.KEYCODE_DPAD_UP -> AppAction.WheelMoved(
+                wheelAcceleration.delta(-1, event.eventTime, wheelAccelerationAllowed())
+            )
+            KeyEvent.KEYCODE_DPAD_DOWN -> AppAction.WheelMoved(
+                wheelAcceleration.delta(1, event.eventTime, wheelAccelerationAllowed())
+            )
             KeyEvent.KEYCODE_DPAD_LEFT -> AppAction.Left
             KeyEvent.KEYCODE_DPAD_RIGHT -> AppAction.Right
             KeyEvent.KEYCODE_BACK -> AppAction.Back
@@ -75,6 +86,7 @@ class Y2InputController(private val dispatch: (AppAction) -> Unit) {
     fun resetHeldKeys() {
         longPressedKeys.clear()
         pressedKeys.clear()
+        wheelAcceleration.reset()
     }
 
     private fun isHandledKey(keyCode: Int): Boolean = when (keyCode) {

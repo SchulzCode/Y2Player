@@ -6,11 +6,13 @@ import com.schulzcode.y2player.core.state.ScreenRow
 
 object Y2RowIcons {
 
-    fun forRow(row: ScreenRow, screen: Screen, currentTrackId: Long?): Y2Icon = when (row) {
+    fun forRow(row: ScreenRow, screen: Screen, currentTrackId: Long?, active: Boolean = false): Y2Icon = when (row) {
         is ScreenRow.TrackRow -> if (row.track.id == currentTrackId) Y2Icon.PLAYING else Y2Icon.SONG
         is ScreenRow.Folder -> Y2Icon.FOLDER
         is ScreenRow.Group -> forGroupKey(row.key, screen)
-        is ScreenRow.Action -> forActionKey(row.key)
+        is ScreenRow.Action -> if (active && Y2RowState.isFavoriteKey(row.key)) {
+            Y2Icon.FAVORITE_FILLED
+        } else forActionKey(row.key)
     }
 
     // Album and artist groups carry the name itself as the key, so the screen decides.
@@ -52,7 +54,6 @@ object Y2RowIcons {
     private fun exactAction(key: String): Y2Icon? = when (key) {
         "music" -> Y2Icon.MUSIC
         "audiobooks" -> Y2Icon.BOOK
-        "now_playing" -> Y2Icon.PLAYING
         "settings" -> Y2Icon.SETTINGS
 
         "songs", "artist_all_songs" -> Y2Icon.SONG
@@ -88,6 +89,7 @@ object Y2RowIcons {
         "interface" -> Y2Icon.SLIDERS
         "display", "brightness", "theme", "timeout", "keep_screen_on" -> Y2Icon.DISPLAY
         "controls", "haptics" -> Y2Icon.WHEEL
+        "wrap_lists" -> Y2Icon.REPEAT
         "screen_off_keys" -> Y2Icon.DISPLAY
         "ui_sounds" -> Y2Icon.SPEAKER
         "extra_track_info", "technical_details" -> Y2Icon.INFO

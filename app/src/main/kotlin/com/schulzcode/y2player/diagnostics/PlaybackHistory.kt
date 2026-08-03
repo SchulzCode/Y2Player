@@ -22,7 +22,10 @@ internal data class PlaybackSession(
 internal class PlaybackHistory(
     private val directoryProvider: () -> File?,
     private val appVersion: String,
-    private val onWarning: (String) -> Unit
+    private val onWarning: (String) -> Unit,
+    private val allDirectoriesProvider: () -> List<File> = {
+        listOfNotNull(directoryProvider())
+    }
 ) {
     private var consecutiveFailures = 0
 
@@ -57,35 +60,45 @@ internal class PlaybackHistory(
     private fun rotateIfNeeded(active: File) {
         if (!active.isFile || active.length() < MAX_ACTIVE_BYTES) return
         val backup = File(active.parentFile, BACKUP_NAME)
-        if (backup.exists()) backup.delete()
-        if (!active.renameTo(backup)) active.delete()
+        if (backup.exists() && !backup.delete()) return
+        active.renameTo(backup)
     }
 
     @Synchronized
     fun summary(): Summary {
-        val directory = runCatching { directoryProvider() }.getOrNull() ?: return Summary()
         var sessions = 0
         var bytes = 0L
-        listOf(ACTIVE_NAME, BACKUP_NAME).forEach { name ->
-            val file = File(directory, name)
-            if (!file.isFile) return@forEach
-            bytes += file.length()
-            runCatching { file.forEachLine { if (it.isNotBlank()) sessions += 1 } }
+        directories().forEach { directory ->
+            listOf(ACTIVE_NAME, BACKUP_NAME).forEach { name ->
+                val file = File(directory, name)
+                if (file.isFile) {
+                    bytes += file.length()
+                    runCatching { file.forEachLine { if (isCompleteRecord(it)) sessions += 1 } }
+                }
+            }
         }
         return Summary(sessions, bytes)
     }
 
     @Synchronized
     fun clear(): Boolean {
-        val directory = runCatching { directoryProvider() }.getOrNull() ?: return false
         var cleared = false
-        listOf(ACTIVE_NAME, BACKUP_NAME).forEach { name ->
-            val file = File(directory, name)
-            if (file.isFile && file.delete()) cleared = true
+        directories().forEach { directory ->
+            listOf(ACTIVE_NAME, BACKUP_NAME).forEach { name ->
+                val file = File(directory, name)
+                if (file.isFile && file.delete()) cleared = true
+            }
         }
         consecutiveFailures = 0
         return cleared
     }
+
+    private fun directories(): List<File> = runCatching { allDirectoriesProvider() }
+        .getOrDefault(emptyList())
+        .distinctBy { it.absolutePath }
+
+    private fun isCompleteRecord(line: String): Boolean =
+        line.length >= 2 && line.first() == '{' && line.last() == '}'
 
     data class Summary(val sessions: Int = 0, val bytes: Long = 0)
 

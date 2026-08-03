@@ -27,19 +27,19 @@ class HapticController(
 
     @Volatile private var level: HapticLevel = HapticLevel.OFF
     @Volatile private var durationMs: Long = 0L
-    @Volatile private var suspended = false
     private var failures = 0
     private var lastAggregateAt = 0L
 
     private val pulseRunnable = Runnable {
         val ms = durationMs
         val device = vibrator
-        if (ms <= 0L || device == null || suspended) return@Runnable
+        if (ms <= 0L || device == null) return@Runnable
         @Suppress("DEPRECATION")
         val failed = runCatching { device.vibrate(ms) }.isFailure
         if (failed) onPulseFailed()
     }
 
+    @Synchronized
     fun setLevel(value: HapticLevel) {
         if (value == level) return
         level = value
@@ -54,27 +54,18 @@ class HapticController(
         eventLog?.info(Sub.INPUT, Ev.HAPTIC_LEVEL, "level" to value.storageId, "available" to available)
     }
 
-    fun wheelDetent() {
-        if (!level.enabled || vibrator == null || suspended) return
+    @Synchronized
+    fun acceptedAction() {
+        if (!level.enabled || vibrator == null) return
         if (!limiter.allow(SystemClock.elapsedRealtime())) return
         handler?.post(pulseRunnable)
         maybeLogAggregate()
     }
 
-    fun suspend() {
-        suspended = true
+    @Synchronized
+    fun release() {
         cancel()
         flushAggregate()
-    }
-
-    fun resume() {
-        suspended = false
-        limiter.reset()
-        if (level.enabled && available) startWorker()
-    }
-
-    fun release() {
-        suspend()
         stopWorker()
     }
 

@@ -23,6 +23,7 @@ class HapticRateLimiter(private val minIntervalMs: Long = MIN_INTERVAL_MS) {
     private var suppressed = 0
     private var pulses = 0
 
+    @Synchronized
     fun allow(nowMs: Long): Boolean {
         if (lastPulseAt != Long.MIN_VALUE && nowMs - lastPulseAt < minIntervalMs) {
             suppressed++
@@ -33,11 +34,15 @@ class HapticRateLimiter(private val minIntervalMs: Long = MIN_INTERVAL_MS) {
         return true
     }
 
+    @Synchronized
     fun reset() { lastPulseAt = Long.MIN_VALUE }
 
+    @Synchronized
     fun pulseCount(): Int = pulses
+    @Synchronized
     fun suppressedCount(): Int = suppressed
 
+    @Synchronized
     fun drainCounters(): IntArray {
         val values = intArrayOf(pulses, suppressed)
         pulses = 0
@@ -51,6 +56,6 @@ class HapticRateLimiter(private val minIntervalMs: Long = MIN_INTERVAL_MS) {
 }
 
 object HapticPolicy {
-    fun shouldPulse(level: HapticLevel, available: Boolean, onNowPlaying: Boolean, stateChanged: Boolean): Boolean =
-        available && level.enabled && (stateChanged || onNowPlaying)
+    fun shouldPulse(level: HapticLevel, available: Boolean, accepted: Boolean): Boolean =
+        available && level.enabled && accepted
 }

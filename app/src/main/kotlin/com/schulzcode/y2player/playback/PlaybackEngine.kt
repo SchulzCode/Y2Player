@@ -40,9 +40,7 @@ interface PlaybackEngine {
     fun start()
     fun pause()
     fun seekTo(positionMs: Long)
-    fun setVolume(volume: Float)
-
-    fun setOutputGain(gain: Float)
+    fun setOutputGain(gain: Float, onApplied: (() -> Unit)? = null)
 
     fun setBalance(balance: Int)
 
@@ -68,8 +66,7 @@ internal class UnavailablePlaybackEngine(private val reason: String) : PlaybackE
     override fun start() = Unit
     override fun pause() = Unit
     override fun seekTo(positionMs: Long) = Unit
-    override fun setVolume(volume: Float) = Unit
-    override fun setOutputGain(gain: Float) = Unit
+    override fun setOutputGain(gain: Float, onApplied: (() -> Unit)?) { onApplied?.invoke() }
     override fun setBalance(balance: Int) = Unit
     override fun configureReplayGain(mode: ReplayGainMode, shuffling: Boolean) = Unit
     override fun currentPositionMs(): Long = 0

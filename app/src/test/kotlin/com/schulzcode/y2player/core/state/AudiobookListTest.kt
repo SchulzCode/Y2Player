@@ -19,7 +19,13 @@ class AudiobookListTest {
 
     private var nextId = 1L
 
-    private fun chapter(path: String, durationMs: Long = 600_000, title: String? = null) = Track(
+    private fun chapter(
+        path: String,
+        durationMs: Long = 600_000,
+        title: String? = null,
+        trackNumber: Int? = null,
+        discNumber: Int? = null
+    ) = Track(
         id = nextId++,
         volumeId = "sdcard",
         absolutePath = "/storage/sdcard1/$path",
@@ -28,8 +34,8 @@ class AudiobookListTest {
         artist = "Narrator",
         album = null,
         albumArtist = null,
-        trackNumber = null,
-        discNumber = null,
+        trackNumber = trackNumber,
+        discNumber = discNumber,
         durationMs = durationMs,
         fileSize = 1,
         modifiedAt = 1
@@ -94,6 +100,27 @@ class AudiobookListTest {
         val entry = ScreenContent.audiobookEntry(state(tracks), key("Dune"))!!
         val titles = entry.chapterIds.map { id -> tracks.first { it.id == id }.title }
         assertEquals(listOf("1.mp3", "2.mp3", "10.mp3"), titles)
+    }
+
+    @Test fun `track numbers that restart in each untagged disc do not interleave discs`() {
+        val tracks = listOf(
+            chapter("AUDIOBOOKS/Dune/Disc 2/02.mp3", trackNumber = 2),
+            chapter("AUDIOBOOKS/Dune/Disc 1/02.mp3", trackNumber = 2),
+            chapter("AUDIOBOOKS/Dune/Disc 2/01.mp3", trackNumber = 1),
+            chapter("AUDIOBOOKS/Dune/Disc 1/01.mp3", trackNumber = 1)
+        )
+        val entry = ScreenContent.audiobookEntry(state(tracks), key("Dune"))!!
+        assertEquals(listOf(tracks[3].id, tracks[1].id, tracks[2].id, tracks[0].id), entry.chapterIds)
+    }
+
+    @Test fun `disc folder numbers sort naturally and deterministically`() {
+        val tracks = listOf(
+            chapter("AUDIOBOOKS/Dune/Disc 10/01.mp3"),
+            chapter("AUDIOBOOKS/Dune/Disc 2/01.mp3"),
+            chapter("AUDIOBOOKS/Dune/Disc 1/01.mp3")
+        )
+        val entry = ScreenContent.audiobookEntry(state(tracks), key("Dune"))!!
+        assertEquals(listOf(tracks[2].id, tracks[1].id, tracks[0].id), entry.chapterIds)
     }
 
     // ---- subtitle correctness ----------------------------------------------------

@@ -99,6 +99,7 @@ internal object PlaybackRequestGate {
 
 internal object PlaybackPositionPolicy {
     const val END_GUARD_MS = 5_000L
+    private const val MINIMUM_PLAYABLE_TAIL_MS = 250L
 
     const val AUDIOBOOK_MIN_SAVE_MS = 10_000L
 
@@ -108,6 +109,15 @@ internal object PlaybackPositionPolicy {
     fun clampRestored(positionMs: Long, durationMs: Long): Long {
         if (positionMs <= 0 || durationMs <= 0 || positionMs >= durationMs) return 0
         return if (durationMs - positionMs <= END_GUARD_MS) 0 else positionMs
+    }
+
+    fun clampSeek(positionMs: Long, durationMs: Long): Long {
+        if (durationMs <= 0) return 0
+        // Seeking to the exact duration can leave a decoder at EOF without a
+        // final PCM buffer. Keep a tiny playable tail so normal completion owns
+        // the queue transition.
+        val latestPlayablePosition = (durationMs - MINIMUM_PLAYABLE_TAIL_MS).coerceAtLeast(0)
+        return positionMs.coerceIn(0, latestPlayablePosition)
     }
 
     fun audiobookSavePosition(positionMs: Long, durationMs: Long): Long = when {
