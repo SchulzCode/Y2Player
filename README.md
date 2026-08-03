@@ -357,6 +357,50 @@ This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android bu
 
 The build script only creates files. It never flashes, pushes, reboots, emits a boot image, or modifies the original firmware inputs.
 
+### Build an Innioasis Updater release
+
+To create the complete release archive accepted by the
+[Innioasis Updater](https://github.com/y1-community/Innioasis-Updater), run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-updater-rom.ps1
+```
+
+This single command first calls `build-firmware.ps1`, so the signed APK and
+`system.img` are always rebuilt from the current source. It then combines the
+new system image with the guarded stock Y2 partition set, converts the
+filesystem images to raw form, adds the portable flashing tool, and produces a
+maximum-Deflate flat archive at `out\updater\rom_y2.zip`. The known-good
+flashing-tool template is downloaded and SHA-256 verified on the first run,
+then kept under `build\downloads\` for subsequent releases. An offline template
+can instead be supplied with `-TemplateZip`.
+
+The output directory contains:
+
+```text
+rom_y2.zip
+checksums.txt
+build-manifest.txt
+verification-report.txt
+build.log
+```
+
+Upload `rom_y2.zip` to the GitHub release without renaming it. The updater only
+recognizes the Y2 package under that exact name. The script never uploads or
+flashes anything itself.
+
+> [!WARNING]
+> `rom_y2.zip` is a full-device ROM package and its installation erases user
+> data. The separate sparse `out\firmware\system.img` remains available for the
+> existing system-only SP Flash Tool update procedure.
+
+Validate all local ROM inputs and tools without building or downloading the
+template:
+
+```powershell
+.\tools\build-updater-rom.ps1 -ValidateOnly
+```
+
 ## Known limitations
 
 - Y2Player is designed for the Innioasis Y2 and is not presented as a general-purpose Android player or launcher.
