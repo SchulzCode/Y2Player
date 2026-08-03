@@ -31,6 +31,8 @@ class ListNavigationPolicyTest {
     @Test fun intentionalValueSelectorsKeepCycling() {
         assertEquals(3, ListNavigationPolicy.nextIndex(Screen.Brightness, 0, -1, 4, wrapLists = false))
         assertEquals(0, ListNavigationPolicy.nextIndex(Screen.Brightness, 3, 1, 4, wrapLists = false))
+        assertEquals(6, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 0, -1, 7, wrapLists = false))
+        assertEquals(0, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 6, 1, 7, wrapLists = false))
     }
 
     @Test fun accelerationIsLimitedToLongCollectionLists() {

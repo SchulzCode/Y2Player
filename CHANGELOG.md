@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.2.1 — playback stability, controls, and Now Playing refinements
+
+- Fixed brief volume peaks during volume-mode changes, playback resume, pause, lock, and screen wake.
+- Fixed locked-screen In-App volume changes being overwritten when the display turned back on.
+- Added reliable press-and-hold volume adjustment and guarded firmware ownership of the Y2's physical volume keys.
+- Kept paused, resumable playback sessions loaded when the interface disconnects or the screen turns off.
+- Preserved shuffle traversal progress when Shuffle is changed so unplayed queue items cannot become stranded.
+- Made Left and Right control Previous and Next everywhere; held directions seek and Center handles menu navigation.
+- Removed the duplicate Now Playing main-menu row and made a short Center press on Now Playing keep the display active without toggling playback.
+- Added wheel acceleration for long collections and an optional Wrap Lists control.
+- Added active-state indicators, including a filled heart for favorited tracks.
+- Replaced the Now Playing button hints with Shuffle, Repeat, transition, and queue status.
+- Added an animated circular playback-options menu opened by holding Center on Now Playing.
+- Split additional metadata into separate genre and technical-information lines and added delayed scrolling for selected long text.
+- Kept the album line visible when an album has the same name as its artist.
+- Improved multi-disc audiobook ordering and normalized artist identity across capitalization and surrounding whitespace.
+- Hardened library reset, playback-history handling, output-gain sequencing, and firmware-image verification.
+
 ## 2.2 — interface redesign, audiobooks, and library browsing
 
 - Added Audiobooks as a main-menu destination. Books are grouped by folder, and disc or part folders collapse into the book above them.

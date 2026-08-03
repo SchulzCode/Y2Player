@@ -1,6 +1,6 @@
 # Y2Player
 
-**Y2Player 2.2 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
+**Y2Player 2.2.1 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
@@ -29,6 +29,20 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 - View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
+
+## Version 2.2.1
+
+Version 2.2.1 improves playback and volume stability, particularly while the screen is locked, and refines navigation and the Now Playing interface.
+
+The release includes:
+
+- corrected volume ownership and mode transitions to prevent brief output peaks;
+- reliable held and screen-off volume control through an updated firmware key layout;
+- improved paused-session lifetime and shuffle-queue progression;
+- consistent Previous and Next behavior for Left and Right across every menu;
+- wheel acceleration, optional list wrapping, and clearer active-state indicators;
+- a redesigned Now Playing footer and animated circular playback-options menu;
+- improved metadata layout, text scrolling, album labels, and audiobook ordering.
 
 ## Version 2.2
 

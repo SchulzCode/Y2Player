@@ -47,7 +47,7 @@ android {
         minSdk = 19
         targetSdk = 19
         versionCode = 8
-        versionName = "2.2"
+        versionName = "2.2.1"
 
         buildConfigField("String", "BUILD_ID", "\"$resolvedBuildId\"")
 

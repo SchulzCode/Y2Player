@@ -561,6 +561,7 @@ object AppReducer {
 
     private fun confirmLong(state: AppState): Reduction = when (state.currentScreen) {
         Screen.NowPlaying -> push(state, Screen.NowPlayingOptions)
+        Screen.NowPlayingOptions -> back(state)
         Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
         else -> openContextOptions(state)
     }

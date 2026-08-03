@@ -187,7 +187,7 @@ class PlaybackHistoryWriterTest {
         File(sdcard, PlaybackHistory.ACTIVE_NAME).writeText("{\"title\":\"SD\"}\n")
         val history = PlaybackHistory(
             directoryProvider = { sdcard },
-            appVersion = "2.2",
+            appVersion = "2.2.1",
             onWarning = {},
             allDirectoriesProvider = { listOf(sdcard, internal) }
         )

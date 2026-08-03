@@ -104,6 +104,12 @@ class AppReducerNowPlayingTest {
         assertTrue(result.effects.isEmpty())
     }
 
+    @Test fun holdCenterAgainClosesTheOptionsMenu() {
+        val result = AppReducer.reduce(optionsState(), AppAction.ConfirmLong)
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+        assertTrue(result.effects.isEmpty())
+    }
+
     @Test fun holdCenterOnATrackListOpensTrackOptions() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Songs)),
