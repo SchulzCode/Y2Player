@@ -111,6 +111,15 @@ class Y2UiLogicTest {
         assertEquals(0f, Y2UiLogic.progressFraction(10, 0), 0f)
     }
 
+    @Test fun menuBannerUsesClampedPlaybackProgressAndIsSafeWhenStoppedOrUnknown() {
+        assertEquals(.25f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.PLAYING, 25, 100), 0f)
+        assertEquals(.5f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.PAUSED, 50, 100), 0f)
+        assertEquals(0f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.IDLE, 50, 100), 0f)
+        assertEquals(0f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.PLAYING, -1, 100), 0f)
+        assertEquals(1f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.PLAYING, 150, 100), 0f)
+        assertEquals(0f, Y2UiLogic.miniPlayerProgressFraction(PlaybackStatus.PLAYING, 50, 0), 0f)
+    }
+
     @Test fun scanProgressUsesAnExistingIndexOnlyWhileItIsATrustworthyBaseline() {
         assertEquals(.25f, Y2UiLogic.scanProgressFraction(1_000, 4_000)!!, 0f)
         assertEquals(0f, Y2UiLogic.scanProgressFraction(-1, 4_000)!!, 0f)

@@ -2,6 +2,7 @@ package com.schulzcode.y2player.ui
 
 import com.schulzcode.y2player.core.model.AudioOutputRoute
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.playback.CrossfadeMode
 import java.util.Locale
@@ -38,6 +39,11 @@ object Y2UiLogic {
         if (durationMs <= 0L) return 0f
         return (positionMs.toDouble() / durationMs.toDouble()).coerceIn(0.0, 1.0).toFloat()
     }
+
+    fun miniPlayerProgressFraction(status: PlaybackStatus, positionMs: Long, durationMs: Long): Float =
+        if (status == PlaybackStatus.PLAYING || status == PlaybackStatus.PAUSED) {
+            progressFraction(positionMs, durationMs)
+        } else 0f
 
     fun scanProgressFraction(processedFiles: Int, expectedFiles: Int): Float? {
         if (expectedFiles <= 0 || processedFiles > expectedFiles) return null

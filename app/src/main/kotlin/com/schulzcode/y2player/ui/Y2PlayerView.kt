@@ -239,6 +239,8 @@ class Y2PlayerView(
                 Screen.NowPlaying -> invalidate(0, headerHeight.toInt(), width, (height - footerHeight).toInt())
                 Screen.MainMenu -> if (isSplitHome() && newState.playback.currentTrackId != null) {
                     invalidate(rowAreaRight().toInt(), headerHeight.toInt(), width, (height - footerHeight).toInt())
+                } else if (newState.playback.currentTrackId != null) {
+                    invalidate(0, (height - footerHeight).toInt(), width, height)
                 }
                 Screen.NowPlayingOptions -> {
                     if (oldState.playback.sleepTimerRemainingMs != newState.playback.sleepTimerRemainingMs) {
@@ -247,7 +249,9 @@ class Y2PlayerView(
                     }
                     invalidate()
                 }
-                else -> Unit
+                else -> if (newState.playback.currentTrackId != null) {
+                    invalidate(0, (height - footerHeight).toInt(), width, height)
+                }
             }
             return
         }
@@ -1435,7 +1439,12 @@ class Y2PlayerView(
         paint.color = palette.surfaceRaised
         canvas.drawRect(0f, top, width.toFloat(), height.toFloat(), paint)
         paint.color = palette.accent
-        canvas.drawRect(0f, top, width.toFloat(), top + 2f * density, paint)
+        val progress = Y2UiLogic.miniPlayerProgressFraction(
+            state.playback.status,
+            state.playback.positionMs,
+            state.playback.durationMs
+        )
+        canvas.drawRect(0f, top, width * progress, top + 2f * density, paint)
 
         val artSize = Y2UiTheme.MINI_ART_SIZE_DP * density
         drawArtwork(canvas, 8f * density, top + 8f * density, artSize)
