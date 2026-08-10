@@ -21,6 +21,11 @@ PRIMARY_AUDIO_HAL_SHA256 = "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c
 KEY_LAYOUT_PATH = "/usr/keylayout/mtk-kpd.kl"
 KEY_LAYOUT_SIZE = 1684
 KEY_LAYOUT_SHA256 = "b85deb46f0ac9ebeb49f22a442ef442fc7adc612dbf075e52ddf178695969ec4"
+BATTERY_WARNING_SUPPRESSION_MARKER = "/media/audio/ui/battery_y2player_suppressed"
+BATTERY_WARNING_SUPPRESSION_SHA256 = "bfd10cd32fa8869b18e8bcc4f153e005dc0b290969186017fc8268e68d3d7c51"
+SYSTEM_UI_PATH = "/priv-app/SystemUI.apk"
+SYSTEM_UI_SIZE = 2122282
+SYSTEM_UI_SHA256 = "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3"
 KEY_LAYOUT_MAPPINGS = (
     b"key 115   MEDIA_FAST_FORWARD  WAKE_DROPPED",
     b"key 114   MEDIA_REWIND        WAKE_DROPPED",
@@ -342,6 +347,28 @@ def main():
                   and b"key 114   VOLUME_DOWN" not in keylayout_data,
                   "framework volume mappings are absent for physical scan codes 115/114")
             log("      keypad sha : %s" % sha256_file(embedded_keylayout))
+
+        marker_stat = query(raw, "stat %s" % BATTERY_WARNING_SUPPRESSION_MARKER)
+        check("Inode" in marker_stat,
+              "%s exists" % BATTERY_WARNING_SUPPRESSION_MARKER)
+        check(stat_size(marker_stat) == 2,
+              "battery-warning suppression marker is 2 bytes")
+        embedded_marker = os.path.join(work, "battery_y2player_suppressed")
+        check(dump(raw, BATTERY_WARNING_SUPPRESSION_MARKER, embedded_marker),
+              "battery-warning suppression marker can be read back")
+        if os.path.isfile(embedded_marker):
+            check(sha256_file(embedded_marker) == BATTERY_WARNING_SUPPRESSION_SHA256,
+                  "battery-warning suppression marker matches the audited payload")
+
+        system_ui_stat = query(raw, "stat %s" % SYSTEM_UI_PATH)
+        check(stat_size(system_ui_stat) == SYSTEM_UI_SIZE,
+              "stock SystemUI size remains unchanged")
+        embedded_system_ui = os.path.join(work, "SystemUI.apk")
+        check(dump(raw, SYSTEM_UI_PATH, embedded_system_ui),
+              "stock SystemUI can be read back")
+        if os.path.isfile(embedded_system_ui):
+            check(sha256_file(embedded_system_ui) == SYSTEM_UI_SHA256,
+                  "stock SystemUI matches the audited battery-warning implementation")
 
         check(query(raw, "ls -p /lib").count("liby2audio.so") == 1,
               "liby2audio.so exists exactly once under /system/lib")

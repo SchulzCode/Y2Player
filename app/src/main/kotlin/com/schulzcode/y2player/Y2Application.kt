@@ -33,6 +33,7 @@ class Y2Application : Application() {
     private val remountScanGate = RemountScanGate()
 
     private val storageCoordinator = StorageMonitor.Listener { device ->
+        container.batteryWarningController.onBatteryChanged(device.batteryPercent, device.charging)
         if (container.safeModeManager.isSafeMode()) return@Listener
         val current = device.storageVolumes.associate { it.id to it.available }
         val firstSnapshot = !storageSnapshotSeen
@@ -211,6 +212,7 @@ class Y2Application : Application() {
         mainHandler.removeCallbacks(mediaButtonReassert)
         container.bluetoothControllerOrNull()?.stop()
         container.hapticControllerOrNull()?.release()
+        container.batteryWarningControllerOrNull()?.release()
         super.onTerminate()
     }
 

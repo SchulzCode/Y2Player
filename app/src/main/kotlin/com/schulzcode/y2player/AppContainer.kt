@@ -15,6 +15,7 @@ import java.io.File
 import com.schulzcode.y2player.library.LibraryDatabase
 import com.schulzcode.y2player.library.LibraryRepository
 import com.schulzcode.y2player.input.HapticController
+import com.schulzcode.y2player.power.BatteryWarningController
 import com.schulzcode.y2player.safe.SafeModeManager
 import com.schulzcode.y2player.settings.AppPreferences
 import com.schulzcode.y2player.storage.StorageMonitor
@@ -53,6 +54,8 @@ class AppContainer(context: Context) {
     }
     val hapticController: HapticController by hapticControllerLazy
     val safeModeManager: SafeModeManager by lazy { SafeModeManager(appContext, logger) }
+    private val batteryWarningControllerLazy = lazy { BatteryWarningController(appContext, preferences) }
+    val batteryWarningController: BatteryWarningController by batteryWarningControllerLazy
     val storageMonitor: StorageMonitor by lazy { StorageMonitor(appContext, eventLog) }
     private val bluetoothControllerLazy = lazy { BluetoothController(appContext, logger, eventLog) }
     val bluetoothController: BluetoothController by bluetoothControllerLazy
@@ -68,6 +71,9 @@ class AppContainer(context: Context) {
 
     fun hapticControllerOrNull(): HapticController? =
         if (hapticControllerLazy.isInitialized()) hapticControllerLazy.value else null
+
+    fun batteryWarningControllerOrNull(): BatteryWarningController? =
+        if (batteryWarningControllerLazy.isInitialized()) batteryWarningControllerLazy.value else null
 
     val deviceProfile: DeviceProfile by lazy { DeviceProfileLoader.load(appContext) }
 }

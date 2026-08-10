@@ -42,6 +42,13 @@ TARGET_APK = "/priv-app/Y2Player.apk"
 TARGET_NATIVE_LIBRARY = "/lib/liby2audio.so"
 TARGET_PRIMARY_AUDIO_HAL = hal_patch.HAL_SYSTEM_PATH
 TARGET_KEY_LAYOUT = keylayout_patch.KEYLAYOUT_SYSTEM_PATH
+# Stock PowerUI probes case-sensitively for a lowercase "battery*" test file
+# before falling back to its fixed-gain ToneGenerator. This invalid marker makes
+# that single vendor path inaudible; Y2Player then owns the audible warning.
+BATTERY_WARNING_SUPPRESSION_MARKER = "/media/audio/ui/battery_y2player_suppressed"
+STOCK_SYSTEM_UI = "/priv-app/SystemUI.apk"
+STOCK_SYSTEM_UI_SIZE = 2122282
+STOCK_SYSTEM_UI_SHA256 = "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3"
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 # Matches stock files in both /system/priv-app and /system/lib.
 SELINUX_CONTEXT = b"u:object_r:system_file:s0\x00"
@@ -272,6 +279,20 @@ def main():
                 f"required stock package is missing: {required_apk} — refusing to minimize"
             )
 
+    stock_system_ui = raw + ".stock-SystemUI.apk"
+    if not dump(raw, STOCK_SYSTEM_UI, stock_system_ui):
+        raise SystemExit(f"could not read stock {STOCK_SYSTEM_UI}")
+    system_ui_size = os.path.getsize(stock_system_ui)
+    system_ui_sha = sha256(stock_system_ui)
+    if (system_ui_size, system_ui_sha) != (STOCK_SYSTEM_UI_SIZE, STOCK_SYSTEM_UI_SHA256):
+        os.unlink(stock_system_ui)
+        raise SystemExit(
+            "stock SystemUI is not the audited battery-warning implementation: "
+            f"size={system_ui_size} sha256={system_ui_sha}"
+        )
+    log(f"      audited SystemUI: {system_ui_size} bytes, SHA-256 {system_ui_sha}")
+    os.unlink(stock_system_ui)
+
     prune_paths = []
     prune_bytes = 0
     for directory, stem in package_policy.pruned_packages():
@@ -344,6 +365,9 @@ def main():
         f"SHA-256 {keylayout_patch.PATCHED_SHA256}"
     )
     log("      physical volume scan codes 115/114: app-owned FF/REW surrogates")
+    battery_marker = raw + ".battery-warning-suppressed"
+    with open(battery_marker, "wb") as handle:
+        handle.write(b"Y2")
     free_before = free_bytes(raw)
     log(f"      free space before: {free_before} bytes")
 
@@ -385,6 +409,15 @@ def main():
             f"ea_set -f {context_file} {os.path.basename(TARGET_KEY_LAYOUT)} "
             "security.selinux"
         ),
+        "cd /media/audio/ui",
+        f"write {os.path.abspath(battery_marker)} {os.path.basename(BATTERY_WARNING_SUPPRESSION_MARKER)}",
+        f"sif {os.path.basename(BATTERY_WARNING_SUPPRESSION_MARKER)} mode {APK_MODE}",
+        f"sif {os.path.basename(BATTERY_WARNING_SUPPRESSION_MARKER)} uid 0",
+        f"sif {os.path.basename(BATTERY_WARNING_SUPPRESSION_MARKER)} gid 0",
+        (
+            f"ea_set -f {context_file} {os.path.basename(BATTERY_WARNING_SUPPRESSION_MARKER)} "
+            "security.selinux"
+        ),
     ]
     if "Inode" in query(raw, f"stat {STOCK_LAUNCHER_ODEX}"):
         commands.insert(len(prune_paths) + 1, f"rm {STOCK_LAUNCHER_ODEX}")
@@ -396,7 +429,8 @@ def main():
     result = debugfs(raw, commands, write=True)
     if result.returncode != 0:
         for temporary in (
-            context_file, stock_hal, patched_hal, stock_keylayout, patched_keylayout
+            context_file, stock_hal, patched_hal, stock_keylayout, patched_keylayout,
+            battery_marker
         ):
             if os.path.exists(temporary):
                 os.unlink(temporary)
@@ -410,6 +444,7 @@ def main():
     os.unlink(patched_hal)
     os.unlink(stock_keylayout)
     os.unlink(patched_keylayout)
+    os.unlink(battery_marker)
 
     log("\n[4/6] reconciling filesystem and clearing freed blocks")
     # First reconcile metadata. Discard may punch holes on capable hosts, but
@@ -541,6 +576,11 @@ def main():
         problems.append("keypad-layout SELinux context missing or wrong")
     else:
         log(f"      keypad selinux: {keylayout_context.strip().splitlines()[-1]}")
+    marker_stat = query(raw, f"stat {BATTERY_WARNING_SUPPRESSION_MARKER}")
+    if "Inode" not in marker_stat or stat_size(marker_stat) != 2:
+        problems.append("battery-warning suppression marker is missing or invalid")
+    else:
+        log(f"      {BATTERY_WARNING_SUPPRESSION_MARKER}: Size: 2")
     # Nothing else in priv-app may have changed.
     listing = query(raw, "ls /priv-app")
     if "MyLauncher" in listing:
