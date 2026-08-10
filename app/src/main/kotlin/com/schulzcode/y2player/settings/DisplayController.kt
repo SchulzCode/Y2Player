@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.provider.Settings
 import com.schulzcode.y2player.core.state.DisplayState
 import com.schulzcode.y2player.core.state.ScreenContent
+import kotlin.math.roundToInt
 
 class DisplayController(private val activity: Activity) {
     private var sessionBrightnessPercent: Int? = null
@@ -22,7 +23,7 @@ class DisplayController(private val activity: Activity) {
             60_000
         )
         return DisplayState(
-            brightnessPercent = sessionBrightnessPercent ?: brightnessToPercent(brightness),
+            brightnessPercent = sessionBrightnessPercent ?: BrightnessConversion.toPercent(brightness),
             screenTimeoutMs = timeout,
             canWriteSystemSettings = activity.checkCallingOrSelfPermission(
                 Manifest.permission.WRITE_SETTINGS
@@ -32,7 +33,7 @@ class DisplayController(private val activity: Activity) {
 
     fun setBrightness(percent: Int): Result {
         val safePercent = percent.coerceIn(5, 100)
-        val raw = percentToBrightness(safePercent)
+        val raw = BrightnessConversion.toRaw(safePercent)
         val windowApplied = runCatching {
             val attributes = activity.window.attributes
             attributes.screenBrightness = raw / 255f
@@ -78,14 +79,17 @@ class DisplayController(private val activity: Activity) {
     }
 
     data class Result(val success: Boolean, val message: String)
+}
 
-    companion object {
-        private fun brightnessToPercent(value: Int): Int = ((value.coerceIn(1, 255) * 100f) / 255f)
-            .toInt()
-            .coerceIn(1, 100)
+internal object BrightnessConversion {
+    private const val MAX_RAW = 255
+    private const val MAX_PERCENT = 100
 
-        private fun percentToBrightness(percent: Int): Int = ((percent.coerceIn(1, 100) / 100f) * 255f)
-            .toInt()
-            .coerceIn(1, 255)
-    }
+    fun toPercent(raw: Int): Int = ((raw.coerceIn(0, MAX_RAW) * MAX_PERCENT.toFloat()) / MAX_RAW)
+        .roundToInt()
+        .coerceIn(0, MAX_PERCENT)
+
+    fun toRaw(percent: Int): Int = ((percent.coerceIn(0, MAX_PERCENT) / MAX_PERCENT.toFloat()) * MAX_RAW)
+        .toInt()
+        .coerceIn(0, MAX_RAW)
 }
