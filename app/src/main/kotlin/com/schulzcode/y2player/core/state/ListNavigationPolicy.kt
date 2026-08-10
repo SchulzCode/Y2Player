@@ -37,8 +37,7 @@ internal object ListNavigationPolicy {
 
     private fun wraps(screen: Screen, preference: Boolean): Boolean = when (screen) {
         is Screen.ConfirmAction -> false
-        Screen.Balance, Screen.Brightness, Screen.ScreenTimeout,
-        Screen.SortOrder, Screen.EqualizerBands, Screen.NowPlayingOptions -> true
+        Screen.EqualizerBands, Screen.NowPlayingOptions -> true
         else -> preference
     }
 }

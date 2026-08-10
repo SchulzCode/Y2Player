@@ -29,10 +29,19 @@ class ListNavigationPolicyTest {
     }
 
     @Test fun intentionalValueSelectorsKeepCycling() {
-        assertEquals(3, ListNavigationPolicy.nextIndex(Screen.Brightness, 0, -1, 4, wrapLists = false))
-        assertEquals(0, ListNavigationPolicy.nextIndex(Screen.Brightness, 3, 1, 4, wrapLists = false))
         assertEquals(6, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 0, -1, 7, wrapLists = false))
         assertEquals(0, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 6, 1, 7, wrapLists = false))
+    }
+
+    @Test fun affectedSettingMenusFollowWrapListsPreference() {
+        val screens = listOf(Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.SortOrder)
+
+        screens.forEach { screen ->
+            assertEquals(3, ListNavigationPolicy.nextIndex(screen, 0, -1, 4, wrapLists = true))
+            assertEquals(0, ListNavigationPolicy.nextIndex(screen, 3, 1, 4, wrapLists = true))
+            assertEquals(0, ListNavigationPolicy.nextIndex(screen, 0, -1, 4, wrapLists = false))
+            assertEquals(3, ListNavigationPolicy.nextIndex(screen, 3, 1, 4, wrapLists = false))
+        }
     }
 
     @Test fun accelerationIsLimitedToLongCollectionLists() {
