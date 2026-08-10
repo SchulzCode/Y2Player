@@ -79,6 +79,7 @@ class Y2PlayerView(
     private var rows = ScreenContent.rows(state)
     private var artwork: Bitmap? = null
     private var artworkPath: String? = null
+    private var artworkIdentity: Triple<Long, Long, Long>? = null
     private var detailArtwork: Bitmap? = null
     private var detailArtworkPath: String? = null
     private var visibleStart = 0
@@ -263,6 +264,7 @@ class Y2PlayerView(
     fun trimMemory() {
         artwork = null
         artworkPath = null
+        artworkIdentity = null
         detailArtwork = null
         detailArtworkPath = null
         artworkLoader.trimMemory()
@@ -274,6 +276,7 @@ class Y2PlayerView(
         textScroller.clear()
         artwork = null
         artworkPath = null
+        artworkIdentity = null
         detailArtwork = null
         detailArtworkPath = null
         radialAnimationActive = false
@@ -1838,13 +1841,21 @@ class Y2PlayerView(
     }
 
     private fun requestArtwork() {
-        val path = state.playback.currentTrackId?.let(state.library.byId::get)?.absolutePath
-        if (path != artworkPath) {
+        val track = state.playback.currentTrackId?.let(state.library.byId::get)
+        val path = track?.absolutePath
+        val identity = track?.let { Triple(it.id, it.modifiedAt, state.library.tracksRevision) }
+        if (path != artworkPath || identity != artworkIdentity) {
             artworkPath = path
+            artworkIdentity = identity
             artwork = null
-            if (path != null) {
-                artworkLoader.load(path, SHARED_ARTWORK_SIZE_PX) { loadedPath, bitmap ->
-                    if (loadedPath == artworkPath) {
+            if (track != null) {
+                artworkLoader.load(
+                    track.absolutePath,
+                    track.modifiedAt,
+                    state.library.tracksRevision,
+                    SHARED_ARTWORK_SIZE_PX
+                ) { loadedPath, bitmap ->
+                    if (loadedPath == artworkPath && identity == artworkIdentity) {
                         artwork = bitmap
                         invalidate(0, headerHeight.toInt(), width, height)
                     }
