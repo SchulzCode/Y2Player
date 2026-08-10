@@ -29,6 +29,8 @@ internal object PcmFormat {
 
 internal interface AudioOutput {
     val audioSessionId: Int
+    val isPlaying: Boolean
+    val bufferFrameCount: Int
     val playedFrames: Long
     val submittedFrames: Long
 
@@ -150,6 +152,7 @@ internal class Pcm16StagingBuffer(sampleCapacity: Int) {
 
 internal class PlaybackHeadAccumulator {
     private var initialized = false
+    private var rebaseOnNextUpdate = false
     private var previousRaw = 0L
     private var accumulated = 0L
 
@@ -158,7 +161,8 @@ internal class PlaybackHeadAccumulator {
         if (!initialized) {
             initialized = true
             previousRaw = raw
-            accumulated = raw
+            accumulated = if (rebaseOnNextUpdate) 0L else raw
+            rebaseOnNextUpdate = false
             return accumulated
         }
 
@@ -170,6 +174,7 @@ internal class PlaybackHeadAccumulator {
 
     fun reset() {
         initialized = false
+        rebaseOnNextUpdate = true
         previousRaw = 0L
         accumulated = 0L
     }
@@ -186,6 +191,8 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
     private val head = PlaybackHeadAccumulator()
     private val pcm16Staging = Pcm16StagingBuffer(PcmFormat.BLOCK_SAMPLES)
     private var writtenFrames = 0L
+
+    override val bufferFrameCount: Int
 
     override val configuration: String
 
@@ -221,6 +228,7 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
 
         track = created
         val bufferFrames = bufferBytes / frameBytes
+        bufferFrameCount = bufferFrames
         configuration = "sampleRate=${PcmFormat.SAMPLE_RATE} channels=${PcmFormat.CHANNELS} " +
             "encoding=PCM16 minBufferBytes=$minimumBytes bufferBytes=$bufferBytes " +
             "bufferFrames=$bufferFrames bufferMs=${bufferFrames * 1_000L / PcmFormat.SAMPLE_RATE} " +
@@ -232,6 +240,9 @@ internal class AudioTrackOutput : AudioOutput, PcmSink {
     // session id, so recreating it would silently detach every one.
     override val audioSessionId: Int
         get() = track?.audioSessionId ?: 0
+
+    override val isPlaying: Boolean
+        get() = track?.playState == AudioTrack.PLAYSTATE_PLAYING
 
     override val playedFrames: Long
         get() = track?.let { head.update(it.playbackHeadPosition) } ?: 0L

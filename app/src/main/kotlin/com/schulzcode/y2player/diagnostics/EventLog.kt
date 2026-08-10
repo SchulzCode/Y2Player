@@ -5,10 +5,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStreamWriter
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class EventLog(
     private val primaryDirectory: File,
@@ -35,9 +35,11 @@ class EventLog(
     )
 
     private class Flush(val latch: CountDownLatch)
+    private class Clear(val latch: CountDownLatch, val result: AtomicReference<Boolean>)
 
     private val processId: Int = android.os.Process.myPid()
-    private val queue = ArrayBlockingQueue<Any>(QUEUE_CAPACITY)
+    private val queue = java.util.ArrayDeque<Any>(QUEUE_CAPACITY)
+    private val queueLock = Any()
     private val sequence = AtomicLong(0)
     private val dropped = AtomicLong(0)
     @Volatile private var stateProvider: StateProvider? = null
@@ -51,6 +53,7 @@ class EventLog(
 
     private var mirrorFailures = 0
     @Volatile private var mirrorAvailable = false
+    private var activeMirrorDirectory: File? = null
 
     private val rateLimiter = HashMap<String, Long>()
 
@@ -78,10 +81,19 @@ class EventLog(
             data = data,
             state = runCatching { stateProvider?.snapshot() }.getOrNull()
         )
-        if (!queue.offer(entry)) {
-            queue.poll()
-            dropped.incrementAndGet()
-            queue.offer(entry)
+        synchronized(queueLock) {
+            if (queue.size >= QUEUE_CAPACITY) {
+                val retained = ArrayList<Any>(queue.size)
+                var removedEntry = false
+                while (queue.isNotEmpty()) {
+                    val pending = queue.removeFirst()
+                    if (!removedEntry && pending is Entry) removedEntry = true else retained += pending
+                }
+                retained.forEach(queue::addLast)
+                if (!removedEntry) return
+                dropped.incrementAndGet()
+            }
+            queue.addLast(entry)
         }
         writer.wake()
     }
@@ -109,10 +121,30 @@ class EventLog(
 
     fun flush(timeoutMs: Long = 1_000L) {
         val latch = CountDownLatch(1)
-        if (queue.offer(Flush(latch))) {
-            writer.wake()
-            runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
+        synchronized(queueLock) {
+            queue.addLast(Flush(latch))
         }
+        writer.wake()
+        runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
+    }
+
+    fun clear(timeoutMs: Long = CLEAR_TIMEOUT_MS): Boolean {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference(false)
+        synchronized(queueLock) {
+            val controls = ArrayList<Any>()
+            while (queue.isNotEmpty()) {
+                when (val entry = queue.removeFirst()) {
+                    is Entry -> dropped.incrementAndGet()
+                    else -> controls += entry
+                }
+            }
+            controls.forEach(queue::addLast)
+            queue.addLast(Clear(latch, result))
+        }
+        writer.wake()
+        return runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result.get() }
+            .getOrDefault(false)
     }
 
     fun crashFlush(throwable: Throwable?) {
@@ -121,9 +153,19 @@ class EventLog(
                 "type" to (throwable?.javaClass?.name ?: "unknown"),
                 "message" to (throwable?.message ?: ""))
             val pending = ArrayList<Any>()
-            queue.drainTo(pending)
+            synchronized(queueLock) {
+                while (queue.isNotEmpty()) pending += queue.removeFirst()
+            }
             writeBatch(pending.filterIsInstance<Entry>())
-            pending.forEach { if (it is Flush) it.latch.countDown() }
+            pending.forEach {
+                when (it) {
+                    is Flush -> it.latch.countDown()
+                    is Clear -> {
+                        it.result.set(false)
+                        it.latch.countDown()
+                    }
+                }
+            }
         }
     }
 
@@ -134,19 +176,62 @@ class EventLog(
             .filter(File::exists) + listOf(File(directory, ACTIVE_NAME)).filter(File::exists)
     }
 
-    override fun hasUrgentPending(): Boolean = queue.any {
-        it is Flush || (it is Entry && (it.sev == Sev.WARN || it.sev == Sev.ERROR))
+    override fun hasUrgentPending(): Boolean = synchronized(queueLock) {
+        queue.any { it is Flush || it is Clear || (it is Entry && (it.sev == Sev.WARN || it.sev == Sev.ERROR)) }
     }
 
     override fun drainAndWrite() {
         val batch = ArrayList<Any>(BATCH_MAX)
         while (true) {
             batch.clear()
-            queue.drainTo(batch, BATCH_MAX)
+            synchronized(queueLock) {
+                repeat(minOf(BATCH_MAX, queue.size)) { batch += queue.removeFirst() }
+            }
             if (batch.isEmpty()) return
-            writeBatch(batch.filterIsInstance<Entry>())
-            batch.forEach { if (it is Flush) it.latch.countDown() }
+            val entries = ArrayList<Entry>()
+            fun writePending() {
+                if (entries.isNotEmpty()) {
+                    writeBatch(entries)
+                    entries.clear()
+                }
+            }
+            batch.forEach { entry ->
+                when (entry) {
+                    is Entry -> entries += entry
+                    is Flush -> {
+                        writePending()
+                        entry.latch.countDown()
+                    }
+                    is Clear -> {
+                        writePending()
+                        entry.result.set(clearFiles())
+                        entry.latch.countDown()
+                    }
+                }
+            }
+            writePending()
         }
+    }
+
+    private fun clearFiles(): Boolean {
+        val directories = linkedSetOf(primaryDirectory)
+        activeDirectory?.let(directories::add)
+        activeMirrorDirectory?.let(directories::add)
+        runCatching { mirrorProvider() }.getOrNull()?.let(directories::add)
+        var success = true
+        directories.forEach { directory ->
+            (listOf(ACTIVE_NAME) + (1..BACKUP_COUNT).map { "events.$it.ndjson" }).forEach { name ->
+                val file = File(directory, name)
+                if (file.exists() && !file.delete()) success = false
+            }
+        }
+        sequence.set(0)
+        dropped.set(0)
+        synchronized(this) { rateLimiter.clear() }
+        ioFailures = 0
+        primaryDisabled = false
+        mirrorFailures = 0
+        return success
     }
 
     private fun writeBatch(entries: List<Entry>) {
@@ -191,6 +276,7 @@ class EventLog(
         }
         try {
             if (!directory.isDirectory && !directory.mkdirs()) return
+            activeMirrorDirectory = directory
             if (!mirrorAvailable) {
                 mirrorAvailable = true
                 mirrorFailures = 0
@@ -302,6 +388,7 @@ class EventLog(
         const val MAX_FILE_BYTES = 512L * 1024L
         const val BACKUP_COUNT = 4
         private const val MAX_IO_FAILURES = 3
+        private const val CLEAR_TIMEOUT_MS = 2_000L
 
         fun generateSessionId(): String =
             java.lang.Long.toHexString(System.currentTimeMillis() xor (Math.random() * Long.MAX_VALUE).toLong())

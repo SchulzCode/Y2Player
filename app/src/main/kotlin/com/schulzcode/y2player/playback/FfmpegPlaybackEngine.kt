@@ -64,10 +64,10 @@ internal sealed interface EngineCommand {
 
     data class OutputGain(
         val value: Float,
-        val onApplied: (() -> Unit)? = null
+        val onComplete: ((OutputGainApplyResult) -> Unit)? = null
     ) : EngineCommand {
         override fun isSupersededBy(incoming: EngineCommand): Boolean =
-            onApplied == null && incoming is OutputGain
+            onComplete == null && incoming is OutputGain
     }
 
     data class Balance(val value: Int) : EngineCommand {
@@ -237,7 +237,9 @@ internal class FfmpegPlaybackEngine(
         val requestId: Long,
         val durationMs: Long,
         val replayGainMetadata: ReplayGainMetadata,
-        var replayGain: ReplayGainAdjustment = ReplayGainAdjustment()
+        var replayGain: ReplayGainAdjustment = ReplayGainAdjustment(),
+        var firstPcmWriteLogged: Boolean = false,
+        var completionCause: DecoderCompletionCause = DecoderCompletionCause.NATURAL
     )
 
     private val appContext = context.applicationContext
@@ -253,6 +255,7 @@ internal class FfmpegPlaybackEngine(
 
     private val currentBlock = PcmBlock()
     private val nextBlock = PcmBlock()
+    private val completionPadding = FloatArray(PcmFormat.BLOCK_SAMPLES)
 
     private val wakeLock = (appContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Y2Player:Playback")
@@ -279,6 +282,7 @@ internal class FfmpegPlaybackEngine(
     private var seekBaseMs = 0L
     private var currentOutputStartFrame = 0L
     private var completionPending = false
+    private var completionBoundaryFrame = 0L
     private var transitionFrames = 0L
     private var transitionedFrames = 0L
     private var transitionNextStartFrame = 0L
@@ -286,6 +290,8 @@ internal class FfmpegPlaybackEngine(
     private var pendingTransitionRequestId = 0L
     private var pendingTransitionDurationMs = 0L
     private var pendingTransitionBoundaryFrame = 0L
+    private var pendingOutputGain: EngineCommand.OutputGain? = null
+    private var pendingOutputGainBoundaryFrame = OutputGainActivationPolicy.IMMEDIATE
     private var lastStarvationLogUptimeMs = 0L
     private var gaplessEnabled = true
     private var crossfadeMs = 0L
@@ -357,9 +363,15 @@ internal class FfmpegPlaybackEngine(
         enqueue(EngineCommand.Seek(positionMs.coerceAtLeast(0L)), abortCurrent = true)
     }
 
-    override fun setOutputGain(gain: Float, onApplied: (() -> Unit)?) {
-        if (releaseRequested) return
-        enqueue(EngineCommand.OutputGain(gain.coerceIn(0f, 1f), onApplied))
+    override fun setOutputGain(
+        gain: Float,
+        onComplete: ((OutputGainApplyResult) -> Unit)?
+    ) {
+        if (releaseRequested) {
+            onComplete?.invoke(OutputGainApplyResult.RELEASED)
+            return
+        }
+        enqueue(EngineCommand.OutputGain(gain.coerceIn(0f, 1f), onComplete))
     }
 
     override fun setBalance(balance: Int) {
@@ -390,12 +402,31 @@ internal class FfmpegPlaybackEngine(
         abortNext: Boolean = false
     ) {
         var scheduleDrain = false
+        var discardedAcknowledgements: ArrayList<EngineCommand.OutputGain>? = null
         synchronized(commandLock) {
-            if (command.clearsPending) commands.clear()
+            if (command.clearsPending) {
+                commands.forEach {
+                    if (it is EngineCommand.OutputGain && it.onComplete != null) {
+                        val discarded = discardedAcknowledgements
+                            ?: ArrayList<EngineCommand.OutputGain>(1).also {
+                                discardedAcknowledgements = it
+                            }
+                        discarded += it
+                    }
+                }
+                commands.clear()
+            }
             else commands.removeAll { it.isSupersededBy(command) }
 
             if (commands.size >= MAX_PENDING_COMMANDS) {
-                commands.removeFirst()
+                val evicted = commands.removeFirst()
+                if (evicted is EngineCommand.OutputGain && evicted.onComplete != null) {
+                    val discarded = discardedAcknowledgements
+                        ?: ArrayList<EngineCommand.OutputGain>(1).also {
+                            discardedAcknowledgements = it
+                        }
+                    discarded += evicted
+                }
             }
             commands.addLast(command)
 
@@ -409,6 +440,12 @@ internal class FfmpegPlaybackEngine(
                 scheduleDrain = true
             }
         }
+        val discardResult = if (command is EngineCommand.Release) {
+            OutputGainApplyResult.RELEASED
+        } else {
+            OutputGainApplyResult.CANCELLED
+        }
+        discardedAcknowledgements?.forEach { completeOutputGain(it, discardResult) }
         if (scheduleDrain) handler.post(commandDrain)
     }
 
@@ -425,6 +462,7 @@ internal class FfmpegPlaybackEngine(
                 } ?: break
                 try {
                     perform(command)
+                    confirmOutputGainActivation()
                 } catch (error: Throwable) {
                     containCommandFailure(command, error)
                 }
@@ -444,6 +482,9 @@ internal class FfmpegPlaybackEngine(
     }
 
     private fun containCommandFailure(command: EngineCommand, error: Throwable) {
+        if (command is EngineCommand.OutputGain) {
+            completeOutputGain(command, OutputGainApplyResult.FAILED)
+        }
         containEngineFailure("command=${command.javaClass.simpleName}", error)
     }
 
@@ -457,10 +498,11 @@ internal class FfmpegPlaybackEngine(
         )
         pendingStartRequestId = 0L
         discardPendingTransition()
+        cancelPendingOutputGain(OutputGainApplyResult.FAILED)
         runCatching { output.pause() }
         runCatching { closeCurrent() }
         runCatching { closeNext() }
-        completionPending = false
+        clearCompletion()
         setTransitioning(false)
         runCatching { output.flush() }
         publishedPositionMs = 0L
@@ -489,10 +531,7 @@ internal class FfmpegPlaybackEngine(
             EngineCommand.Start -> performStart()
             EngineCommand.Pause -> performPause()
             is EngineCommand.Seek -> performSeek(command.positionMs)
-            is EngineCommand.OutputGain -> {
-                output.setOutputGain(command.value)
-                command.onApplied?.invoke()
-            }
+            is EngineCommand.OutputGain -> performOutputGain(command)
             is EngineCommand.Balance -> balance = command.value
             is EngineCommand.ConfigureReplayGain -> {
                 replayGainMode = command.mode
@@ -503,6 +542,70 @@ internal class FfmpegPlaybackEngine(
             EngineCommand.Cancel -> performCancel()
             EngineCommand.Release -> performRelease()
         }
+    }
+
+    private fun completeOutputGain(
+        command: EngineCommand.OutputGain,
+        result: OutputGainApplyResult
+    ) {
+        runCatching { command.onComplete?.invoke(result) }
+            .onFailure {
+                logger.warn(
+                    "PlaybackEngine",
+                    "output-gain acknowledgement failed: ${it.javaClass.simpleName}"
+                )
+            }
+    }
+
+    private fun performOutputGain(command: EngineCommand.OutputGain) {
+        cancelPendingOutputGain(OutputGainApplyResult.CANCELLED)
+        output.setOutputGain(command.value)
+        if (command.onComplete == null) return
+
+        val playedAtApplication = output.playedFrames
+        val confirmationFrame = OutputGainActivationPolicy.confirmationFrame(
+            engineState = engineState,
+            outputIsPlaying = output.isPlaying,
+            playedFrames = playedAtApplication
+        )
+        if (confirmationFrame == OutputGainActivationPolicy.IMMEDIATE) {
+            completeOutputGain(command, OutputGainApplyResult.APPLIED)
+            return
+        }
+        pendingOutputGain = command
+        pendingOutputGainBoundaryFrame = confirmationFrame
+        logger.info(
+            "PlaybackEngine",
+            "output gain applied gain=${command.value} awaitingFrame=$confirmationFrame " +
+                "playedFrame=$playedAtApplication state=$engineState"
+        )
+    }
+
+    private fun confirmOutputGainActivation() {
+        val command = pendingOutputGain ?: return
+        val played = output.playedFrames
+        if (!OutputGainActivationPolicy.isActive(
+                confirmationFrame = pendingOutputGainBoundaryFrame,
+                engineState = engineState,
+                outputIsPlaying = output.isPlaying,
+                playedFrames = played
+            )
+        ) return
+        pendingOutputGain = null
+        val boundary = pendingOutputGainBoundaryFrame
+        pendingOutputGainBoundaryFrame = OutputGainActivationPolicy.IMMEDIATE
+        logger.info(
+            "PlaybackEngine",
+            "output gain active gain=${command.value} playedFrame=$played boundaryFrame=$boundary"
+        )
+        completeOutputGain(command, OutputGainApplyResult.APPLIED)
+    }
+
+    private fun cancelPendingOutputGain(result: OutputGainApplyResult) {
+        val command = pendingOutputGain ?: return
+        pendingOutputGain = null
+        pendingOutputGainBoundaryFrame = OutputGainActivationPolicy.IMMEDIATE
+        completeOutputGain(command, result)
     }
 
     private fun enterState(next: EngineState) {
@@ -548,11 +651,12 @@ internal class FfmpegPlaybackEngine(
     }
 
     private fun performPrepare(command: EngineCommand.Prepare) {
+        cancelPendingOutputGain(OutputGainApplyResult.CANCELLED)
         closeCurrent()
         closeNext()
         discardPendingTransition()
         pendingStartRequestId = 0L
-        completionPending = false
+        clearCompletion()
         setTransitioning(false)
         transitionFrames = 0L
         transitionedFrames = 0L
@@ -646,6 +750,7 @@ internal class FfmpegPlaybackEngine(
     }
 
     private fun promoteWithFlush(prepared: Slot) {
+        cancelPendingOutputGain(OutputGainApplyResult.CANCELLED)
         val previousRequestId = current?.requestId ?: 0L
         closeCurrent()
         current = prepared
@@ -659,7 +764,7 @@ internal class FfmpegPlaybackEngine(
         setTransitioning(false)
         transitionFrames = 0L
         transitionedFrames = 0L
-        completionPending = false
+        clearCompletion()
         output.flush()
         currentOutputStartFrame = 0L
         seekBaseMs = 0L
@@ -667,8 +772,16 @@ internal class FfmpegPlaybackEngine(
         publishedDurationMs = prepared.durationMs
         enterState(EngineState.PLAYING)
         output.resume()
+        logger.info(
+            "PlaybackEngine",
+            "output resumed request=${prepared.requestId} playing=${output.isPlaying} transition=standard"
+        )
         notifyPromotion(previousRequestId, prepared)
-        listener?.onTransitioned(prepared.requestId, prepared.durationMs)
+        scheduleTransitionAnnouncement(
+            prepared.requestId,
+            prepared.durationMs,
+            FIRST_AUDIBLE_OUTPUT_FRAME
+        )
         schedulePump()
     }
 
@@ -727,7 +840,6 @@ internal class FfmpegPlaybackEngine(
     private fun performPause() {
         output.pause()
         if (engineState != EngineState.RELEASED) enterState(EngineState.PAUSED)
-        completionPending = false
         pendingStartRequestId = 0L
         announcePendingTransition()
         updatePublishedPosition()
@@ -735,11 +847,11 @@ internal class FfmpegPlaybackEngine(
 
     private fun performSeek(positionMs: Long) {
         val slot = current ?: return
+        cancelPendingOutputGain(OutputGainApplyResult.CANCELLED)
         val shouldResume = engineState == EngineState.PLAYING
-        completionPending = false
+        clearCompletion()
         if (transitioning) performClearNext()
         nextTrackRequested = false
-        announcePendingTransition()
         currentBlock.discard()
         val target = if (slot.durationMs > 0L) {
             positionMs.coerceAtMost(slot.durationMs)
@@ -748,7 +860,9 @@ internal class FfmpegPlaybackEngine(
         }
         try {
             slot.decoder.seekTo(target)
+            slot.completionCause = DecoderCompletionCause.SEEK
             output.flush()
+            retargetPendingTransitionAfterFlush()
             seekBaseMs = target
             currentOutputStartFrame = 0L
             publishedPositionMs = target
@@ -756,6 +870,11 @@ internal class FfmpegPlaybackEngine(
                 output.resume()
                 schedulePump()
             }
+            logger.info(
+                "PlaybackEngine",
+                "seek applied request=${slot.requestId} requestedMs=$positionMs targetMs=$target " +
+                    "durationMs=${slot.durationMs} resumed=$shouldResume"
+            )
         } catch (error: NativeDecoderException) {
             if (!isSupersededAbort(error)) failCurrent(slot.requestId, "seek", error)
         } catch (error: Throwable) {
@@ -764,11 +883,12 @@ internal class FfmpegPlaybackEngine(
     }
 
     private fun performCancel() {
+        cancelPendingOutputGain(OutputGainApplyResult.CANCELLED)
         closeCurrent()
         performClearNext()
         discardPendingTransition()
         pendingStartRequestId = 0L
-        completionPending = false
+        clearCompletion()
         runCatching { output.stop() }
         runCatching { output.flush() }
         if (engineState != EngineState.RELEASED && engineState != EngineState.PREPARING) {
@@ -781,11 +901,12 @@ internal class FfmpegPlaybackEngine(
     }
 
     private fun performRelease() {
+        cancelPendingOutputGain(OutputGainApplyResult.RELEASED)
         closeCurrent()
         performClearNext()
         discardPendingTransition()
         pendingStartRequestId = 0L
-        completionPending = false
+        clearCompletion()
         runCatching { output.stop() }
         enterState(EngineState.RELEASED)
         try {
@@ -827,11 +948,17 @@ internal class FfmpegPlaybackEngine(
             return
         }
 
+        confirmOutputGainActivation()
+
         announceTransitionIfAudible()
 
         if (completionPending) {
             updatePublishedPosition()
-            if (output.playedFrames >= output.submittedFrames) finishCompletion()
+            if (PlaybackCompletionDrain.contentWasPlayed(
+                    output.playedFrames,
+                    completionBoundaryFrame
+                )
+            ) finishCompletion()
             else schedulePump(COMPLETION_CHECK_MS)
             return
         }
@@ -856,10 +983,9 @@ internal class FfmpegPlaybackEngine(
         }
         val frameCount = currentBlock.remainingFrameCount
         if (frameCount == 0) {
-            if (next != null && gaplessEnabled && crossfadeMs <= 0L) promoteGapless()
-            else {
-                completionPending = true
-                updatePublishedPosition()
+            when (DecoderEofPolicy.action(next != null, gaplessEnabled, crossfadeMs)) {
+                DecoderEofAction.PROMOTE_GAPLESS -> promoteGapless()
+                DecoderEofAction.DRAIN_CURRENT_OUTPUT -> beginCompletion(slot)
             }
             return
         }
@@ -874,6 +1000,7 @@ internal class FfmpegPlaybackEngine(
             balance
         )
         output.write(currentBlock.pcm, offsetSamples, sampleCount)
+        noteFirstPcmWrite(slot, frameCount, "current")
         currentBlock.consume(frameCount)
         updatePublishedPosition()
         confirmStartedIfPending()
@@ -935,6 +1062,8 @@ internal class FfmpegPlaybackEngine(
             currentOffsetSamples,
             mixFrameCount * PcmFormat.CHANNELS
         )
+        noteFirstPcmWrite(currentSlot, mixFrameCount, "crossfade-current")
+        noteFirstPcmWrite(nextSlot, mixFrameCount, "crossfade-next")
         currentBlock.consume(mixFrameCount)
         nextBlock.consume(mixFrameCount)
         transitionedFrames += mixFrameCount
@@ -991,7 +1120,7 @@ internal class FfmpegPlaybackEngine(
 
     private fun finishCompletion() {
         val slot = current ?: return
-        completionPending = false
+        clearCompletion()
         announcePendingTransition()
         val prepared = next
         if (prepared != null) {
@@ -1001,6 +1130,40 @@ internal class FfmpegPlaybackEngine(
         enterState(EngineState.READY)
         publishedPositionMs = slot.durationMs.coerceAtLeast(publishedPositionMs)
         listener?.onCompleted(slot.requestId)
+    }
+
+    private fun beginCompletion(slot: Slot) {
+        val plan = PlaybackCompletionDrain.plan(
+            output.submittedFrames,
+            output.bufferFrameCount
+        )
+        completionBoundaryFrame = plan.contentBoundaryFrame
+        completionPending = true
+        repeat(plan.paddingBlockCount) {
+            output.write(completionPadding, 0, completionPadding.size)
+        }
+        logger.info(
+            "PlaybackEngine",
+            "decoder EOF request=${slot.requestId} cause=${slot.completionCause.diagnosticId} " +
+                "contentEndFrame=" +
+                "${plan.contentBoundaryFrame} drainPaddingFrames=${plan.paddingFrameCount}"
+        )
+        updatePublishedPosition()
+    }
+
+    private fun clearCompletion() {
+        completionPending = false
+        completionBoundaryFrame = 0L
+    }
+
+    private fun noteFirstPcmWrite(slot: Slot, frameCount: Int, path: String) {
+        if (slot.firstPcmWriteLogged) return
+        slot.firstPcmWriteLogged = true
+        logger.info(
+            "PlaybackEngine",
+            "first PCM written request=${slot.requestId} frames=$frameCount path=$path " +
+                "playing=${output.isPlaying} submittedFrames=${output.submittedFrames}"
+        )
     }
 
     private fun scheduleTransitionAnnouncement(
@@ -1031,6 +1194,12 @@ internal class FfmpegPlaybackEngine(
         pendingTransitionRequestId = 0L
         pendingTransitionDurationMs = 0L
         pendingTransitionBoundaryFrame = 0L
+    }
+
+    private fun retargetPendingTransitionAfterFlush() {
+        if (pendingTransitionRequestId > 0L) {
+            pendingTransitionBoundaryFrame = FIRST_AUDIBLE_OUTPUT_FRAME
+        }
     }
 
     private fun confirmStartedIfPending() {
@@ -1075,7 +1244,8 @@ internal class FfmpegPlaybackEngine(
         error: Throwable,
         explicitFailure: PlaybackFailure? = null
     ) {
-        completionPending = false
+        cancelPendingOutputGain(OutputGainApplyResult.FAILED)
+        clearCompletion()
         setTransitioning(false)
         pendingStartRequestId = 0L
         discardPendingTransition()
@@ -1104,6 +1274,7 @@ internal class FfmpegPlaybackEngine(
         private const val MAX_PENDING_COMMANDS = 32
         private const val COMMANDS_PER_TURN = 8
         private const val MIN_CROSSFADE_MS = 100L
+        private const val FIRST_AUDIBLE_OUTPUT_FRAME = 1L
         private const val STARVATION_LOG_INTERVAL_MS = 5_000L
         private const val STARVATION_FRAMES = PcmFormat.BLOCK_FRAMES / 2
         private const val STARVATION_MIN_SUBMITTED_FRAMES = PcmFormat.BLOCK_FRAMES * 2L

@@ -55,6 +55,7 @@ sealed interface Screen {
     data object PlaybackHistory : Screen
 
     data object System : Screen
+    data object BackupRestore : Screen
     data object Diagnostics : Screen
     data object Reset : Screen
     data object About : Screen
@@ -113,6 +114,7 @@ val Screen.code: String get() = when (this) {
     Screen.Storage -> "storage"
     Screen.PlaybackHistory -> "playback_history"
     Screen.System -> "system"
+    Screen.BackupRestore -> "backup_restore"
     Screen.Diagnostics -> "diagnostics"
     Screen.Reset -> "reset"
     Screen.About -> "about"

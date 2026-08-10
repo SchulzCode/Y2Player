@@ -114,6 +114,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun next() = post { nextInternal(userInitiated = true) }
         fun previous() = post { previousInternal() }
         fun seekBy(deltaMs: Long) = post { seekByInternal(deltaMs) }
+        fun cancelVolumeKeyRepeat() = post { cancelHardwareVolumeRepeat("foreground_input") }
         fun removeQueueIndex(index: Int) = post { removeQueueIndexInternal(index) }
 
         fun moveQueueItem(index: Int, delta: Int) = post {
@@ -162,6 +163,31 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
 
         internal fun historySummary(): PlaybackHistory.Summary = this@PlaybackService.historySummary()
+        internal fun historyRecords(): List<String> = playbackHistory.records()
+        internal fun replaceHistoryRecords(records: List<String>): Boolean = playbackHistory.replaceRecords(records)
+
+        fun prepareBackupExport(onReady: () -> Unit) = post {
+            flushQueuePersist()
+            if (!persistenceExecutor.isShutdown) persistenceExecutor.execute { mainHandler.post(onReady) }
+        }
+
+        fun prepareBackupImport(onReady: () -> Unit) = post {
+            if (backupImportInProgress) return@post
+            releaseCurrentTrack(PlaybackExitReason.QUEUE_REPLACED)
+            playbackHandler.removeCallbacks(queuePersistRunnable)
+            queuePersistScheduled = false
+            flushQueuePersist()
+            backupImportInProgress = true
+            if (!persistenceExecutor.isShutdown) persistenceExecutor.execute { mainHandler.post(onReady) }
+        }
+
+        fun finishBackupImport(preferences: PlayerPreferencesState, onComplete: () -> Unit = {}) = post {
+            backupImportInProgress = false
+            applyPreferencesInternal(preferences)
+            restorePersistedState(skipQueue = safeModeManager.isSafeMode())
+            publishSnapshot()
+            mainHandler.post(onComplete)
+        }
 
         fun clearHistory(onComplete: (Boolean) -> Unit) = post {
             submitPersistence("playback history cleared") {
@@ -266,8 +292,16 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private val fadeGeneration = GenerationGuard()
     private var outputVolume = 1f
     private var transientOutputGain = 1f
-    private var volumeOwnershipGeneration = 0L
+    private val volumeModeTransitionGate = VolumeModeTransitionGate()
+    private val volumeKeyRepeatController = VolumeKeyRepeatController()
+    private val volumeKeyRepeatRunnable = Runnable {
+        applyVolumeRepeatResult(
+            volumeKeyRepeatController.onTimer(SystemClock.uptimeMillis()),
+            source = "fallback"
+        )
+    }
     private var sleepTimerMode = SleepTimerMode.OFF
+    private var backupImportInProgress = false
     private var sleepTimerDeadlineElapsed: Long? = null
     private var sleepTimerCallback: Runnable? = null
     private val sleepTimerGeneration = GenerationGuard()
@@ -393,7 +427,19 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
             ACTION_ADJUST_VOLUME -> {
                 val direction = intent.getIntExtra(EXTRA_VOLUME_DIRECTION, 0)
-                if (direction != 0) handleHardwareVolume(direction)
+                if (direction != 0) {
+                    val keyAction = intent.getIntExtra(EXTRA_VOLUME_KEY_ACTION, -1)
+                    if (keyAction == -1) handleHardwareVolume(direction) else handleHardwareVolumeKey(
+                        direction = direction,
+                        keyCode = intent.getIntExtra(EXTRA_VOLUME_KEY_CODE, KeyEvent.KEYCODE_UNKNOWN),
+                        action = keyAction,
+                        repeatCount = intent.getIntExtra(EXTRA_VOLUME_REPEAT_COUNT, 0),
+                        downTime = intent.getLongExtra(EXTRA_VOLUME_DOWN_TIME, 0L),
+                        eventTime = intent.getLongExtra(EXTRA_VOLUME_EVENT_TIME, 0L),
+                        deviceId = intent.getIntExtra(EXTRA_VOLUME_DEVICE_ID, 0),
+                        oneShot = intent.getBooleanExtra(EXTRA_VOLUME_ONE_SHOT, false)
+                    )
+                }
             }
         }
         return if (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.PREPARING) {
@@ -405,6 +451,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onDestroy() {
         shuttingDown = true
+        volumeModeTransitionGate.cancel()
+        volumeKeyRepeatController.cancel()
         if (::libraryRepository.isInitialized) libraryRepository.setPlaybackActive(false)
         if (::routeMonitor.isInitialized) routeMonitor.stop()
         if (::storageMonitor.isInitialized) storageMonitor.removeListener(storageListener)
@@ -477,6 +525,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             audioEffectsState = audioEffectsController.apply(currentPreferences)
             audioEffectsSessionApplied = true
         }
+        // Recover a handoff that a prepare/cancel or engine failure interrupted.
+        // The system stream remains at its previous low index until this new
+        // AudioTrack acknowledgement completes.
+        normalizeSystemVolumeForAppControl()
         val requestedPosition = normalizedResumePosition(pendingPositionMs, durationMs)
         if (requestedPosition > 0) engine.seekTo(requestedPosition)
         val wantedAutoPlay = pendingAutoPlay
@@ -639,6 +691,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
         lastPromotedRequestId = 0L
         val audibleTrack = currentTrack ?: return
+        if (engine.state == EngineState.PAUSED || snapshot.status == PlaybackStatus.PAUSED) {
+            snapshot = buildSnapshot(
+                status = PlaybackStatus.PAUSED,
+                positionMs = engine.currentPositionMs(),
+                durationMs = durationMs,
+                pauseReason = snapshot.pauseReason
+            )
+            persistSession(positionOverride = snapshot.positionMs)
+            publishSnapshot()
+            return
+        }
         recordCurrentPlaybackStart()
         snapshot = buildSnapshot(
             status = PlaybackStatus.PLAYING,
@@ -653,7 +716,11 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             "track" to audibleTrack.id,
             "codec" to audibleTrack.codec,
             "sampleRate" to audibleTrack.sampleRate,
-            "reason" to if (currentPreferences.crossfadeMs > 0) "crossfade" else "gapless"
+            "reason" to when {
+                appliedCrossfadeMs > 0L -> "crossfade"
+                appliedGapless == true -> "gapless"
+                else -> "standard"
+            }
         )
         persistSession(positionOverride = snapshot.positionMs)
         revalidatePreload()
@@ -804,45 +871,106 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }
     }
 
-    private fun handleHardwareVolume(direction: Int) {
-        val normalizedDirection = if (direction > 0) 1 else -1
-        logger.info("VolumeButton", "direction=$normalizedDirection")
-        post {
-            val stored = preferences.snapshot()
-            val accepted = if (stored.volumeMode == VolumeMode.PERCEPTUAL) {
-                val updated = preferences.adjustVolumeLevel(normalizedDirection)
-                if (updated.volumeLevel == stored.volumeLevel) {
-                    false
-                } else {
-                    // The Android music stream remains fixed at its app-control
-                    // ceiling; this path changes only the player's live gain.
-                    applyPreferencesInternal(updated)
-                    mainHandler.post {
-                        (application as Y2Application).container.appStore.dispatch(
-                            AppAction.PreferencesChanged(updated)
-                        )
-                    }
-                    eventLog.info(
-                        Sub.PLAYBACK,
-                        Ev.VOLUME_LEVEL,
-                        "level" to updated.volumeLevel,
-                        "pct" to VolumeCurve.percentForLevel(updated.volumeLevel),
-                        "source" to "hardware_key"
-                    )
-                    true
-                }
-            } else {
-                val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                audioManager.adjustStreamVolume(
-                    AudioManager.STREAM_MUSIC,
-                    if (normalizedDirection > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-                    0
-                )
-                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != before
-            }
-            if (accepted) hapticController.acceptedAction()
-            stopSelfIfIdle()
+    private fun handleHardwareVolume(direction: Int) = post {
+        adjustHardwareVolumeInternal(if (direction > 0) 1 else -1, "single")
+    }
+
+    private fun handleHardwareVolumeKey(
+        direction: Int,
+        keyCode: Int,
+        action: Int,
+        repeatCount: Int,
+        downTime: Long,
+        eventTime: Long,
+        deviceId: Int,
+        oneShot: Boolean
+    ) = post {
+        val now = SystemClock.uptimeMillis()
+        val result = when {
+            oneShot -> volumeKeyRepeatController.oneShot(direction)
+            action == KeyEvent.ACTION_UP ->
+                volumeKeyRepeatController.onRelease(keyCode, downTime, deviceId)
+            action == KeyEvent.ACTION_DOWN -> volumeKeyRepeatController.onDown(
+                direction = direction,
+                keyCode = keyCode,
+                downTime = downTime,
+                deviceId = deviceId,
+                repeatCount = repeatCount,
+                eventTime = eventTime,
+                nowMs = now
+            )
+            else -> VolumeKeyRepeatController.Result()
         }
+        val source = when {
+            oneShot -> "one_shot"
+            action == KeyEvent.ACTION_UP -> "release"
+            else -> "framework_$repeatCount"
+        }
+        applyVolumeRepeatResult(result, source)
+    }
+
+    private fun applyVolumeRepeatResult(result: VolumeKeyRepeatController.Result, source: String) {
+        playbackHandler.removeCallbacks(volumeKeyRepeatRunnable)
+        result.adjustment?.let { adjustHardwareVolumeInternal(it, source) }
+        if (result.stoppedByLimit) {
+            logger.warn(
+                "VolumeButton",
+                "repeat stopped at ${VolumeKeyRepeatController.MAX_HOLD_MS}ms safety limit"
+            )
+        }
+        result.nextRunAtMs?.let { runAt ->
+            playbackHandler.postDelayed(
+                volumeKeyRepeatRunnable,
+                (runAt - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+            )
+        } ?: stopSelfIfIdle()
+    }
+
+    private fun cancelHardwareVolumeRepeat(reason: String) {
+        val wasRepeating = volumeKeyRepeatController.isRepeating
+        volumeKeyRepeatController.cancel()
+        playbackHandler.removeCallbacks(volumeKeyRepeatRunnable)
+        if (wasRepeating) logger.info("VolumeButton", "repeat cancelled reason=$reason")
+        stopSelfIfIdle()
+    }
+
+    private fun adjustHardwareVolumeInternal(direction: Int, source: String) {
+        val normalizedDirection = if (direction > 0) 1 else -1
+        logger.info("VolumeButton", "direction=$normalizedDirection source=$source")
+        val stored = preferences.snapshot()
+        val accepted = if (stored.volumeMode == VolumeMode.PERCEPTUAL) {
+            val updated = preferences.adjustVolumeLevel(normalizedDirection)
+            if (updated.volumeLevel == stored.volumeLevel) {
+                false
+            } else {
+                // The Android music stream remains fixed at its app-control
+                // ceiling; this path changes only the player's live gain.
+                applyPreferencesInternal(updated)
+                mainHandler.post {
+                    (application as Y2Application).container.appStore.dispatch(
+                        AppAction.PreferencesChanged(updated)
+                    )
+                }
+                eventLog.info(
+                    Sub.PLAYBACK,
+                    Ev.VOLUME_LEVEL,
+                    "level" to updated.volumeLevel,
+                    "pct" to VolumeCurve.percentForLevel(updated.volumeLevel),
+                    "source" to "hardware_key"
+                )
+                true
+            }
+        } else {
+            val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                if (normalizedDirection > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                0
+            )
+            audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != before
+        }
+        if (accepted) hapticController.acceptedAction()
+        stopSelfIfIdle()
     }
 
     private fun togglePlaybackInternal(): Boolean {
@@ -1715,13 +1843,22 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             )
             return
         }
-        volumeOwnershipGeneration += 1
         if (value.volumeMode == VolumeMode.PERCEPTUAL) {
+            logger.info(
+                "Volume",
+                "volume-mode transition requested mode=in_app systemTarget=$systemVolumeIndex"
+            )
             applyPreferencesInternal(value)
             raiseSystemVolumeAfterOutputGain(systemVolumeIndex)
         } else {
+            volumeModeTransitionGate.cancel()
+            logger.info(
+                "Volume",
+                "volume-mode transition requested mode=system systemTarget=$systemVolumeIndex"
+            )
             setMusicStreamVolume(systemVolumeIndex)
             applyPreferencesInternal(value)
+            logger.info("Volume", "volume-mode transition completed mode=system")
         }
     }
 
@@ -1831,17 +1968,62 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         applyLiveOutputGain()
     }
 
-    private fun applyLiveOutputGain(onApplied: (() -> Unit)? = null) {
-        engine.setOutputGain(outputVolume * transientOutputGain, onApplied)
+    private fun applyLiveOutputGain(
+        onComplete: ((OutputGainApplyResult) -> Unit)? = null
+    ) {
+        engine.setOutputGain(outputVolume * transientOutputGain, onComplete)
     }
 
     private fun raiseSystemVolumeAfterOutputGain(systemVolumeIndex: Int) {
-        val generation = volumeOwnershipGeneration
-        applyLiveOutputGain {
+        val engineAtRequest = engine
+        val ticket = volumeModeTransitionGate.begin(engineAtRequest)
+        val gain = outputVolume * transientOutputGain
+        logger.info(
+            "Volume",
+            "software attenuation requested transition=${ticket.generation} gain=$gain " +
+                "engineState=${engineAtRequest.state}"
+        )
+        engineAtRequest.setOutputGain(gain) { result ->
+            logger.info(
+                "Volume",
+                "software attenuation ${result.name.lowercase()} by playback thread and active at output " +
+                    "transition=${ticket.generation} gain=$gain"
+            )
             post {
-                if (generation == volumeOwnershipGeneration &&
-                    currentPreferences.volumeMode == VolumeMode.PERCEPTUAL
-                ) setMusicStreamVolume(systemVolumeIndex)
+                if (!::engine.isInitialized) return@post
+                when (volumeModeTransitionGate.complete(
+                    ticket = ticket,
+                    currentEngineIdentity = engine,
+                    result = result,
+                    stillInAppMode = currentPreferences.volumeMode == VolumeMode.PERCEPTUAL
+                )) {
+                    VolumeModeTransitionDecision.RAISE_SYSTEM_VOLUME -> {
+                        val raised = setMusicStreamVolume(systemVolumeIndex)
+                        logger.info(
+                            "Volume",
+                            "volume-mode transition completed mode=in_app " +
+                                "transition=${ticket.generation} systemRaised=$raised"
+                        )
+                    }
+                    VolumeModeTransitionDecision.RETRY_OUTPUT_GAIN -> {
+                        logger.info(
+                            "Volume",
+                            "software attenuation cancelled; retrying current playback path " +
+                                "transition=${ticket.generation}"
+                        )
+                        raiseSystemVolumeAfterOutputGain(systemVolumeIndex)
+                    }
+                    VolumeModeTransitionDecision.HOLD_SAFE -> logger.warn(
+                        "Volume",
+                        "volume-mode transition held at safe system volume " +
+                            "transition=${ticket.generation} result=${result.name.lowercase()}"
+                    )
+                    VolumeModeTransitionDecision.IGNORE_STALE -> logger.info(
+                        "Volume",
+                        "stale software attenuation acknowledgement ignored " +
+                            "transition=${ticket.generation} result=${result.name.lowercase()}"
+                    )
+                }
             }
         }
     }
@@ -2068,13 +2250,14 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun submitPersistence(operation: String, block: () -> Unit) {
-        if (persistenceExecutor.isShutdown) return
+        if (persistenceExecutor.isShutdown || backupImportInProgress) return
         persistenceExecutor.execute {
             runCatching(block).onFailure { logger.error("Playback", "$operation failed", it) }
         }
     }
 
     private fun stopSelfIfIdle() {
+        if (volumeKeyRepeatController.isRepeating) return
         val hasResumablePausedTrack = snapshot.status == PlaybackStatus.PAUSED &&
             currentTrack != null &&
             (snapshot.durationMs <= 0L || snapshot.positionMs < snapshot.durationMs) &&
@@ -2108,6 +2291,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         const val ACTION_ADJUST_VOLUME = "com.schulzcode.y2player.action.ADJUST_VOLUME"
         const val EXTRA_MEDIA_KEY_CODE = "com.schulzcode.y2player.extra.MEDIA_KEY_CODE"
         const val EXTRA_VOLUME_DIRECTION = "com.schulzcode.y2player.extra.VOLUME_DIRECTION"
+        const val EXTRA_VOLUME_KEY_CODE = "com.schulzcode.y2player.extra.VOLUME_KEY_CODE"
+        const val EXTRA_VOLUME_KEY_ACTION = "com.schulzcode.y2player.extra.VOLUME_KEY_ACTION"
+        const val EXTRA_VOLUME_REPEAT_COUNT = "com.schulzcode.y2player.extra.VOLUME_REPEAT_COUNT"
+        const val EXTRA_VOLUME_DOWN_TIME = "com.schulzcode.y2player.extra.VOLUME_DOWN_TIME"
+        const val EXTRA_VOLUME_EVENT_TIME = "com.schulzcode.y2player.extra.VOLUME_EVENT_TIME"
+        const val EXTRA_VOLUME_DEVICE_ID = "com.schulzcode.y2player.extra.VOLUME_DEVICE_ID"
+        const val EXTRA_VOLUME_ONE_SHOT = "com.schulzcode.y2player.extra.VOLUME_ONE_SHOT"
         private const val NOTIFICATION_ID = 19
         private const val PROGRESS_INTERVAL_MS = 250L
         private const val BACKGROUND_PROGRESS_INTERVAL_MS = 5_000L

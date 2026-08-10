@@ -72,6 +72,18 @@ class DiagnosticsRepository(
         output
     }.onFailure { setError(it.message ?: it.javaClass.simpleName) }
 
+    fun clear(): Result<Unit> = runCatching {
+        val textCleared = logger.clear()
+        val eventsCleared = eventLog?.clear() ?: true
+        if (!textCleared || !eventsCleared) error("Some diagnostic files could not be cleared")
+        logger.warn("Diagnostics", "diagnostic log cleared; logging resumed")
+        eventLog?.info(Sub.DIAG, Ev.ACTION, "operation" to "diagnostics_cleared")
+        publish { it.copy(exportedPath = null, lastError = null, recentLines = emptyList()) }
+    }.onFailure { error ->
+        logger.error("Diagnostics", "diagnostic log clear failed", error)
+        setError(error.message ?: error.javaClass.simpleName)
+    }
+
     private fun publish(transform: (DiagnosticsState) -> DiagnosticsState) {
         stateExecutor.execute {
             val value = transform(state).copy(recentLines = logger.recentLines())

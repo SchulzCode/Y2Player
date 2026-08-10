@@ -10,16 +10,14 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-class DiagnosticLogger(
-    context: Context,
+class DiagnosticLogger internal constructor(
+    private val directory: File,
     private val writer: LogWriter = LogWriter("y2-diagnostics")
 ) : LogWriter.Sink {
-    private val appContext = context.applicationContext
-    private val directory = File(appContext.filesDir, "diagnostics").apply { mkdirs() }
     private val activeFile = File(directory, "y2player.log")
     private val nativeCrashFile = File(directory, "y2-native-crash.log")
     private val fileLock = Any()
@@ -28,12 +26,19 @@ class DiagnosticLogger(
     private sealed interface Entry
     private class Line(val atMs: Long, val level: String, val category: String, val message: String) : Entry
     private class Flush(val latch: CountDownLatch) : Entry
+    private class Clear(val latch: CountDownLatch, val result: AtomicReference<Boolean>) : Entry
 
-    private val queue = ArrayBlockingQueue<Entry>(QUEUE_CAPACITY)
+    private val queue = java.util.ArrayDeque<Entry>(QUEUE_CAPACITY)
+    private val queueLock = Any()
     @Volatile private var writerDisabled = false
     @Volatile private var verbose = true
     private var verboseAnnounced = false
     private var consecutiveWriteFailures = 0
+
+    constructor(context: Context, writer: LogWriter = LogWriter("y2-diagnostics")) : this(
+        File(context.applicationContext.filesDir, "diagnostics").apply { mkdirs() },
+        writer
+    )
 
     init {
         writer.register(this)
@@ -71,13 +76,49 @@ class DiagnosticLogger(
     fun crash(category: String, message: String, error: Throwable?) {
         runCatching {
             val pending = ArrayList<Entry>()
-            queue.drainTo(pending)
+            synchronized(queueLock) {
+                while (queue.isNotEmpty()) pending += queue.removeFirst()
+            }
             val detail = error?.let(::boundedStackTrace)
             val lines = pending.filterIsInstance<Line>() +
                 Line(System.currentTimeMillis(), "E", category, if (detail == null) message else "$message\n$detail")
             writeLines(lines, force = true)
-            pending.forEach { if (it is Flush) it.latch.countDown() }
+            pending.forEach {
+                when (it) {
+                    is Flush -> it.latch.countDown()
+                    is Clear -> {
+                        it.result.set(false)
+                        it.latch.countDown()
+                    }
+                    is Line -> Unit
+                }
+            }
         }
+    }
+
+    /**
+     * Places an ordered reset barrier in the writer queue. Lines queued before the
+     * barrier are discarded or deleted; lines queued after it are written to a new
+     * active file. The exported diagnostics directory is deliberately unrelated.
+     */
+    fun clear(timeoutMs: Long = CLEAR_TIMEOUT_MS): Boolean {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference(false)
+        synchronized(queueLock) {
+            // Pending lines have not reached disk and belong to the pre-reset log.
+            val controls = ArrayList<Entry>()
+            while (queue.isNotEmpty()) {
+                when (val entry = queue.removeFirst()) {
+                    is Line -> Unit
+                    else -> controls += entry
+                }
+            }
+            controls.forEach(queue::addLast)
+            queue.addLast(Clear(latch, result))
+        }
+        writer.wake()
+        return runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result.get() }
+            .getOrDefault(false)
     }
 
     fun recentLines(limit: Int = RECENT_LINE_COUNT): List<String> {
@@ -134,32 +175,82 @@ class DiagnosticLogger(
 
     private fun enqueue(level: String, category: String, message: String) {
         val entry = Line(System.currentTimeMillis(), level, category, message)
-        while (!queue.offer(entry)) queue.poll()
+        synchronized(queueLock) {
+            if (queue.size >= QUEUE_CAPACITY) {
+                val retained = ArrayList<Entry>(queue.size)
+                var removedLine = false
+                while (queue.isNotEmpty()) {
+                    val pending = queue.removeFirst()
+                    if (!removedLine && pending is Line) removedLine = true else retained += pending
+                }
+                retained.forEach(queue::addLast)
+                if (!removedLine) return
+            }
+            queue.addLast(entry)
+        }
         writer.wake()
     }
 
     private fun awaitFlush(timeoutMs: Long) {
         val latch = CountDownLatch(1)
-        if (queue.offer(Flush(latch))) {
-            writer.wake()
-            runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
+        synchronized(queueLock) {
+            queue.addLast(Flush(latch))
         }
+        writer.wake()
+        runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
     }
 
-    override fun hasUrgentPending(): Boolean = queue.any {
-        it is Flush || (it is Line && it.level != "I")
+    override fun hasUrgentPending(): Boolean = synchronized(queueLock) {
+        queue.any { it is Flush || it is Clear || (it is Line && it.level != "I") }
     }
 
     override fun drainAndWrite() {
         val batch = ArrayList<Entry>(DRAIN_BATCH)
         while (true) {
             batch.clear()
-            queue.drainTo(batch, DRAIN_BATCH)
+            synchronized(queueLock) {
+                repeat(minOf(DRAIN_BATCH, queue.size)) { batch += queue.removeFirst() }
+            }
             if (batch.isEmpty()) return
-            val lines = batch.filterIsInstance<Line>()
-            if (lines.isNotEmpty()) writeLines(lines)
-            batch.forEach { if (it is Flush) it.latch.countDown() }
+            val lines = ArrayList<Line>()
+            fun writePending() {
+                if (lines.isNotEmpty()) {
+                    writeLines(lines)
+                    lines.clear()
+                }
+            }
+            batch.forEach { entry ->
+                when (entry) {
+                    is Line -> lines += entry
+                    is Flush -> {
+                        writePending()
+                        entry.latch.countDown()
+                    }
+                    is Clear -> {
+                        writePending()
+                        entry.result.set(clearFiles())
+                        entry.latch.countDown()
+                    }
+                }
+            }
+            writePending()
         }
+    }
+
+    private fun clearFiles(): Boolean = synchronized(fileLock) {
+        var success = true
+        val names = buildList {
+            add(activeFile.name)
+            add(nativeCrashFile.name)
+            for (index in 1..BACKUP_COUNT) add("y2player.$index.log")
+        }
+        names.forEach { name ->
+            val file = File(directory, name)
+            if (file.exists() && !file.delete()) success = false
+        }
+        writerDisabled = false
+        consecutiveWriteFailures = 0
+        success
     }
 
     private fun writeLines(lines: List<Line>, force: Boolean = false) {
@@ -230,6 +321,7 @@ class DiagnosticLogger(
         private const val DRAIN_BATCH = 64
         private const val SHORT_FLUSH_TIMEOUT_MS = 100L
         private const val EXPORT_FLUSH_TIMEOUT_MS = 1_000L
+        private const val CLEAR_TIMEOUT_MS = 2_000L
         private const val MAX_WRITE_FAILURES = 3
     }
 }

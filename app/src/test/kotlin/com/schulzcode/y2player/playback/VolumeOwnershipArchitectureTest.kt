@@ -29,7 +29,51 @@ class VolumeOwnershipArchitectureTest {
 
         val acknowledgement = source.substringAfter("private fun raiseSystemVolumeAfterOutputGain")
             .substringBefore("private fun beginExplicitPlaybackRequest")
-        assertTrue(acknowledgement.indexOf("applyLiveOutputGain {") < acknowledgement.indexOf("setMusicStreamVolume(systemVolumeIndex)"))
+        val raiseDecision = "VolumeModeTransitionDecision.RAISE_SYSTEM_VOLUME"
+        assertTrue(acknowledgement.indexOf("engineAtRequest.setOutputGain") < acknowledgement.indexOf(raiseDecision))
+        assertTrue(acknowledgement.indexOf(raiseDecision) < acknowledgement.indexOf("setMusicStreamVolume(systemVolumeIndex)"))
+
+        val engine = File(
+            root,
+            "app/src/main/kotlin/com/schulzcode/y2player/playback/FfmpegPlaybackEngine.kt"
+        ).readText()
+        val applyGain = engine.substringAfter("private fun performOutputGain")
+            .substringBefore("private fun confirmOutputGainActivation")
+        val confirmGain = engine.substringAfter("private fun confirmOutputGainActivation")
+            .substringBefore("private fun cancelPendingOutputGain")
+        assertFalse(applyGain.contains("completeOutputGain(command, OutputGainApplyResult.APPLIED)") &&
+            applyGain.indexOf("completeOutputGain(command, OutputGainApplyResult.APPLIED)") <
+            applyGain.indexOf("OutputGainActivationPolicy.confirmationFrame"))
+        assertTrue(confirmGain.contains("OutputGainActivationPolicy.isActive"))
+        assertTrue(confirmGain.contains("completeOutputGain(command, OutputGainApplyResult.APPLIED)"))
+    }
+
+    @Test fun outputReplacementAndFlushPathsInvalidateAnUnconfirmedGain() {
+        val source = File(
+            root,
+            "app/src/main/kotlin/com/schulzcode/y2player/playback/FfmpegPlaybackEngine.kt"
+        ).readText()
+
+        listOf("performPrepare", "promoteWithFlush", "performSeek", "performCancel").forEach { function ->
+            val body = source.substringAfter("private fun $function")
+                .substringBefore("private fun", missingDelimiterValue = source.substringAfter("private fun $function"))
+            assertTrue("$function must cancel its pending output fence", body.contains("cancelPendingOutputGain"))
+        }
+        val release = source.substringAfter("private fun performRelease")
+            .substringBefore("private fun schedulePump")
+        assertTrue(release.contains("cancelPendingOutputGain(OutputGainApplyResult.RELEASED)"))
+    }
+
+    @Test fun leavingInAppModeLowersSystemVolumeBeforeRemovingAttenuation() {
+        val source = File(
+            root,
+            "app/src/main/kotlin/com/schulzcode/y2player/playback/PlaybackService.kt"
+        ).readText()
+        val transition = source.substringAfter("private fun applyVolumeModeTransitionInternal")
+            .substringBefore("private fun normalizeSystemVolumeForAppControl")
+        val leaving = transition.substringAfter("} else {")
+
+        assertTrue(leaving.indexOf("setMusicStreamVolume(systemVolumeIndex)") < leaving.indexOf("applyPreferencesInternal(value)"))
     }
 
     @Test fun earlyRouteEventsCannotApplyGainBeforeTheEngineExists() {

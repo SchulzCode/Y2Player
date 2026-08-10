@@ -102,7 +102,8 @@ object Y2RowIcons {
         "history_clear" -> Y2Icon.REMOVE
 
         "system" -> Y2Icon.SYSTEM
-        "diagnostics", "diag_export", "diag_verbose" -> Y2Icon.DIAGNOSTICS
+        "diagnostics", "diag_export", "diag_clear", "diag_verbose" -> Y2Icon.DIAGNOSTICS
+        "backup_restore", "backup_export", "backup_import" -> Y2Icon.STORAGE
         "reset", "reset_queue", "reset_library" -> Y2Icon.REMOVE
         "reset_safe_mode" -> Y2Icon.WARNING
         "android_settings" -> Y2Icon.SETTINGS

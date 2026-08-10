@@ -139,7 +139,8 @@ class ScreenCatalogueTest {
             result.effects.any {
                 it == AppEffect.ResetLibrary || it == AppEffect.ClearQueue ||
                     it is AppEffect.ForgetBluetoothDevice || it is AppEffect.ClearAudiobookProgress ||
-                    it is AppEffect.DeletePlaylist || it == AppEffect.ClearPlaybackHistory
+                    it is AppEffect.DeletePlaylist || it == AppEffect.ClearPlaybackHistory ||
+                    it == AppEffect.ClearDiagnostics || it == AppEffect.ImportBackup
             }
         }
         destructive.forEach { (screen, _) ->

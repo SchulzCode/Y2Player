@@ -14,6 +14,27 @@ class HardwareKeyGateTest {
         assertFalse(accept(120, HardwareKeyGate.Source.Y2_BROADCAST))
     }
 
+    @Test fun duplicateVolumeRepeatsFromActivityAndBroadcastAreRejected() {
+        assertTrue(HardwareKeyGate.accept(
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.ACTION_DOWN,
+            600,
+            HardwareKeyGate.Source.ACTIVITY,
+            downTime = 100,
+            deviceId = 7,
+            repeatCount = 1
+        ))
+        assertFalse(HardwareKeyGate.accept(
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.ACTION_DOWN,
+            610,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            downTime = 100,
+            deviceId = 7,
+            repeatCount = 1
+        ))
+    }
+
     @Test fun sameSourceBounceIsSuppressed() {
         assertTrue(accept(100, HardwareKeyGate.Source.ACTIVITY, KeyEvent.KEYCODE_DPAD_DOWN))
         assertTrue("Rapid wheel movement must remain legitimate", accept(120, HardwareKeyGate.Source.ACTIVITY, KeyEvent.KEYCODE_DPAD_DOWN))

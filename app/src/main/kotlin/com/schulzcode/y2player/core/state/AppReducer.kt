@@ -37,6 +37,14 @@ object AppReducer {
         is AppAction.DisplayChanged -> Reduction(state.copy(display = action.display))
         is AppAction.PreferencesChanged -> Reduction(preserveSelection(state, state.copy(preferences = action.preferences)))
         is AppAction.DiagnosticsChanged -> Reduction(preserveSelection(state, state.copy(diagnostics = action.diagnostics)))
+        is AppAction.BackupChanged -> Reduction(preserveSelection(state, state.copy(backup = action.backup)))
+        is AppAction.BackupImportReady -> Reduction(
+            pushState(
+                state.copy(backup = state.backup.copy(importPreview = action.summary)),
+                Screen.ConfirmAction(ConfirmPrompts.IMPORT_BACKUP),
+                ScreenContent.CONFIRM_DEFAULT_INDEX
+            )
+        )
         is AppAction.SafeModeChanged -> Reduction(state.copy(safeMode = action.enabled))
         is AppAction.ShowMessage -> Reduction(state.copy(transientMessage = action.message))
         is AppAction.SelectIndex -> Reduction(normalizeSelection(setSelected(state, action.index.coerceAtLeast(0))))
@@ -131,6 +139,7 @@ object AppReducer {
             Screen.Storage -> confirmStorage(state, row)
             Screen.PlaybackHistory -> confirmPlaybackHistory(state, row)
             Screen.System -> confirmSystem(state, row)
+            Screen.BackupRestore -> confirmBackupRestore(state, row)
             Screen.Diagnostics -> confirmDiagnostics(state, row)
             Screen.Reset -> confirmReset(state, row)
             Screen.About -> Reduction(state)
@@ -309,6 +318,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "diagnostics" -> push(state, Screen.Diagnostics)
+            "backup_restore" -> push(state, Screen.BackupRestore)
             "reset" -> push(state, Screen.Reset)
             "android_settings" -> Reduction(state, listOf(OpenAndroidSettings))
             "about" -> push(state, Screen.About)
@@ -475,6 +485,8 @@ object AppReducer {
         actionKey == ConfirmPrompts.CLEAR_QUEUE -> Reduction(pop(state), listOf(ClearQueue))
         actionKey == ConfirmPrompts.RESET_LIBRARY -> Reduction(pop(state), listOf(ResetLibrary))
         actionKey == ConfirmPrompts.CLEAR_HISTORY -> Reduction(pop(state), listOf(ClearPlaybackHistory))
+        actionKey == ConfirmPrompts.CLEAR_DIAGNOSTICS -> Reduction(pop(state), listOf(ClearDiagnostics))
+        actionKey == ConfirmPrompts.IMPORT_BACKUP -> Reduction(pop(state), listOf(ImportBackup))
         actionKey.startsWith(ConfirmPrompts.DELETE_PLAYLIST) -> {
             val id = actionKey.substringAfter(':').toLongOrNull()
             if (id == null) Reduction(pop(state)) else Reduction(pop(state, 2), listOf(DeletePlaylist(id)))
@@ -560,6 +572,11 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
             "diag_export" -> Reduction(state, listOf(ExportDiagnostics))
+            "diag_clear" -> push(
+                state,
+                Screen.ConfirmAction(ConfirmPrompts.CLEAR_DIAGNOSTICS),
+                selectedIndex = ScreenContent.CONFIRM_DEFAULT_INDEX
+            )
             "diag_verbose" -> Reduction(state, listOf(ToggleVerboseDiagnostics))
             else -> Reduction(state)
         }
@@ -570,6 +587,15 @@ object AppReducer {
         Screen.NowPlayingOptions -> back(state)
         Screen.EqualizerBands -> Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
         else -> openContextOptions(state)
+    }
+
+    private fun confirmBackupRestore(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        return when (key) {
+            "backup_export" -> Reduction(state, listOf(ExportBackup))
+            "backup_import" -> Reduction(state, listOf(InspectBackup))
+            else -> Reduction(state)
+        }
     }
 
     private fun showNowPlaying(state: AppState): Reduction = when {

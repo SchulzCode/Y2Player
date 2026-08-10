@@ -7,6 +7,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class EventLogTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
@@ -223,5 +226,49 @@ class EventLogTest {
         val files = log.logFiles()
         assertTrue("the active log is discoverable", files.isNotEmpty())
         assertEquals(EventLog.ACTIVE_NAME, files.last().name)
+    }
+
+    @Test fun clearingWhileLoggingIsActiveDropsOnlyTheOldGeneration() {
+        val internal = temporaryFolder.newFolder("clear-active")
+        val log = newLog(internal)
+        log.warn(Sub.DIAG, Ev.ACTION, "marker" to "before_reset")
+        log.flush()
+
+        val started = CountDownLatch(1)
+        val running = AtomicBoolean(true)
+        val producer = Thread {
+            var index = 0
+            started.countDown()
+            while (running.get() && index < 10_000) {
+                log.info(Sub.DIAG, Ev.ACTION, "active" to index++)
+            }
+        }
+        producer.start()
+        assertTrue(started.await(1, TimeUnit.SECONDS))
+
+        assertTrue("the ordered clear barrier completed", log.clear())
+        running.set(false)
+        producer.join(2_000)
+        log.warn(Sub.DIAG, Ev.ACTION, "marker" to "after_reset")
+        log.flush()
+
+        val text = readAll(internal)
+        assertFalse("pre-reset data was removed", text.contains("before_reset"))
+        assertTrue("logging resumed immediately", text.contains("after_reset"))
+    }
+
+    @Test fun aFreshExportGenerationContainsOnlyPostResetEvents() {
+        val internal = temporaryFolder.newFolder("clear-export")
+        val log = newLog(internal)
+        log.warn(Sub.DIAG, Ev.ACTION, "marker" to "obsolete_export_entry")
+        log.flush()
+
+        assertTrue(log.clear())
+        log.warn(Sub.DIAG, Ev.ACTION, "marker" to "fresh_export_entry")
+        log.flush()
+
+        val exportedText = log.logFiles().joinToString("\n") { it.readText() }
+        assertFalse(exportedText.contains("obsolete_export_entry"))
+        assertTrue(exportedText.contains("fresh_export_entry"))
     }
 }

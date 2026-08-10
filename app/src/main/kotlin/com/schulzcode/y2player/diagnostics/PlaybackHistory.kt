@@ -93,6 +93,107 @@ internal class PlaybackHistory(
         return cleared
     }
 
+    @Synchronized
+    fun records(): List<String> {
+        val result = ArrayList<String>()
+        val seen = HashSet<String>()
+        var bytes = 0L
+        directories().forEach { directory ->
+            listOf(BACKUP_NAME, ACTIVE_NAME).forEach { name ->
+                val file = File(directory, name)
+                if (!file.isFile || !file.canRead()) return@forEach
+                runCatching {
+                    file.forEachLine { line ->
+                        if (isCompleteRecord(line) && seen.add(line)) {
+                            val recordBytes = line.toByteArray(Charsets.UTF_8).size + 1L
+                            if (recordBytes <= MAX_ARCHIVE_BYTES) {
+                                while (result.isNotEmpty() && bytes + recordBytes > MAX_ARCHIVE_BYTES) {
+                                    bytes -= result.removeAt(0).toByteArray(Charsets.UTF_8).size + 1L
+                                }
+                                if (bytes + recordBytes <= MAX_ARCHIVE_BYTES) {
+                                    result += line
+                                    bytes += recordBytes
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /** Replaces the bounded history files and restores their previous bytes if any step fails. */
+    @Synchronized
+    fun replaceRecords(records: List<String>): Boolean {
+        if (records.any { !isCompleteRecord(it) }) return false
+        if (records.sumOf { it.toByteArray(Charsets.UTF_8).size + 1L } > MAX_ARCHIVE_BYTES) return false
+        val destination = runCatching { directoryProvider() }.getOrNull() ?: return false
+        val directories = (directories() + destination).distinctBy { it.absolutePath }
+        val targets = directories.flatMap { directory ->
+            listOf(File(directory, ACTIVE_NAME), File(directory, BACKUP_NAME))
+        }
+        val previous = runCatching {
+            targets.associateWith { file -> if (file.isFile) file.readBytes() else null }
+        }.getOrElse { return false }
+        val parts = splitRecords(records)
+        val tempBackup = File(destination, ".$BACKUP_NAME.restore-tmp")
+        val tempActive = File(destination, ".$ACTIVE_NAME.restore-tmp")
+        return runCatching {
+            if (!destination.isDirectory && !destination.mkdirs()) error("History folder is unavailable")
+            listOf(tempBackup, tempActive).forEach { if (it.exists() && !it.delete()) error("Stale history temporary file") }
+            if (parts.first.isNotEmpty()) writeRecords(tempBackup, parts.first)
+            if (parts.second.isNotEmpty()) writeRecords(tempActive, parts.second)
+            targets.forEach { if (it.exists() && !it.delete()) error("History file is busy") }
+            if (tempBackup.exists() && !tempBackup.renameTo(File(destination, BACKUP_NAME))) error("History backup could not be installed")
+            if (tempActive.exists() && !tempActive.renameTo(File(destination, ACTIVE_NAME))) error("History could not be installed")
+            consecutiveFailures = 0
+            true
+        }.getOrElse {
+            runCatching {
+                listOf(tempBackup, tempActive).forEach(File::delete)
+                targets.forEach(File::delete)
+                previous.forEach { (file, bytes) ->
+                    if (bytes != null) {
+                        file.parentFile?.mkdirs()
+                        FileOutputStream(file).use { output -> output.write(bytes); output.fd.sync() }
+                    }
+                }
+            }
+            false
+        }
+    }
+
+    private fun splitRecords(records: List<String>): Pair<List<String>, List<String>> {
+        val bounded = ArrayList<String>()
+        var total = 0L
+        records.asReversed().forEach { line ->
+            val bytes = line.toByteArray(Charsets.UTF_8).size + 1L
+            if (total + bytes <= MAX_ARCHIVE_BYTES) {
+                bounded.add(0, line)
+                total += bytes
+            }
+        }
+        var activeBytes = 0L
+        var splitAt = bounded.size
+        for (index in bounded.indices.reversed()) {
+            val bytes = bounded[index].toByteArray(Charsets.UTF_8).size + 1L
+            if (activeBytes + bytes > MAX_ACTIVE_BYTES) break
+            activeBytes += bytes
+            splitAt = index
+        }
+        return bounded.subList(0, splitAt).toList() to bounded.subList(splitAt, bounded.size).toList()
+    }
+
+    private fun writeRecords(file: File, records: List<String>) {
+        FileOutputStream(file).use { output ->
+            val writer = output.bufferedWriter(Charsets.UTF_8)
+            records.forEach { writer.append(it).append('\n') }
+            writer.flush()
+            output.fd.sync()
+        }
+    }
+
     private fun directories(): List<File> = runCatching { allDirectoriesProvider() }
         .getOrDefault(emptyList())
         .distinctBy { it.absolutePath }
@@ -109,6 +210,7 @@ internal class PlaybackHistory(
         const val SCHEMA_VERSION = 1
 
         const val MAX_ACTIVE_BYTES = 512L * 1024L
+        const val MAX_ARCHIVE_BYTES = MAX_ACTIVE_BYTES * 2
 
         private const val RECORD_SIZE_HINT = 512
 

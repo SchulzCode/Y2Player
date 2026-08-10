@@ -29,6 +29,8 @@ sealed interface AppAction {
     data class DisplayChanged(val display: DisplayState) : AppAction
     data class PreferencesChanged(val preferences: PlayerPreferencesState) : AppAction
     data class DiagnosticsChanged(val diagnostics: DiagnosticsState) : AppAction
+    data class BackupChanged(val backup: BackupUiState) : AppAction
+    data class BackupImportReady(val summary: String) : AppAction
     data class SafeModeChanged(val enabled: Boolean) : AppAction
     data class ShowMessage(val message: String?) : AppAction
     data class SelectIndex(val index: Int) : AppAction
@@ -110,6 +112,10 @@ sealed interface AppEffect {
     data class ClearAudiobookProgress(val folderKey: String) : AppEffect
     data object ClearPlaybackHistory : AppEffect
     data object ExportDiagnostics : AppEffect
+    data object ClearDiagnostics : AppEffect
+    data object ExportBackup : AppEffect
+    data object InspectBackup : AppEffect
+    data object ImportBackup : AppEffect
     data object ResetLibrary : AppEffect
     data object EnterSafeMode : AppEffect
     data object ExitSafeMode : AppEffect
@@ -144,6 +150,8 @@ val AppAction.code: String get() = when (this) {
     is AppAction.DisplayChanged -> "display_changed"
     is AppAction.PreferencesChanged -> "preferences_changed"
     is AppAction.DiagnosticsChanged -> "diagnostics_changed"
+    is AppAction.BackupChanged -> "backup_changed"
+    is AppAction.BackupImportReady -> "backup_import_ready"
     is AppAction.SafeModeChanged -> "safe_mode_changed"
     is AppAction.ShowMessage -> "show_message"
     is AppAction.SelectIndex -> "select_index"

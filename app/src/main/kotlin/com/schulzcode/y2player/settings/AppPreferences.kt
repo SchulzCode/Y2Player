@@ -141,6 +141,44 @@ class AppPreferences(context: Context) {
     fun setSortOrder(order: TrackSortOrder): PlayerPreferencesState =
         commit { putString(KEY_SORT_ORDER, order.storageId) }
 
+    /** Replaces only Y2Player-owned settings and commits synchronously for restore transactions. */
+    @Synchronized
+    fun restore(value: PlayerPreferencesState): Boolean {
+        val committed = preferences.edit().clear().apply {
+            putBoolean(KEY_UI_SOUND_EFFECTS, value.uiSoundEffectsEnabled)
+            putBoolean(KEY_VERBOSE_DIAGNOSTICS, value.verboseDiagnostics)
+            putString(KEY_VOLUME_MODE, value.volumeMode.storageId)
+            putInt(KEY_VOLUME_LEVEL, VolumeCurve.clampLevel(value.volumeLevel))
+            putString(KEY_REPLAY_GAIN_MODE, value.replayGainMode.storageId)
+            putString(KEY_HAPTIC_LEVEL, value.hapticLevel.storageId)
+            putBoolean(KEY_WRAP_LISTS, value.wrapLists)
+            putBoolean(KEY_KEEP_SCREEN_ON, value.keepScreenOnWhilePlaying)
+            putBoolean(KEY_EXTRA_TRACK_INFO, value.extraTrackInfo)
+            putBoolean(KEY_LIGHT_THEME, value.lightTheme)
+            putBoolean(KEY_SCREEN_OFF_KEYS, value.localKeysWhileScreenOff)
+            putBoolean(KEY_PAUSE_ON_DISCONNECT, value.pauseOnDisconnect)
+            putBoolean(KEY_RESUME_POSITION, value.resumePosition)
+            putString(KEY_SORT_ORDER, value.sortOrder.storageId)
+            putBoolean(KEY_GAPLESS, value.gaplessEnabled)
+            putInt(KEY_CROSSFADE, value.crossfadeMs)
+            putString(KEY_CROSSFADE_MODE, value.crossfadeMode.storageId)
+            putInt(KEY_PAUSE_FADE, value.pauseResumeFadeMs)
+            putInt(KEY_SEEK_STEP, value.seekStepMs)
+            putInt(KEY_LONG_SEEK_STEP, value.longSeekStepMs)
+            putInt(KEY_PREVIOUS_THRESHOLD, value.previousRestartThresholdMs)
+            putBoolean(KEY_DUCK_ON_FOCUS_LOSS, value.duckOnFocusLoss)
+            putString(KEY_AUDIO_QUALITY, value.audioQualityMode.storageId)
+            putBoolean(KEY_EFFECTS_ENABLED, value.audioEffectsEnabled)
+            putInt(KEY_EQ_PRESET, value.equalizerPreset)
+            putString(KEY_EQ_BANDS, value.equalizerBandLevelsMb.joinToString(","))
+            putInt(KEY_BASS_STRENGTH, value.bassStrength)
+            putInt(KEY_LOUDNESS_GAIN, value.loudnessGainMb)
+            putInt(KEY_BALANCE, value.balance)
+        }.commit()
+        if (committed) cached = value
+        return committed
+    }
+
     private fun updateBoolean(key: String, value: Boolean): PlayerPreferencesState =
         commit { putBoolean(key, value) }
 

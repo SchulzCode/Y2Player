@@ -38,7 +38,7 @@ class MediaButtonReceiver : BroadcastReceiver() {
         if (!HardwareKeyGate.accept(event, source)) {
             return logRejected(context, "cross_source_duplicate", source, event)
         }
-        if (!MediaButtonPressGate.shouldDispatch(
+        val pressDecision = MediaButtonPressGate.dispatchDecision(
                 keyCode = event.keyCode,
                 action = event.action,
                 eventTime = event.eventTime,
@@ -48,7 +48,7 @@ class MediaButtonReceiver : BroadcastReceiver() {
                 source = source,
                 allowRepeats = serviceRequest.isVolumeAdjustment
             )
-        ) {
+        if (pressDecision == MediaButtonPressGate.Decision.REJECT) {
             return logRejected(context, "press_gate", source, event)
         }
         if (BuildConfig.DEBUG) {
@@ -63,6 +63,16 @@ class MediaButtonReceiver : BroadcastReceiver() {
             putExtra(PlaybackService.EXTRA_MEDIA_KEY_CODE, serviceRequest.keyCode)
             serviceRequest.volumeDirection?.let {
                 putExtra(PlaybackService.EXTRA_VOLUME_DIRECTION, it)
+                putExtra(PlaybackService.EXTRA_VOLUME_KEY_CODE, event.keyCode)
+                putExtra(PlaybackService.EXTRA_VOLUME_KEY_ACTION, event.action)
+                putExtra(PlaybackService.EXTRA_VOLUME_REPEAT_COUNT, event.repeatCount)
+                putExtra(PlaybackService.EXTRA_VOLUME_DOWN_TIME, event.downTime)
+                putExtra(PlaybackService.EXTRA_VOLUME_EVENT_TIME, event.eventTime)
+                putExtra(PlaybackService.EXTRA_VOLUME_DEVICE_ID, event.deviceId)
+                putExtra(
+                    PlaybackService.EXTRA_VOLUME_ONE_SHOT,
+                    pressDecision == MediaButtonPressGate.Decision.DISPATCH_ONE_SHOT
+                )
             }
         }
         context.startService(serviceIntent)
@@ -196,8 +206,11 @@ internal object LocalVolumeKeyPolicy {
 }
 
 // Vendor delivery is not guaranteed to be a DOWN/UP pair. A DOWN dispatches
-// immediately so a missing release cannot lose the press; its UP is consumed.
+// immediately so a missing release cannot lose the press. A short UP is
+// consumed; after a repeat it is forwarded only to cancel the held-key loop.
 internal object MediaButtonPressGate {
+    enum class Decision { DISPATCH, DISPATCH_ONE_SHOT, RELEASE, REJECT }
+
     private data class Edge(
         val keyCode: Int,
         val eventTime: Long,
@@ -207,8 +220,55 @@ internal object MediaButtonPressGate {
     )
 
     private var pendingDown: Edge? = null
+    private var pendingRepeatSeen = false
     private var lastDispatched: Edge? = null
     private var lastDispatchedAction = -1
+
+    @Synchronized
+    fun dispatchDecision(
+        keyCode: Int,
+        action: Int,
+        eventTime: Long,
+        downTime: Long,
+        deviceId: Int,
+        repeatCount: Int,
+        source: HardwareKeyGate.Source,
+        allowRepeats: Boolean = false
+    ): Decision {
+        val edge = Edge(keyCode, eventTime, downTime, deviceId, source)
+        return when (action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (repeatCount > 0) {
+                    if (!allowRepeats) return Decision.REJECT
+                    pendingDown = edge
+                    pendingRepeatSeen = true
+                    lastDispatched = edge
+                    lastDispatchedAction = action
+                    return Decision.DISPATCH
+                }
+                if (isRepeatedDown(edge)) return Decision.REJECT
+                pendingDown = edge
+                pendingRepeatSeen = false
+                if (dispatchUnlessBounce(edge, action)) Decision.DISPATCH else Decision.REJECT
+            }
+            KeyEvent.ACTION_UP -> {
+                val down = pendingDown
+                if (down != null && isMatchingRelease(down, edge)) {
+                    pendingDown = null
+                    val repeated = pendingRepeatSeen
+                    pendingRepeatSeen = false
+                    if (allowRepeats && repeated) Decision.RELEASE else Decision.REJECT
+                } else {
+                    if (down?.keyCode == keyCode && down.source == source) {
+                        pendingDown = null
+                        pendingRepeatSeen = false
+                    }
+                    if (dispatchUnlessBounce(edge, action)) Decision.DISPATCH_ONE_SHOT else Decision.REJECT
+                }
+            }
+            else -> Decision.REJECT
+        }
+    }
 
     @Synchronized
     fun shouldDispatch(
@@ -220,34 +280,16 @@ internal object MediaButtonPressGate {
         repeatCount: Int,
         source: HardwareKeyGate.Source,
         allowRepeats: Boolean = false
-    ): Boolean {
-        val edge = Edge(keyCode, eventTime, downTime, deviceId, source)
-        return when (action) {
-            KeyEvent.ACTION_DOWN -> {
-                if (repeatCount > 0) {
-                    if (!allowRepeats) return false
-                    pendingDown = edge
-                    lastDispatched = edge
-                    lastDispatchedAction = action
-                    return true
-                }
-                if (isRepeatedDown(edge)) return false
-                pendingDown = edge
-                dispatchUnlessBounce(edge, action)
-            }
-            KeyEvent.ACTION_UP -> {
-                val down = pendingDown
-                if (down != null && isMatchingRelease(down, edge)) {
-                    pendingDown = null
-                    false
-                } else {
-                    if (down?.keyCode == keyCode && down.source == source) pendingDown = null
-                    dispatchUnlessBounce(edge, action)
-                }
-            }
-            else -> false
-        }
-    }
+    ): Boolean = dispatchDecision(
+        keyCode,
+        action,
+        eventTime,
+        downTime,
+        deviceId,
+        repeatCount,
+        source,
+        allowRepeats
+    ) != Decision.REJECT
 
     private fun isRepeatedDown(edge: Edge): Boolean {
         val previous = pendingDown ?: return false
@@ -281,6 +323,7 @@ internal object MediaButtonPressGate {
     @Synchronized
     fun reset() {
         pendingDown = null
+        pendingRepeatSeen = false
         lastDispatched = null
         lastDispatchedAction = -1
     }

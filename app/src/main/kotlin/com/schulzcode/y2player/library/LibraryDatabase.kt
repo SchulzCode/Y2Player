@@ -7,6 +7,13 @@ import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.schulzcode.y2player.backup.PortableAudiobookProgress
+import com.schulzcode.y2player.backup.PortableMediaIdentity
+import com.schulzcode.y2player.backup.PortablePlaylist
+import com.schulzcode.y2player.backup.PortableQueue
+import com.schulzcode.y2player.backup.PortableRecentTrack
+import com.schulzcode.y2player.backup.PortableUserData
+import com.schulzcode.y2player.backup.ResolvedUserData
 import com.schulzcode.y2player.core.model.AudiobookProgress
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.RepeatMode
@@ -566,6 +573,161 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     fun loadRecentlyPlayedIds(limit: Int = 100): List<Long> = readableDatabase.query(
         "recently_played", arrayOf("track_id"), null, null, null, null, "last_played DESC", limit.toString()
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) } }
+
+    /** Reads only user-owned state, translating every track reference to a portable identity. */
+    fun exportPortableUserData(): PortableUserData = readableDatabase.transactionResult {
+        val identities = query(
+            "tracks", arrayOf("id", "volume_id", "relative_path"),
+            null, null, null, null, null
+        ).use { cursor ->
+            buildMap<Long, PortableMediaIdentity> {
+                while (cursor.moveToNext()) {
+                    runCatching {
+                        PortableMediaIdentity(cursor.getString(1), cursor.getString(2))
+                    }.getOrNull()?.let { put(cursor.getLong(0), it) }
+                }
+            }
+        }
+        val favorites = query(
+            "tracks", arrayOf("id"), "favorite = 1", null, null, null, "id"
+        ).use { cursor -> buildList { while (cursor.moveToNext()) identities[cursor.getLong(0)]?.let(::add) } }
+        val playlistRows = query(
+            "playlists", arrayOf("id", "name"), "source_path IS NULL", null, null, null, "created_at, id"
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0) to cursor.getString(1)) } }
+        val playlistTracks = query(
+            "playlist_tracks", arrayOf("playlist_id", "track_id"),
+            "playlist_id IN (SELECT id FROM playlists WHERE source_path IS NULL)",
+            null, null, null, "playlist_id, position"
+        ).use { cursor ->
+            buildMap<Long, MutableList<PortableMediaIdentity>> {
+                while (cursor.moveToNext()) {
+                    identities[cursor.getLong(1)]?.let { getOrPut(cursor.getLong(0)) { ArrayList() }.add(it) }
+                }
+            }
+        }
+        val playlists = playlistRows.map { (id, name) -> PortablePlaylist(name, playlistTracks[id].orEmpty()) }
+        val audiobook = query(
+            AudiobookProgressTable.NAME,
+            arrayOf("track_id", "position_ms", "updated_at"), null, null, null, null, "updated_at, track_id"
+        ).use { cursor -> buildList {
+            while (cursor.moveToNext()) identities[cursor.getLong(0)]?.let { identity ->
+                add(PortableAudiobookProgress(identity, cursor.getLong(1).coerceAtLeast(0), cursor.getLong(2).coerceAtLeast(0)))
+            }
+        } }
+        val recent = query(
+            "recently_played", arrayOf("track_id", "last_played", "play_count"),
+            null, null, null, null, "last_played DESC, track_id"
+        ).use { cursor -> buildList {
+            while (cursor.moveToNext()) identities[cursor.getLong(0)]?.let { identity ->
+                add(PortableRecentTrack(identity, cursor.getLong(1).coerceAtLeast(0), cursor.getInt(2).coerceAtLeast(1)))
+            }
+        } }
+        val queueIdentities = query(
+            "queue_items", arrayOf("track_id"), null, null, null, null, "position", QueueController.MAX_QUEUE_ITEMS.toString()
+        ).use { cursor -> buildList { while (cursor.moveToNext()) identities[cursor.getLong(0)]?.let(::add) } }
+        val session = query(
+            "playback_session",
+            arrayOf("current_index", "position_ms", "repeat_mode", "shuffle_enabled", "shuffle_seed", "play_order"),
+            "id = 1", null, null, null, null
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else PersistedPlaybackSession(
+                currentIndex = if (cursor.isNull(0)) null else cursor.getInt(0),
+                positionMs = cursor.getLong(1).coerceAtLeast(0),
+                repeatMode = RepeatMode.fromStorage(cursor.getString(2)),
+                shuffleEnabled = cursor.getInt(3) != 0,
+                shuffleSeed = cursor.getLong(4),
+                playOrder = if (cursor.isNull(5)) null else decodePlayOrder(cursor.getString(5))
+            )
+        }
+        val queue = if (session == null && queueIdentities.isEmpty()) null else PortableQueue(
+            tracks = queueIdentities,
+            currentIndex = session?.currentIndex?.takeIf { it in queueIdentities.indices },
+            positionMs = session?.positionMs ?: 0,
+            repeatMode = (session?.repeatMode ?: RepeatMode.OFF).storageId,
+            shuffleEnabled = session?.shuffleEnabled ?: false,
+            shuffleSeed = session?.shuffleSeed ?: 0,
+            playOrder = session?.playOrder?.takeIf { order ->
+                order.size == queueIdentities.size && order.toSet() == queueIdentities.indices.toSet()
+            }
+        )
+        PortableUserData(favorites, playlists, audiobook, recent, queue)
+    }
+
+    /**
+     * Replaces all user-bearing database rows in one transaction. The external
+     * callback lets synchronously staged preferences/history participate in the
+     * same rollback decision without putting rebuildable track rows in the backup.
+     */
+    fun replacePortableUserData(data: ResolvedUserData, applyExternal: () -> Unit = {}) {
+        writableDatabase.transaction {
+            update("tracks", ContentValues().apply { put("favorite", 0) }, null, null)
+            val favorite = compileStatement("UPDATE tracks SET favorite = 1 WHERE id = ?")
+            try {
+                data.favoriteTrackIds.forEach { id ->
+                    favorite.clearBindings()
+                    favorite.bindLong(1, id)
+                    favorite.executeUpdateDelete()
+                }
+            } finally {
+                favorite.close()
+            }
+
+            // Card-backed M3U rows are scanner-owned and rebuildable. Preserve
+            // them across import; only Y2Player-created playlists belong to the
+            // backup payload.
+            delete(
+                "playlist_tracks",
+                "playlist_id IN (SELECT id FROM playlists WHERE source_path IS NULL)",
+                null
+            )
+            delete("playlists", "source_path IS NULL", null)
+            data.playlists.forEachIndexed { playlistIndex, playlist ->
+                val playlistId = insertOrThrow("playlists", null, ContentValues().apply {
+                    put("name", uniquePlaylistName(this@transaction, playlist.name))
+                    put("created_at", System.currentTimeMillis() + playlistIndex)
+                    putNull("source_path")
+                })
+                val insertTrack = compileStatement(
+                    "INSERT INTO playlist_tracks(playlist_id, position, track_id) VALUES(?, ?, ?)"
+                )
+                try {
+                    playlist.trackIds.forEachIndexed { index, trackId ->
+                        insertTrack.clearBindings()
+                        insertTrack.bindLong(1, playlistId)
+                        insertTrack.bindLong(2, index.toLong())
+                        insertTrack.bindLong(3, trackId)
+                        insertTrack.executeInsert()
+                    }
+                } finally {
+                    insertTrack.close()
+                }
+            }
+
+            delete(AudiobookProgressTable.NAME, null, null)
+            data.audiobookProgress.forEach { progress ->
+                insertOrThrow(AudiobookProgressTable.NAME, null, ContentValues().apply {
+                    put("folder_key", progress.folderKey)
+                    put("track_id", progress.trackId)
+                    put("position_ms", progress.positionMs)
+                    put("updated_at", progress.updatedAtUtcMs)
+                })
+            }
+
+            delete("recently_played", null, null)
+            data.recentlyPlayed.forEach { recent ->
+                insertOrThrow("recently_played", null, ContentValues().apply {
+                    put("track_id", recent.trackId)
+                    put("last_played", recent.lastPlayedUtcMs)
+                    put("play_count", recent.playCount)
+                })
+            }
+
+            replaceQueueRows(this, data.queueTrackIds)
+            delete("playback_session", null, null)
+            data.playbackSession?.let { savePlaybackSessionRow(this, it) }
+            applyExternal()
+        }
+    }
 
     fun recordScanStart(volumeId: String): Long = writableDatabase.insertOrThrow(
         "scan_runs", null, ContentValues().apply {

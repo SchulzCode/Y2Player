@@ -53,13 +53,17 @@ class Y2PlayerView(
     private val reusableRect = Rect()
     private val reusableRectF = RectF()
     private val textScroller = SelectedTextScroller(MARQUEE_SPEED_DP_PER_SECOND * density)
+    private val nowTextScrollers = Array(3) {
+        SelectedTextScroller(MARQUEE_SPEED_DP_PER_SECOND * density)
+    }
+    private var nowScrollTrackId: Long? = null
     private var textAnimationsVisible = false
     private var attached = false
     private var textScrollCallbackScheduled = false
     private val textScrollRunnable = object : Runnable {
         override fun run() {
             textScrollCallbackScheduled = false
-            val delay = textScroller.advance(SystemClock.uptimeMillis())
+            val delay = advanceActiveTextScrollers(SystemClock.uptimeMillis())
             if (delay == SelectedTextScroller.NO_CALLBACK) return
             invalidateTextScrollTarget()
             scheduleTextScroll(delay)
@@ -173,8 +177,19 @@ class Y2PlayerView(
     }
 
     fun onNavigationInput() {
-        if (!textScroller.hasTarget) return
-        textScroller.restart(SystemClock.uptimeMillis())
+        val now = SystemClock.uptimeMillis()
+        val hasTarget = if (isNowPlayingSurface()) {
+            var found = false
+            for (scroller in nowTextScrollers) {
+                if (scroller.hasTarget) scroller.restart(now)
+                found = found || scroller.hasTarget
+            }
+            found
+        } else {
+            if (textScroller.hasTarget) textScroller.restart(now)
+            textScroller.hasTarget
+        }
+        if (!hasTarget) return
         rescheduleTextScroll()
         invalidateTextScrollTarget()
     }
@@ -188,7 +203,7 @@ class Y2PlayerView(
     override fun onDetachedFromWindow() {
         attached = false
         stopTextScrollCallbacks()
-        textScroller.setActive(false, SystemClock.uptimeMillis())
+        setTextScrollersActive(false, SystemClock.uptimeMillis())
         super.onDetachedFromWindow()
     }
 
@@ -278,6 +293,8 @@ class Y2PlayerView(
     fun release() {
         stopTextScrollCallbacks()
         textScroller.clear()
+        for (scroller in nowTextScrollers) scroller.clear()
+        nowScrollTrackId = null
         artwork = null
         artworkPath = null
         artworkIdentity = null
@@ -298,7 +315,7 @@ class Y2PlayerView(
     private fun updateTextScrollActivity() {
         val active = attached && textAnimationsVisible &&
             windowVisibility == VISIBLE && visibility == VISIBLE
-        val changed = textScroller.setActive(active, SystemClock.uptimeMillis())
+        val changed = setTextScrollersActive(active, SystemClock.uptimeMillis())
         stopTextScrollCallbacks()
         if (active) rescheduleTextScroll()
         if (changed) invalidateTextScrollTarget()
@@ -306,8 +323,29 @@ class Y2PlayerView(
 
     private fun rescheduleTextScroll() {
         stopTextScrollCallbacks()
-        val delay = textScroller.advance(SystemClock.uptimeMillis())
+        val delay = advanceActiveTextScrollers(SystemClock.uptimeMillis())
         if (delay != SelectedTextScroller.NO_CALLBACK) scheduleTextScroll(delay)
+    }
+
+    private fun setTextScrollersActive(active: Boolean, nowMs: Long): Boolean {
+        var changed = textScroller.setActive(active, nowMs)
+        for (scroller in nowTextScrollers) changed = scroller.setActive(active, nowMs) || changed
+        return changed
+    }
+
+    private fun advanceActiveTextScrollers(nowMs: Long): Long {
+        if (!isNowPlayingSurface()) return textScroller.advance(nowMs)
+        var delay = SelectedTextScroller.NO_CALLBACK
+        for (scroller in nowTextScrollers) {
+            delay = earlierScrollDelay(delay, scroller.advance(nowMs))
+        }
+        return delay
+    }
+
+    private fun earlierScrollDelay(first: Long, second: Long): Long = when {
+        first == SelectedTextScroller.NO_CALLBACK -> second
+        second == SelectedTextScroller.NO_CALLBACK -> first
+        else -> minOf(first, second)
     }
 
     private fun scheduleTextScroll(delayMs: Long) {
@@ -329,6 +367,10 @@ class Y2PlayerView(
     }
 
     private fun invalidateTextScrollTarget() {
+        if (isNowPlayingSurface()) {
+            invalidate(0, headerHeight.toInt(), width, (height - footerHeight).toInt())
+            return
+        }
         when (textScroller.kind) {
             SelectedTextScroller.TARGET_LIST -> {
                 val index = textScroller.index
@@ -337,10 +379,6 @@ class Y2PlayerView(
                     invalidate(0, top.toInt(), rowAreaRight().toInt(), (top + rowHeight).toInt())
                 }
             }
-            SelectedTextScroller.TARGET_NOW_TITLE,
-            SelectedTextScroller.TARGET_NOW_ARTIST,
-            SelectedTextScroller.TARGET_NOW_ALBUM ->
-                invalidate(0, headerHeight.toInt(), width, (height - footerHeight).toInt())
         }
     }
 
@@ -624,7 +662,8 @@ class Y2PlayerView(
                     50f * density,
                     50f * density + cachedTitleAvailableWidths[slot],
                     titleBaseline,
-                    boldPaint
+                    boldPaint,
+                    textScroller.offsetPx
                 )
             } else {
                 canvas.drawText(cachedTitles[slot].orEmpty(), 50f * density, titleBaseline, boldPaint)
@@ -655,10 +694,13 @@ class Y2PlayerView(
     }
 
     private fun prepareListTextScrollTarget() {
+        var changed = false
+        for (scroller in nowTextScrollers) changed = scroller.clear() || changed
+        nowScrollTrackId = null
         val selected = state.selectedIndex
         val slot = selected - cachedRowStart
         val row = rows.getOrNull(selected)
-        val changed = if (row == null || slot !in cachedTitles.indices) {
+        changed = (if (row == null || slot !in cachedTitles.indices) {
             textScroller.clear()
         } else {
             textScroller.setTarget(
@@ -670,33 +712,44 @@ class Y2PlayerView(
                 cachedTitleAvailableWidths[slot],
                 SystemClock.uptimeMillis()
             )
-        }
+        }) || changed
         if (changed) rescheduleTextScroll()
     }
 
     private fun prepareNowPlayingTextScrollTarget() {
         val available = nowPlayingTextWidth()
         val now = SystemClock.uptimeMillis()
-        val changed = when {
-            cachedNowTitleWidth > available -> textScroller.setTarget(
-                SelectedTextScroller.TARGET_NOW_TITLE, Screen.NowPlaying, 0,
-                cachedNowTitleFull, cachedNowTitleWidth, available, now
-            )
-            cachedNowArtistWidth > available -> textScroller.setTarget(
-                SelectedTextScroller.TARGET_NOW_ARTIST, Screen.NowPlaying, 0,
-                cachedNowArtistFull, cachedNowArtistWidth, available, now
-            )
-            cachedNowAlbumWidth > available -> textScroller.setTarget(
-                SelectedTextScroller.TARGET_NOW_ALBUM, Screen.NowPlaying, 0,
-                cachedNowAlbumFull, cachedNowAlbumWidth, available, now
-            )
-            else -> textScroller.clear()
+        var changed = textScroller.clear()
+        val trackId = state.playback.currentTrackId
+        if (nowScrollTrackId != trackId) {
+            nowScrollTrackId = trackId
+            for (scroller in nowTextScrollers) changed = scroller.clear() || changed
         }
+        changed = nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_TITLE).setTarget(
+            SelectedTextScroller.TARGET_NOW_TITLE, Screen.NowPlaying, 0,
+            cachedNowTitleFull, cachedNowTitleWidth, available, now
+        ) || changed
+        changed = nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ARTIST).setTarget(
+            SelectedTextScroller.TARGET_NOW_ARTIST, Screen.NowPlaying, 0,
+            cachedNowArtistFull, cachedNowArtistWidth, available, now
+        ) || changed
+        changed = nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ALBUM).setTarget(
+            SelectedTextScroller.TARGET_NOW_ALBUM, Screen.NowPlaying, 0,
+            cachedNowAlbumFull, cachedNowAlbumWidth, available, now
+        ) || changed
         if (changed) rescheduleTextScroll()
     }
 
-    private fun isNowPlayingScrollTarget(kind: Int, text: String): Boolean =
-        textScroller.drawsFullText && textScroller.isTarget(kind, Screen.NowPlaying, 0, text)
+    private fun nowPlayingTextScroller(kind: Int): SelectedTextScroller = when (kind) {
+        in SelectedTextScroller.TARGET_NOW_TITLE..SelectedTextScroller.TARGET_NOW_ALBUM ->
+            nowTextScrollers[kind - SelectedTextScroller.TARGET_NOW_TITLE]
+        else -> error("Invalid Now Playing marquee target")
+    }
+
+    private fun isNowPlayingScrollTarget(kind: Int, text: String): Boolean {
+        val scroller = nowPlayingTextScroller(kind)
+        return scroller.drawsFullText && scroller.isTarget(kind, Screen.NowPlaying, 0, text)
+    }
 
     private fun drawScrollingText(
         canvas: Canvas,
@@ -704,13 +757,14 @@ class Y2PlayerView(
         clipLeft: Float,
         clipRight: Float,
         baseline: Float,
-        targetPaint: Paint
+        targetPaint: Paint,
+        offsetPx: Float
     ) {
         val alignment = targetPaint.textAlign
         val saveCount = canvas.save()
         canvas.clipRect(clipLeft, baseline - targetPaint.textSize, clipRight, baseline + 4f * density)
         targetPaint.textAlign = Paint.Align.LEFT
-        canvas.drawText(text, clipLeft - textScroller.offsetPx, baseline, targetPaint)
+        canvas.drawText(text, clipLeft - offsetPx, baseline, targetPaint)
         targetPaint.textAlign = alignment
         canvas.restoreToCount(saveCount)
     }
@@ -1129,7 +1183,8 @@ class Y2PlayerView(
         boldPaint.color = palette.primaryText
         var y = artTop + 26f * density
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_TITLE, cachedNowTitleFull)) {
-            drawScrollingText(canvas, cachedNowTitleFull, colLeft, colRight, y, boldPaint)
+            drawScrollingText(canvas, cachedNowTitleFull, colLeft, colRight, y, boldPaint,
+                nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_TITLE).offsetPx)
         } else canvas.drawText(cachedNowTitle, colLeft, y, boldPaint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.LEFT
@@ -1137,14 +1192,16 @@ class Y2PlayerView(
         paint.color = palette.secondaryText
         y += 22f * density
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ARTIST, cachedNowArtistFull)) {
-            drawScrollingText(canvas, cachedNowArtistFull, colLeft, colRight, y, paint)
+            drawScrollingText(canvas, cachedNowArtistFull, colLeft, colRight, y, paint,
+                nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ARTIST).offsetPx)
         } else canvas.drawText(cachedNowArtist, colLeft, y, paint)
         if (cachedNowAlbum.isNotEmpty()) {
             paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
             paint.color = palette.mutedText
             y += 19f * density
             if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ALBUM, cachedNowAlbumFull)) {
-                drawScrollingText(canvas, cachedNowAlbumFull, colLeft, colRight, y, paint)
+                drawScrollingText(canvas, cachedNowAlbumFull, colLeft, colRight, y, paint,
+                    nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ALBUM).offsetPx)
             } else canvas.drawText(cachedNowAlbum, colLeft, y, paint)
         }
         if (cachedNowGenre.isNotEmpty()) {
@@ -1283,19 +1340,25 @@ class Y2PlayerView(
         boldPaint.textSize = Y2UiTheme.NOW_TITLE_SP * density
         boldPaint.color = palette.primaryText
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_TITLE, cachedNowTitleFull)) {
-            drawScrollingText(canvas, cachedNowTitleFull, 12f * density, width - 12f * density, titleTop + 19f * density, boldPaint)
+            drawScrollingText(canvas, cachedNowTitleFull, 12f * density, width - 12f * density,
+                titleTop + 19f * density, boldPaint,
+                nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_TITLE).offsetPx)
         } else canvas.drawText(cachedNowTitle, centerX, titleTop + 19f * density, boldPaint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
         paint.color = palette.secondaryText
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ARTIST, cachedNowArtistFull)) {
-            drawScrollingText(canvas, cachedNowArtistFull, 12f * density, width - 12f * density, titleTop + 40f * density, paint)
+            drawScrollingText(canvas, cachedNowArtistFull, 12f * density, width - 12f * density,
+                titleTop + 40f * density, paint,
+                nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ARTIST).offsetPx)
         } else canvas.drawText(cachedNowArtist, centerX, titleTop + 40f * density, paint)
         paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
         paint.color = palette.mutedText
         if (isNowPlayingScrollTarget(SelectedTextScroller.TARGET_NOW_ALBUM, cachedNowAlbumFull)) {
-            drawScrollingText(canvas, cachedNowAlbumFull, 12f * density, width - 12f * density, titleTop + 58f * density, paint)
+            drawScrollingText(canvas, cachedNowAlbumFull, 12f * density, width - 12f * density,
+                titleTop + 58f * density, paint,
+                nowPlayingTextScroller(SelectedTextScroller.TARGET_NOW_ALBUM).offsetPx)
         } else canvas.drawText(cachedNowAlbum, centerX, titleTop + 58f * density, paint)
         var metadataY = titleTop + 58f * density
         paint.textSize = Y2UiTheme.META_SP * density

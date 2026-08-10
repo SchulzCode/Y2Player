@@ -471,6 +471,14 @@ class LibraryRepository(
         publish(current.copy(revision = revision, recentlyPlayedIds = ids))
     }
 
+    fun reloadUserData(onComplete: () -> Unit = {}) = stateExecutor.execute {
+        val progress = runCatching { database.loadAllAudiobookProgress() }.getOrDefault(emptyMap())
+        publish(loadState(isScanning = current.isScanning, lastScanAt = current.lastScanAt).copy(
+            audiobookProgress = progress
+        ))
+        mainHandler.post(onComplete)
+    }
+
     fun resetLibrary(rescan: Boolean = true, onComplete: () -> Unit = {}) {
         cancelScan("library reset")
         // Serialize behind the scanner. Otherwise an in-flight batch can recreate

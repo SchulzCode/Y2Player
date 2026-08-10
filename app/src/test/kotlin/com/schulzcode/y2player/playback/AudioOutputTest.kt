@@ -154,6 +154,16 @@ class AudioOutputTest {
         assertEquals(50_000L, accumulator.update(0))
     }
 
+    @Test fun explicitFlushResetRebasesAHeadThatTheDriverDidNotReset() {
+        val accumulator = PlaybackHeadAccumulator()
+        assertEquals(50_000L, accumulator.update(50_000))
+
+        accumulator.reset()
+
+        assertEquals(0L, accumulator.update(50_000))
+        assertEquals(512L, accumulator.update(50_512))
+    }
+
     @Test fun nativeErrorValuesHaveStableFallback() {
         assertEquals(NativeErrorCategory.ABORTED, NativeErrorCategory.fromWireValue(4))
         assertEquals(NativeErrorCategory.INTERNAL, NativeErrorCategory.fromWireValue(999))

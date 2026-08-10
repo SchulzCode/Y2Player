@@ -149,9 +149,25 @@ The generated 2.1 firmware contains an audited, guarded primary-audio HAL hook f
 
 - Scans common Y2 internal-storage and removable-SD mount points and retains metadata when a volume is temporarily unavailable.
 - Reacts safely to Android mount, unmount, and media-scanner events. USB/storage status is diagnostic and read-only; Y2Player does not switch USB modes.
-- Provides manual library rescanning, bounded structured logs, local diagnostic export, and a build-derived report of the native decoder and output capabilities.
+- Provides manual library rescanning, bounded structured logs, confirmed diagnostic clearing, local diagnostic export, and a build-derived report of the native decoder and output capabilities.
+- Provides a manual, versioned Backup & Restore file on the removable card (or the existing writable Y2Player export location).
 - Includes PowerShell helpers for collecting and watching device diagnostics over ADB.
 - Enters Safe Mode after repeated incomplete launcher starts, or on request. Safe Mode suppresses automatic scanning, Bluetooth management, and session restoration so the UI can recover.
+
+### Backup contents
+
+The backup includes Y2Player interface, playback, volume, audio-effect and control
+settings; favorites; Y2Player-created playlists and their track order; audiobook
+progress; recently-played timestamps and counts; the saved queue/session; and the
+bounded listening-history file. Media references use normalized storage-volume and
+relative-path identities so they can be reconciled after a rescan changes database
+IDs or an SD card is mounted under a different alias.
+
+It intentionally excludes the scanned library/metadata database, scanner-owned M3U
+playlists, artwork and temporary caches, diagnostics, APK/native files, database
+recovery copies, media files, safe-mode crash counters, and Android-owned settings.
+Card M3U files remain authoritative and are preserved while user-created playlists
+are restored transactionally.
 
 ## Privacy and offline operation
 

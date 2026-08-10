@@ -20,6 +20,7 @@ import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.R
 import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.bluetooth.BluetoothController
+import com.schulzcode.y2player.backup.UserDataBackupManager
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.state.AppAction
@@ -53,6 +54,7 @@ import com.schulzcode.y2player.settings.DisplayController
 import com.schulzcode.y2player.settings.SystemHapticsController
 import com.schulzcode.y2player.settings.UiSoundEffectsController
 import com.schulzcode.y2player.storage.StorageMonitor
+import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -76,6 +78,8 @@ class MainActivity : Activity() {
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var eventLog: EventLog
     private lateinit var logger: DiagnosticLogger
+    private lateinit var backupManager: UserDataBackupManager
+    @Volatile private var pendingBackupPreview: UserDataBackupManager.Preview? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val backgroundExecutor = ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue(8),
@@ -95,6 +99,7 @@ class MainActivity : Activity() {
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            playbackBinder?.cancelVolumeKeyRepeat()
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> playerView.setTextAnimationsVisible(false)
                 Intent.ACTION_SCREEN_ON -> playerView.setTextAnimationsVisible(true)
@@ -200,6 +205,18 @@ class MainActivity : Activity() {
         libraryRepository = container.libraryRepository
         diagnosticsRepository = container.diagnosticsRepository
         preferences = container.preferences
+        backupManager = UserDataBackupManager(
+            database = container.database,
+            preferences = preferences,
+            history = object : UserDataBackupManager.HistoryStore {
+                override fun records(): List<String> = playbackBinder?.historyRecords()
+                    ?: error("Playback is starting")
+                override fun replace(records: List<String>): Boolean = playbackBinder?.replaceHistoryRecords(records)
+                    ?: false
+            },
+            appVersion = BuildConfig.VERSION_NAME,
+            rootsProvider = Y2StoragePaths::availableRoots
+        )
         safeModeManager = container.safeModeManager
         val startupSafeMode = safeModeManager.beginUiStartup()
         displayController = DisplayController(this)
@@ -356,6 +373,10 @@ class MainActivity : Activity() {
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             remappedVolumeDirection != null
         ) {
+            // A hold can cross the display boundary. Foreground framework
+            // repeats take over immediately so the screen-off fallback cannot
+            // add a second stream of adjustments.
+            playbackBinder?.cancelVolumeKeyRepeat()
             if (remappedVolumeDirection != null &&
                 !HardwareKeyGate.accept(event, HardwareKeyGate.Source.ACTIVITY)
             ) return true
@@ -536,6 +557,65 @@ class MainActivity : Activity() {
             AppEffect.ExportDiagnostics -> backgroundExecutor.execute {
                 diagnosticsRepository.export().onSuccess { file -> showMessage("Saved ${file.name}") }
                     .onFailure { showMessage(it.message ?: "Export failed") }
+            }
+            AppEffect.ClearDiagnostics -> backgroundExecutor.execute {
+                diagnosticsRepository.clear()
+                    .onSuccess { showMessage("Diagnostic log cleared") }
+                    .onFailure { showMessage(it.message ?: "Could not clear diagnostic log") }
+            }
+            AppEffect.ExportBackup -> {
+                val binder = playbackBinder
+                if (binder == null) showMessage("Playback is starting") else binder.prepareBackupExport {
+                    backgroundExecutor.execute {
+                        backupManager.export().onSuccess { result ->
+                            mainHandler.post {
+                                store.dispatch(AppAction.BackupChanged(
+                                    store.state.backup.copy(exportedPath = result.file.absolutePath)
+                                ))
+                            }
+                            showMessage("Backup saved · ${result.references} references")
+                        }.onFailure { showMessage(it.message ?: "Backup export failed") }
+                    }
+                }
+            }
+            AppEffect.InspectBackup -> backgroundExecutor.execute {
+                backupManager.preview().onSuccess { preview ->
+                    pendingBackupPreview = preview
+                    mainHandler.post { store.dispatch(AppAction.BackupImportReady(preview.summary)) }
+                }.onFailure { showMessage(it.message ?: "Backup is invalid") }
+            }
+            AppEffect.ImportBackup -> {
+                val binder = playbackBinder
+                val preview = pendingBackupPreview
+                when {
+                    binder == null -> showMessage("Playback is starting")
+                    preview == null -> showMessage("Select Import Backup again to validate the file")
+                    else -> binder.prepareBackupImport {
+                        backgroundExecutor.execute {
+                            backupManager.import(preview).onSuccess { result ->
+                                pendingBackupPreview = null
+                                libraryRepository.reloadUserData {
+                                    val restored = preferences.snapshot()
+                                    applyPlaybackPreferences(restored)
+                                    eventLog.setEnabled(restored.verboseDiagnostics)
+                                    logger.setVerbose(restored.verboseDiagnostics)
+                                    hapticController.setLevel(restored.hapticLevel)
+                                    playerView.isSoundEffectsEnabled = restored.uiSoundEffectsEnabled
+                                    binder.finishBackupImport(restored) {
+                                        val unresolved = if (result.unresolvedReferences == 0) "all tracks resolved"
+                                        else "${result.unresolvedReferences} tracks missing"
+                                        showMessage("Backup restored · ${result.restoredReferences} references · $unresolved")
+                                    }
+                                }
+                            }.onFailure { error ->
+                                pendingBackupPreview = null
+                                binder.finishBackupImport(preferences.snapshot()) {
+                                    showMessage(error.message ?: "Backup import failed; previous data kept")
+                                }
+                            }
+                        }
+                    }
+                }
             }
             AppEffect.ResetLibrary -> {
                 val binder = playbackBinder

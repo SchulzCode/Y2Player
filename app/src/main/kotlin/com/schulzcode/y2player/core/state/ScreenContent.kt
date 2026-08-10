@@ -92,6 +92,7 @@ object ScreenContent {
         Screen.Storage -> "Storage & Scan"
         Screen.PlaybackHistory -> "Listening History"
         Screen.System -> "System"
+        Screen.BackupRestore -> "Backup & Restore"
         Screen.Diagnostics -> "Diagnostics"
         Screen.Reset -> "Reset"
         Screen.About -> "About"
@@ -172,6 +173,7 @@ object ScreenContent {
         Screen.Storage -> storageRows(state)
         Screen.PlaybackHistory -> playbackHistoryRows(state)
         Screen.System -> systemRows(state)
+        Screen.BackupRestore -> backupRestoreRows(state)
         Screen.Diagnostics -> diagnosticsRows(state)
         Screen.Reset -> resetRows(state)
         Screen.About -> aboutRows(state)
@@ -540,7 +542,7 @@ object ScreenContent {
         ScreenRow.Action("Audio", playbackSummary(state), "audio"),
         ScreenRow.Action("Interface", "Display, controls and Now Playing", "interface"),
         ScreenRow.Action("Library", "Storage, sorting and history", "library_settings"),
-        ScreenRow.Action("System", "Diagnostics, reset and about", "system")
+        ScreenRow.Action("System", "Backup, diagnostics, reset and about", "system")
     )
 
     private fun interfaceRows(state: AppState): List<ScreenRow> = listOf(
@@ -557,10 +559,20 @@ object ScreenContent {
     )
 
     private fun systemRows(state: AppState): List<ScreenRow> = listOf(
+        ScreenRow.Action("Backup & Restore", "Portable user data on the card", "backup_restore"),
         ScreenRow.Action("Android Settings", "System configuration and recovery", "android_settings"),
         ScreenRow.Action("Diagnostics", "Logs and engine capabilities", "diagnostics"),
         ScreenRow.Action("Reset", if (state.safeMode) "SAFE MODE · queue and library" else "Queue, library and safe mode", "reset"),
         ScreenRow.Action("About", "Y2 Player ${BuildConfig.VERSION_NAME}", "about")
+    )
+
+    private fun backupRestoreRows(state: AppState): List<ScreenRow> = listOf(
+        ScreenRow.Action(
+            "Export Backup",
+            state.backup.exportedPath ?: "Y2Player/Backups/${com.schulzcode.y2player.backup.BackupFormat.FILE_NAME}",
+            "backup_export"
+        ),
+        ScreenRow.Action("Import Backup", "Validate and restore the card backup", "backup_import")
     )
 
     private fun resetRows(state: AppState): List<ScreenRow> = listOf(
@@ -897,6 +909,7 @@ object ScreenContent {
 
     private fun diagnosticsRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Export Diagnostics", state.diagnostics.exportedPath ?: "Save logs to internal storage", "diag_export"))
+        add(ScreenRow.Action("Clear Diagnostic Log", "Start a fresh diagnostic capture", "diag_clear"))
         add(ScreenRow.Action(
             "Verbose Diagnostics",
             if (state.preferences.verboseDiagnostics) "On · detailed event log" else "Off · errors only",
@@ -905,9 +918,6 @@ object ScreenContent {
         add(ScreenRow.Group("USB", state.diagnostics.usb.summary(), "diag_usb"))
         PlaybackCapabilities.lines().forEach { line ->
             add(ScreenRow.Group(line.label, line.value, "capability:${line.label}"))
-        }
-        state.diagnostics.recentLines.reversed().forEachIndexed { index, line ->
-            add(ScreenRow.Group("Log ${index + 1}", line.take(120), "log:$index"))
         }
     }
 
@@ -1239,6 +1249,8 @@ internal object ConfirmPrompts {
     const val CLEAR_QUEUE = "clear_queue"
     const val RESET_LIBRARY = "reset_library"
     const val CLEAR_HISTORY = "clear_history"
+    const val CLEAR_DIAGNOSTICS = "clear_diagnostics"
+    const val IMPORT_BACKUP = "import_backup"
     const val DELETE_PLAYLIST = "delete_playlist:"
 
     fun of(state: AppState, key: String): ConfirmPrompt = when {
@@ -1269,6 +1281,16 @@ internal object ConfirmPrompts {
             "Clear listening history?",
             "Every recorded session is deleted. Your music files are kept.",
             "Clear History"
+        )
+        key == CLEAR_DIAGNOSTICS -> ConfirmPrompt(
+            "Clear diagnostic log?",
+            "Current Y2Player logs and rotations are deleted. Exported files and all user data are kept.",
+            "Clear Log"
+        )
+        key == IMPORT_BACKUP -> ConfirmPrompt(
+            "Import backup?",
+            state.backup.importPreview ?: "Settings and portable user collections will be restored.",
+            "Import Backup"
         )
         key.startsWith(DELETE_PLAYLIST) -> {
             val id = key.substringAfter(':').toLongOrNull()

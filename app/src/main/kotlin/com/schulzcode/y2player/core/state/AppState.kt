@@ -66,6 +66,11 @@ data class DisplayState(
     val canWriteSystemSettings: Boolean = false
 )
 
+data class BackupUiState(
+    val exportedPath: String? = null,
+    val importPreview: String? = null
+)
+
 data class PlayerPreferencesState(
     val uiSoundEffectsEnabled: Boolean = false,
     val verboseDiagnostics: Boolean = false,
@@ -114,6 +119,7 @@ data class AppState(
     val display: DisplayState = DisplayState(),
     val preferences: PlayerPreferencesState = PlayerPreferencesState(),
     val diagnostics: DiagnosticsState = DiagnosticsState(),
+    val backup: BackupUiState = BackupUiState(),
     val safeMode: Boolean = false,
     val transientMessage: String? = null
 ) {

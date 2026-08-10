@@ -1109,6 +1109,42 @@ class AppReducerTest {
         assertEquals("Sounds off", controlsSubtitle(noMotor))
     }
 
+    @Test fun clearDiagnosticsRequiresExplicitConfirmation() {
+        val diagnostics = selectKey(
+            AppState(screenStack = listOf(ScreenEntry(Screen.Diagnostics))),
+            "diag_clear"
+        )
+        val prompted = AppReducer.reduce(diagnostics, AppAction.Confirm)
+        assertTrue(prompted.effects.isEmpty())
+        assertEquals(Screen.ConfirmAction(ConfirmPrompts.CLEAR_DIAGNOSTICS), prompted.state.currentScreen)
+
+        val confirmed = AppReducer.reduce(
+            selectKey(prompted.state, ScreenContent.CONFIRM_OK_KEY),
+            AppAction.Confirm
+        )
+        assertEquals(listOf(AppEffect.ClearDiagnostics), confirmed.effects)
+    }
+
+    @Test fun importBackupRequiresValidatedPreviewAndExplicitConfirmation() {
+        val backup = selectKey(
+            AppState(screenStack = listOf(ScreenEntry(Screen.BackupRestore))),
+            "backup_import"
+        )
+        val inspect = AppReducer.reduce(backup, AppAction.Confirm)
+        assertEquals(Screen.BackupRestore, inspect.state.currentScreen)
+        assertEquals(listOf(AppEffect.InspectBackup), inspect.effects)
+
+        val prompted = AppReducer.reduce(inspect.state, AppAction.BackupImportReady("1 playlist, 2 favorites"))
+        assertEquals(Screen.ConfirmAction(ConfirmPrompts.IMPORT_BACKUP), prompted.state.currentScreen)
+        assertTrue(prompted.effects.isEmpty())
+
+        val confirmed = AppReducer.reduce(
+            selectKey(prompted.state, ScreenContent.CONFIRM_OK_KEY),
+            AppAction.Confirm
+        )
+        assertEquals(listOf(AppEffect.ImportBackup), confirmed.effects)
+    }
+
     private fun controlsSubtitle(state: AppState): String? =
         ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>()
             .first { it.key == "controls" }.subtitle

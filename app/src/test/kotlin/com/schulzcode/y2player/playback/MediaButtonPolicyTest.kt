@@ -147,7 +147,44 @@ class MediaButtonPolicyTest {
         assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 100L, downTime = 100L, allowRepeats = true))
         assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 600L, downTime = 100L, repeatCount = 1, allowRepeats = true))
         assertTrue(edge(KeyEvent.ACTION_DOWN, eventTime = 650L, downTime = 100L, repeatCount = 2, allowRepeats = true))
-        assertFalse(edge(KeyEvent.ACTION_UP, eventTime = 700L, downTime = 100L, allowRepeats = true))
+        assertTrue("volume release must reach the repeat canceller", edge(
+            KeyEvent.ACTION_UP,
+            eventTime = 700L,
+            downTime = 100L,
+            allowRepeats = true
+        ))
+    }
+
+    @Test fun volumeReleaseAndUpOnlyDeliveryHaveDistinctDecisions() {
+        assertEquals(
+            MediaButtonPressGate.Decision.DISPATCH,
+            decision(KeyEvent.ACTION_DOWN, eventTime = 100L, downTime = 100L)
+        )
+        assertEquals(
+            "a short release has no repeat loop to cancel",
+            MediaButtonPressGate.Decision.REJECT,
+            decision(KeyEvent.ACTION_UP, eventTime = 200L, downTime = 100L)
+        )
+
+        MediaButtonPressGate.reset()
+        assertEquals(
+            MediaButtonPressGate.Decision.DISPATCH,
+            decision(KeyEvent.ACTION_DOWN, eventTime = 300L, downTime = 300L)
+        )
+        assertEquals(
+            MediaButtonPressGate.Decision.DISPATCH,
+            decision(KeyEvent.ACTION_DOWN, eventTime = 800L, downTime = 300L, repeatCount = 1)
+        )
+        assertEquals(
+            MediaButtonPressGate.Decision.RELEASE,
+            decision(KeyEvent.ACTION_UP, eventTime = 900L, downTime = 300L)
+        )
+
+        MediaButtonPressGate.reset()
+        assertEquals(
+            MediaButtonPressGate.Decision.DISPATCH_ONE_SHOT,
+            decision(KeyEvent.ACTION_UP, eventTime = 400L, downTime = 300L)
+        )
     }
 
     private fun edge(
@@ -166,4 +203,16 @@ class MediaButtonPolicyTest {
         source = HardwareKeyGate.Source.MEDIA_BROADCAST,
         allowRepeats = allowRepeats
     )
+
+    private fun decision(action: Int, eventTime: Long, downTime: Long, repeatCount: Int = 0) =
+        MediaButtonPressGate.dispatchDecision(
+            keyCode = KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            action = action,
+            eventTime = eventTime,
+            downTime = downTime,
+            deviceId = 7,
+            repeatCount = repeatCount,
+            source = HardwareKeyGate.Source.MEDIA_BROADCAST,
+            allowRepeats = true
+        )
 }

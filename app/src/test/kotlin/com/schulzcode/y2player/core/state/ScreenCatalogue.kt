@@ -60,6 +60,7 @@ object ScreenCatalogue {
         put(Screen.Storage)
         put(Screen.PlaybackHistory)
         put(Screen.System)
+        put(Screen.BackupRestore)
         put(Screen.Diagnostics)
         put(Screen.Reset)
         put(Screen.About)

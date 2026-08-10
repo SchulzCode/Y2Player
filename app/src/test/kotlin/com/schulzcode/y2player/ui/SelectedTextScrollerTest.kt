@@ -63,4 +63,27 @@ class SelectedTextScrollerTest {
         assertTrue(scroller.isTarget(SelectedTextScroller.TARGET_NOW_ARTIST, Screen.NowPlaying, 0, "Artist"))
         assertEquals(0f, scroller.offsetPx, 0f)
     }
+
+    @Test fun longNowPlayingLinesScrollTogetherAndBothResetForANewTrack() {
+        val title = SelectedTextScroller(20f, initialDelayMs = 1_000, endPauseMs = 500)
+        val album = SelectedTextScroller(20f, initialDelayMs = 1_000, endPauseMs = 500)
+        title.setActive(true, 0)
+        album.setActive(true, 0)
+        title.setTarget(SelectedTextScroller.TARGET_NOW_TITLE, Screen.NowPlaying, 0, "Long title", 140f, 50f, 0)
+        album.setTarget(SelectedTextScroller.TARGET_NOW_ALBUM, Screen.NowPlaying, 0, "Long album", 120f, 50f, 0)
+
+        title.advance(1_000)
+        album.advance(1_000)
+        title.advance(1_500)
+        album.advance(1_500)
+        assertTrue(title.drawsFullText)
+        assertTrue(album.drawsFullText)
+        assertEquals(10f, title.offsetPx, 0.001f)
+        assertEquals(10f, album.offsetPx, 0.001f)
+
+        title.setTarget(SelectedTextScroller.TARGET_NOW_TITLE, Screen.NowPlaying, 1, "Long title", 140f, 50f, 1_500)
+        album.setTarget(SelectedTextScroller.TARGET_NOW_ALBUM, Screen.NowPlaying, 1, "Long album", 120f, 50f, 1_500)
+        assertEquals(0f, title.offsetPx, 0f)
+        assertEquals(0f, album.offsetPx, 0f)
+    }
 }
