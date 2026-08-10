@@ -45,12 +45,14 @@ data class Track(
 
     val featuredArtist: String? get() = ArtistCredit.featured(displayArtist)
 
-    val albumArtistName: String get() = albumArtist?.trim()?.takeIf { it.isNotEmpty() } ?: primaryArtist
+    val creditedArtists: List<String> get() = ArtistCredit.names(displayArtist)
 
-    // Album membership answers to the album artist tag first, so one "feat." track
-    // cannot break an album apart when browsing by artist.
+    val albumArtistName: String get() = albumArtist?.trim()?.takeIf { it.isNotEmpty() }
+        ?: creditedArtists.firstOrNull()
+        ?: primaryArtist
+
     fun isCreditedTo(name: String): Boolean =
-        albumArtistName.equals(name.trim(), ignoreCase = true) || ArtistCredit.credits(displayArtist, name)
+        ArtistCredit.credits(displayArtist, name)
 
     val extension: String get() = absolutePath.substringAfterLast('.', "").lowercase()
 
@@ -65,8 +67,8 @@ data class Track(
 
 object ArtistCredit {
 
-    // Only an explicit feature word splits a credit. Ampersand, comma and plus are
-    // never separators because they live inside real names: Earth, Wind & Fire.
+    // Explicit feature words split credits. A comma also separates simple artist
+    // lists, but remains part of established '&' and '+' band-name forms.
     private val BARE_MARKERS = arrayOf("featuring", "feat.", "feat", "ft.", "ft")
 
     // "with" is only a marker inside brackets, as in "(with X)". Bare it would cut
@@ -76,9 +78,9 @@ object ArtistCredit {
     fun primary(credit: String): String {
         val cleaned = credit.trim()
         val at = markerStart(cleaned)
-        if (at < 0) return cleaned
+        if (at < 0) return firstCommaSeparated(cleaned)
         val head = cleaned.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
-        return head.ifEmpty { cleaned }
+        return firstCommaSeparated(head.ifEmpty { cleaned })
     }
 
     fun featured(credit: String): String? {
@@ -91,12 +93,55 @@ object ArtistCredit {
         return tail.ifEmpty { null }
     }
 
-    fun credits(credit: String, name: String): Boolean {
-        val expected = name.trim()
-        val at = markerStart(credit.trim())
-        if (at < 0) return credit.trim().equals(expected, ignoreCase = true)
-        return primary(credit).equals(expected, ignoreCase = true) ||
-            featured(credit)?.equals(expected, ignoreCase = true) == true
+    fun names(credit: String): List<String> {
+        val result = ArrayList<String>(2)
+        appendNames(credit.trim(), result)
+        return result
+    }
+
+    fun credits(credit: String, name: String): Boolean =
+        names(credit).any { it.equals(name.trim(), ignoreCase = true) }
+
+    private fun appendNames(credit: String, result: MutableList<String>) {
+        val at = markerStart(credit)
+        if (at < 0) {
+            appendCommaSeparated(credit, result)
+            return
+        }
+        val head = credit.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
+        appendCommaSeparated(head, result)
+        val length = markerLengthAt(credit, at)
+        if (length <= 0) return
+        val tail = credit.substring(at + length).trim().trim(')', ']').trim()
+        if (tail.isNotEmpty()) appendNames(tail, result)
+    }
+
+    private fun appendCommaSeparated(value: String, result: MutableList<String>) {
+        val cleaned = value.trim()
+        if (cleaned.isEmpty()) return
+        if (cleaned.indexOf(',') < 0 || cleaned.indexOf('&') >= 0 || cleaned.indexOf('+') >= 0) {
+            appendUnique(cleaned, result)
+            return
+        }
+        var start = 0
+        for (index in cleaned.indices) {
+            if (cleaned[index] == ',') {
+                appendUnique(cleaned.substring(start, index).trim(), result)
+                start = index + 1
+            }
+        }
+        appendUnique(cleaned.substring(start).trim(), result)
+    }
+
+    private fun firstCommaSeparated(value: String): String {
+        val comma = value.indexOf(',')
+        return if (comma >= 0 && value.indexOf('&') < 0 && value.indexOf('+') < 0) {
+            value.substring(0, comma).trim().ifEmpty { value }
+        } else value
+    }
+
+    private fun appendUnique(name: String, result: MutableList<String>) {
+        if (name.isNotEmpty() && result.none { it.equals(name, ignoreCase = true) }) result.add(name)
     }
 
     // Scans without allocating; the overwhelming majority of credits have no marker.

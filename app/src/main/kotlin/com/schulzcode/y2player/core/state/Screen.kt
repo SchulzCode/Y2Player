@@ -10,7 +10,7 @@ sealed interface Screen {
     data object Favorites : Screen
     data object RecentlyPlayed : Screen
     data object Albums : Screen
-    data class AlbumSongs(val album: String, val artist: String? = null) : Screen
+    data class AlbumSongs(val album: String, val albumArtist: String? = null) : Screen
     data object Artists : Screen
     data class ArtistAlbums(val artist: String) : Screen
     data class ArtistSongs(val artist: String) : Screen

@@ -209,7 +209,7 @@ object AppReducer {
         val key = (row as? Action)?.key ?: return Reduction(state)
         val track = state.library.byId[screen.trackId] ?: return Reduction(state)
         return when {
-            key.startsWith("track_album:") -> push(state, Screen.AlbumSongs(track.displayAlbum))
+            key.startsWith("track_album:") -> push(state, Screen.AlbumSongs(track.displayAlbum, track.albumArtistName))
             key.startsWith("track_artist:") -> push(state, Screen.ArtistSongs(track.primaryArtist))
             else -> Reduction(state)
         }
@@ -496,7 +496,13 @@ object AppReducer {
 
     private fun confirmArtistAlbums(state: AppState, screen: Screen.ArtistAlbums, row: ScreenRow): Reduction = when {
         (row as? Action)?.key == "artist_all_songs" -> push(state, Screen.ArtistSongs(screen.artist))
-        row is Group -> push(state, Screen.AlbumSongs(row.key, screen.artist))
+        row is Group -> push(
+            state,
+            Screen.AlbumSongs(
+                row.key,
+                ScreenContent.albumArtistForArtistAlbum(state, screen.artist, row.key)
+            )
+        )
         else -> Reduction(state)
     }
 

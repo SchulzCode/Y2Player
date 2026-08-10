@@ -132,7 +132,7 @@ object ScreenContent {
         Screen.Favorites -> favoriteRows(state)
         Screen.RecentlyPlayed -> collectionRows(state.library.recentlyPlayed)
         Screen.Albums -> albumRows(state.library.availableTracks)
-        is Screen.AlbumSongs -> albumDetailRows(state.library.availableTracks, screen.album, screen.artist)
+        is Screen.AlbumSongs -> albumDetailRows(state.library.availableTracks, screen.album, screen.albumArtist)
         Screen.Artists -> artistRows(state.library.availableTracks)
         is Screen.ArtistAlbums -> artistAlbumRows(state.library.availableTracks, screen.artist)
         is Screen.ArtistSongs -> artistDetailRows(state.library.availableTracks, screen.artist)
@@ -941,10 +941,13 @@ object ScreenContent {
     private fun albumDetailRows(
         tracks: List<Track>,
         album: String,
-        artist: String? = null
+        albumArtist: String? = null
     ): List<ScreenRow> {
         return collectionRows(
-            albumSorted(tracks.filter { it.displayAlbum == album && (artist == null || it.isCreditedTo(artist)) })
+            albumSorted(tracks.filter {
+                it.displayAlbum == album &&
+                    (albumArtist == null || it.albumArtistName.equals(albumArtist, ignoreCase = true))
+            })
         )
     }
 
@@ -955,7 +958,7 @@ object ScreenContent {
         byArtist.forEach { track ->
             val album = track.displayAlbum
             counts[album] = (counts[album] ?: 0) + 1
-            owners[album] = track.albumArtistName
+            if (album !in owners) owners[album] = track.albumArtistName
         }
         return buildList {
             add(ScreenRow.Action("All Songs", trackCountLabel(byArtist.size), "artist_all_songs"))
@@ -970,30 +973,15 @@ object ScreenContent {
     }
 
     private fun artistRows(tracks: List<Track>): List<ScreenRow> {
-        // Only a name that performs somewhere earns a row, so an album artist of
-        // "Various Artists" never becomes an artist. The counts then have to match
-        // what the artist screen lists, which includes tracks joined by album artist.
         val performers = LinkedHashMap<String, String>()
-        tracks.forEach { track ->
-            val primary = track.primaryArtist
-            val primaryKey = artistKey(primary)
-            if (!isSyntheticArtist(primary) && primaryKey !in performers) performers[primaryKey] = primary
-            track.featuredArtist?.let { guest ->
-                val guestKey = artistKey(guest)
-                if (!isSyntheticArtist(guest) && guestKey !in performers) performers[guestKey] = guest
-            }
-        }
         val counts = LinkedHashMap<String, Int>()
         tracks.forEach { track ->
-            val primaryKey = artistKey(track.primaryArtist)
-            if (primaryKey in performers) counts[primaryKey] = (counts[primaryKey] ?: 0) + 1
-            val guestKey = track.featuredArtist?.let(::artistKey)
-            if (guestKey != null && guestKey != primaryKey && guestKey in performers) {
-                counts[guestKey] = (counts[guestKey] ?: 0) + 1
-            }
-            val ownerKey = artistKey(track.albumArtistName)
-            if (ownerKey != primaryKey && ownerKey != guestKey && ownerKey in performers) {
-                counts[ownerKey] = (counts[ownerKey] ?: 0) + 1
+            track.creditedArtists.forEach { artist ->
+                val key = artistKey(artist)
+                if (!isSyntheticArtist(artist)) {
+                    if (key !in performers) performers[key] = artist
+                    counts[key] = (counts[key] ?: 0) + 1
+                }
             }
         }
         return counts.entries.sortedWith { first, second ->
@@ -1011,6 +999,11 @@ object ScreenContent {
         tracks: List<Track>,
         artist: String
     ): List<ScreenRow> = collectionRows(artistSorted(tracks.filter { it.isCreditedTo(artist) }))
+
+    internal fun albumArtistForArtistAlbum(state: AppState, artist: String, album: String): String? =
+        state.library.availableTracks.firstOrNull {
+            it.displayAlbum == album && it.isCreditedTo(artist)
+        }?.albumArtistName
 
     private fun folderRows(tracks: List<Track>, screen: Screen.Folders): List<ScreenRow> {
         if (screen.volumeId == null) return tracks.groupBy { it.volumeId }.keys.sorted().map { ScreenRow.Folder(volumeName(it), it, "") }

@@ -102,9 +102,12 @@ class FeaturedArtistTest {
         assertEquals("Daft Punk", row.subtitle)
     }
 
-    @Test fun `opening that album under the guest shows only their track`() {
-        val rows = ScreenContent.rows(onScreen(Screen.AlbumSongs("Random Access Memories", "Pharrell Williams")))
-        assertEquals(listOf("Get Lucky"), rows.filterIsInstance<ScreenRow.TrackRow>().map { it.track.title })
+    @Test fun `opening the guest album uses its owner and shows every track`() {
+        val rows = ScreenContent.rows(onScreen(Screen.AlbumSongs("Random Access Memories", "Daft Punk")))
+        assertEquals(
+            listOf("Give Life Back to Music", "Get Lucky", "Contact"),
+            rows.filterIsInstance<ScreenRow.TrackRow>().map { it.track.title }
+        )
     }
 
     @Test fun `All Songs for the guest holds only their track`() {
@@ -128,7 +131,7 @@ class FeaturedArtistTest {
 
     // ---- band names that must survive ------------------------------------------------
 
-    @Test fun `ampersands commas and plus signs never split a name`() {
+    @Test fun `established band separators remain part of the artist name`() {
         listOf(
             "Simon & Garfunkel",
             "Earth, Wind & Fire",
@@ -231,8 +234,10 @@ class FeaturedArtistTest {
         val underOwner = ScreenContent.rows(onScreen(Screen.AlbumSongs("Random Access Memories", "Daft Punk"), guestOnly))
         assertEquals(2, underOwner.filterIsInstance<ScreenRow.TrackRow>().size)
 
-        val underGuest = ScreenContent.rows(onScreen(Screen.AlbumSongs("Random Access Memories", "Pharrell Williams"), guestOnly))
-        assertEquals(listOf("Guest Spot"), underGuest.filterIsInstance<ScreenRow.TrackRow>().map { it.track.title })
+        val reachedThroughGuest = ScreenContent.rows(
+            onScreen(Screen.AlbumSongs("Random Access Memories", "Daft Punk"), guestOnly)
+        )
+        assertEquals(2, reachedThroughGuest.filterIsInstance<ScreenRow.TrackRow>().size)
     }
 
     @Test fun `a missing album artist falls back to the primary credit`() {

@@ -155,7 +155,7 @@ class AppReducerNowPlayingTest {
         ).state
         assertEquals(Screen.TrackBrowse(1), browse.currentScreen)
 
-        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(browse, AppAction.Confirm).state.currentScreen)
+        assertEquals(Screen.AlbumSongs("Album", "Artist"), AppReducer.reduce(browse, AppAction.Confirm).state.currentScreen)
         val artistSelected = browse.copy(
             screenStack = browse.screenStack.dropLast(1) + browse.currentEntry.copy(selectedIndex = 1)
         )
