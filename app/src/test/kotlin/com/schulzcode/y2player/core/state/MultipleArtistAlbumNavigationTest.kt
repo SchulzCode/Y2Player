@@ -49,6 +49,41 @@ class MultipleArtistAlbumNavigationTest {
         }
     }
 
+    @Test fun `repeated Vorbis artist values create individual entries`() {
+        val credit = "Andrew Latimer;Andy Ward;Peter Bardens;Camel"
+        val tracks = listOf(track(5, "Air Born", credit, 1))
+        val artists = groups(state(Screen.Artists, tracks)).map { it.key }
+
+        assertEquals(
+            listOf("Andrew Latimer", "Andy Ward", "Peter Bardens", "Camel"),
+            tracks.single().creditedArtists
+        )
+        assertEquals("Andrew Latimer", tracks.single().primaryArtist)
+        assertEquals(listOf("Andrew Latimer", "Andy Ward", "Camel", "Peter Bardens"), artists)
+        assertFalse(credit in artists)
+        artists.forEach { artist ->
+            assertEquals(
+                listOf("Shared Album"),
+                groups(state(Screen.ArtistAlbums(artist), tracks)).map { it.key }
+            )
+        }
+    }
+
+    @Test fun `repeated values retain feature parsing and remove duplicates`() {
+        val track = track(
+            6,
+            "Collaboration",
+            "Lead Artist feat. Guest Artist; Second Artist; lead artist",
+            1
+        )
+
+        assertEquals(
+            listOf("Lead Artist", "Guest Artist", "Second Artist"),
+            track.creditedArtists
+        )
+        assertEquals("Lead Artist", track.primaryArtist)
+    }
+
     @Test fun `opening an album from a featured artist shows every album track`() {
         val artistAlbums = state(Screen.ArtistAlbums("Guest Artist"), albumTracks)
         val albumRow = ScreenContent.rows(artistAlbums).indexOfFirst {

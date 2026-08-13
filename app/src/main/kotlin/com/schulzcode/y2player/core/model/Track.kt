@@ -67,8 +67,9 @@ data class Track(
 
 object ArtistCredit {
 
-    // Explicit feature words split credits. A comma also separates simple artist
-    // lists, but remains part of established '&' and '+' band-name forms.
+    // Explicit feature words split credits. FFmpeg joins repeated Vorbis ARTIST
+    // values with semicolons, which are always boundaries. A comma also separates
+    // simple artist lists, but remains part of established '&' and '+' band-name forms.
     private val BARE_MARKERS = arrayOf("featuring", "feat.", "feat", "ft.", "ft")
 
     // "with" is only a marker inside brackets, as in "(with X)". Bare it would cut
@@ -76,7 +77,7 @@ object ArtistCredit {
     private const val BRACKETED_MARKER = "with"
 
     fun primary(credit: String): String {
-        val cleaned = credit.trim()
+        val cleaned = credit.substringBefore(REPEATED_VALUE_SEPARATOR).trim()
         val at = markerStart(cleaned)
         if (at < 0) return firstCommaSeparated(cleaned)
         val head = cleaned.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
@@ -84,7 +85,7 @@ object ArtistCredit {
     }
 
     fun featured(credit: String): String? {
-        val cleaned = credit.trim()
+        val cleaned = credit.substringBefore(REPEATED_VALUE_SEPARATOR).trim()
         val at = markerStart(cleaned)
         if (at < 0) return null
         val length = markerLengthAt(cleaned, at)
@@ -95,7 +96,14 @@ object ArtistCredit {
 
     fun names(credit: String): List<String> {
         val result = ArrayList<String>(2)
-        appendNames(credit.trim(), result)
+        var start = 0
+        for (index in credit.indices) {
+            if (credit[index] == REPEATED_VALUE_SEPARATOR) {
+                appendNames(credit.substring(start, index).trim(), result)
+                start = index + 1
+            }
+        }
+        appendNames(credit.substring(start).trim(), result)
         return result
     }
 
@@ -171,6 +179,8 @@ object ArtistCredit {
         // A marker must be a whole word, so "ft" never matches inside "ftfoo".
         return credit[after] == ' '
     }
+
+    private const val REPEATED_VALUE_SEPARATOR = ';'
 }
 
 object AudiobookIdentity {
