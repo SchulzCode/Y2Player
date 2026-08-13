@@ -81,7 +81,7 @@ class NavigationCorrectnessTest {
             ScreenEntry(Screen.MainMenu),
             ScreenEntry(Screen.NowPlaying),
             ScreenEntry(Screen.NowPlayingOptions),
-            ScreenEntry(Screen.Queue)
+            ScreenEntry(Screen.Queue, selectedIndex = 1)
         )
         val state = AppState(screenStack = stack, library = library, playback = playing)
 
@@ -99,7 +99,7 @@ class NavigationCorrectnessTest {
             ScreenEntry(Screen.MainMenu),
             ScreenEntry(Screen.NowPlaying),
             ScreenEntry(Screen.NowPlayingOptions),
-            ScreenEntry(Screen.Queue)
+            ScreenEntry(Screen.Queue, selectedIndex = 1)
         )
         val state = AppState(screenStack = stack, library = library, playback = playing)
         val options = AppReducer.reduce(state, AppAction.Confirm).state

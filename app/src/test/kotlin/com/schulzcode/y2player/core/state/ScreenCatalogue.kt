@@ -86,6 +86,7 @@ object ScreenCatalogue {
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,
         Screen.AudiobookChapters("").code, Screen.MultiSelect("", emptyList(), emptySet()).code,
-        Screen.QueueOptions(0).code, Screen.QueueMove(0, 0).code, Screen.EqualizerBands.code
+        Screen.QueueOptions(0).code, Screen.QueueMove(0, 0).code, Screen.QueueManagement.code,
+        Screen.EqualizerBands.code
     )
 }

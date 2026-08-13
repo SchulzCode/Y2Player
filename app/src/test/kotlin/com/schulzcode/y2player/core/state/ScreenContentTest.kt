@@ -115,14 +115,15 @@ class ScreenContentTest {
 
     @Test fun queueRowsKeepIndexAlignmentForMissingTracks() {
         val state = AppState(
-            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
+            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 2)),
             library = LibraryState(tracks = listOf(track)),
             playback = PlaybackSnapshot(queue = testQueue(99L, 1L), currentQueueEntryId = 2L)
         )
         val rows = ScreenContent.rows(state)
-        assertEquals(2, rows.size)
-        assertTrue("missing id renders as a placeholder, not dropped", rows[0] is ScreenRow.Group)
-        assertTrue(rows[1] is ScreenRow.TrackRow)
+        assertEquals(3, rows.size)
+        assertEquals("queue_actions", (rows[0] as ScreenRow.Action).key)
+        assertTrue("missing id renders as a placeholder, not dropped", rows[1] is ScreenRow.Group)
+        assertTrue(rows[2] is ScreenRow.TrackRow)
         val options = AppReducer.reduce(state, AppAction.Confirm).state
         assertEquals(Screen.QueueOptions(2L), options.currentScreen)
         val effect = AppReducer.reduce(options, AppAction.Confirm).effects.single()

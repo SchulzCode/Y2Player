@@ -121,6 +121,7 @@ object AppReducer {
             is Screen.QueueMove -> confirmQueueMove(state, screen)
             Screen.QueueManagement -> confirmQueueManagement(state, row)
             Screen.Queue -> when (row) {
+                is Action -> if (row.key == "queue_actions") push(state, Screen.QueueManagement) else Reduction(state)
                 is TrackRow -> row.queueEntry?.let { push(state, Screen.QueueOptions(it.id)) } ?: Reduction(state)
                 is Group -> row.key.takeIf { it.startsWith("queue_missing:") }
                     ?.substringAfter(':')?.toLongOrNull()?.let { push(state, Screen.QueueOptions(it)) }
@@ -258,7 +259,7 @@ object AppReducer {
             key.startsWith("queue_next:") -> {
                 val queue = pop(state)
                 val target = if (state.playback.currentQueueEntryId == null) 0 else 1
-                Reduction(setSelected(queue, target.coerceAtMost(state.playback.queue.lastIndex)), listOf(PromoteQueueEntry(entryId())))
+                Reduction(setSelected(queue, target.coerceAtMost(state.playback.queue.lastIndex) + 1), listOf(PromoteQueueEntry(entryId())))
             }
             key.startsWith("queue_move:") -> {
                 val index = state.playback.queue.indexOfFirst { it.id == entryId() }
@@ -272,7 +273,6 @@ object AppReducer {
     private fun confirmQueueManagement(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
-            "queue_view" -> push(state, Screen.Queue)
             "queue_clear_up_next" -> Reduction(state, listOf(ClearUpNext))
             "queue_clear_remaining" -> Reduction(state, listOf(ClearRemaining))
             "queue_clear" -> push(
@@ -553,7 +553,7 @@ object AppReducer {
         val source = state.playback.queue.indexOfFirst { it.id == screen.entryId }
         if (source < 0) return Reduction(pop(state, 2))
         val queue = pop(state, 2)
-        val selected = setSelected(queue, screen.targetIndex.coerceIn(0, state.playback.queue.lastIndex))
+        val selected = setSelected(queue, screen.targetIndex.coerceIn(0, state.playback.queue.lastIndex) + 1)
         val delta = screen.targetIndex - source
         return if (delta == 0) Reduction(selected) else Reduction(
             selected,
@@ -711,7 +711,7 @@ object AppReducer {
             key == "shuffle" -> Reduction(state, listOf(ToggleShuffle))
             key == "repeat" -> Reduction(state, listOf(CycleRepeat))
             key == "sleep_timer" -> Reduction(state, listOf(CycleSleepTimer))
-            key == "queue" -> push(state, Screen.QueueManagement)
+            key == "queue" -> push(state, Screen.Queue, selectedIndex = 1)
             key.startsWith("np_audiobook_chapters:") ->
                 push(state, Screen.AudiobookChapters(key.substringAfter(':')))
             key.startsWith("np_favorite:") -> {

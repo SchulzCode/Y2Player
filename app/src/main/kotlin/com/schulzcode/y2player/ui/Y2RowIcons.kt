@@ -68,7 +68,7 @@ object Y2RowIcons {
         "collection_next" -> Y2Icon.NEXT
         "collection_up_next" -> Y2Icon.QUEUE
         "repeat" -> Y2Icon.REPEAT
-        "queue", "queue_view", "queue_management" -> Y2Icon.QUEUE
+        "queue", "queue_actions", "queue_management" -> Y2Icon.QUEUE
         "queue_clear_up_next", "queue_clear_remaining", "queue_clear" -> Y2Icon.REMOVE
         "sleep_timer" -> Y2Icon.TIMER
         "playlist_create", "playlist_create_and_add" -> Y2Icon.ADD

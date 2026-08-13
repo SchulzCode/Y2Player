@@ -499,9 +499,13 @@ object ScreenContent {
         state.library.playlists.forEach { add(ScreenRow.Action(it.name, trackCountLabel(it.trackCount), "playlist_add:${it.id}")) }
     }
 
-    private fun queueRows(state: AppState): List<ScreenRow> = state.playback.queue.map { entry ->
-        state.library.byId[entry.trackId]?.let { ScreenRow.TrackRow(it, entry) }
-            ?: ScreenRow.Group("Unavailable track", "Not in the current library", "queue_missing:${entry.id}")
+    private fun queueRows(state: AppState): List<ScreenRow> = buildList {
+        if (state.playback.queue.isEmpty()) return@buildList
+        add(ScreenRow.Action("Queue Actions", queueSummaryLabel(state), "queue_actions"))
+        state.playback.queue.forEach { entry ->
+            add(state.library.byId[entry.trackId]?.let { ScreenRow.TrackRow(it, entry) }
+                ?: ScreenRow.Group("Unavailable track", "Not in the current library", "queue_missing:${entry.id}"))
+        }
     }
 
     private fun collectionOptionRows(screen: Screen.CollectionOptions): List<ScreenRow> = listOf(
@@ -546,7 +550,6 @@ object ScreenContent {
     }
 
     private fun queueManagementRows(state: AppState): List<ScreenRow> = buildList {
-        add(ScreenRow.Action("View Queue", queueSummaryLabel(state), "queue_view"))
         if (state.playback.queue.any { it.origin == QueueOrigin.UP_NEXT }) {
             add(ScreenRow.Action("Clear Up Next", upNextLabel(state), "queue_clear_up_next"))
         }

@@ -23,7 +23,7 @@ class Y2RowIconsTest {
         "output", "pause_disconnect", "playback_history", "playback_interruptions",
         "playback_seeking", "playback_transitions", "playback_volume", "playlist_create",
         "playlist_create_and_add", "playlist_export_m3u", "playlist_import_m3u", "playlists",
-        "previous_threshold", "queue", "queue_view", "queue_clear", "queue_clear_up_next", "queue_clear_remaining",
+        "previous_threshold", "queue", "queue_actions", "queue_clear", "queue_clear_up_next", "queue_clear_remaining",
         "queue_management", "recent", "repeat", "replay_gain",
         "rescan", "reset", "reset_library", "reset_queue",
         "reset_safe_mode", "resume_position", "screen_off_keys", "seek_step",
