@@ -10,12 +10,16 @@ class LibraryIndex private constructor(val tracks: List<Track>) {
     val byId: Map<Long, Track>
     val availableTracks: List<Track>
     val favoriteTracks: List<Track>
+    val musicTracks: List<Track>
+    val favoriteMusicTracks: List<Track>
     val availableTrackIds: Set<Long>
 
     init {
         val ids = HashMap<Long, Track>(tracks.size * 4 / 3 + 1)
         val available = ArrayList<Track>(tracks.size)
         val favorites = ArrayList<Track>()
+        val music = ArrayList<Track>(tracks.size)
+        val favoriteMusic = ArrayList<Track>()
         val availableIds = HashSet<Long>(tracks.size * 4 / 3 + 1)
         tracks.forEach { track ->
             ids[track.id] = track
@@ -23,11 +27,17 @@ class LibraryIndex private constructor(val tracks: List<Track>) {
                 available.add(track)
                 availableIds.add(track.id)
                 if (track.favorite) favorites.add(track)
+                if (!track.isAudiobookChapter) {
+                    music.add(track)
+                    if (track.favorite) favoriteMusic.add(track)
+                }
             }
         }
         byId = ids
         availableTracks = available
         favoriteTracks = favorites
+        musicTracks = music
+        favoriteMusicTracks = favoriteMusic
         availableTrackIds = availableIds
     }
 
@@ -67,6 +77,9 @@ data class LibraryState(
     val byId: Map<Long, Track> get() = index.byId
     val availableTracks: List<Track> get() = index.availableTracks
     val favoriteTracks: List<Track> get() = index.favoriteTracks
+    val musicTracks: List<Track> get() = index.musicTracks
+    val favoriteMusicTracks: List<Track> get() = index.favoriteMusicTracks
     val availableTrackIds: Set<Long> get() = index.availableTrackIds
     val recentlyPlayed: List<Track> by lazy { recentlyPlayedIds.mapNotNull(byId::get) }
+    val recentlyPlayedMusic: List<Track> by lazy { recentlyPlayed.filterNot(Track::isAudiobookChapter) }
 }

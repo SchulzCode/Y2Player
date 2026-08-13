@@ -1738,7 +1738,7 @@ class Y2PlayerView(
         cachedPaneTitle = if (track == null) "" else ellipsize(track.title, paneTextWidth, boldPaint)
         paint.textSize = Y2UiTheme.NAV_LABEL_SP * density
         cachedPaneArtist = if (track == null) "" else ellipsize(track.displayArtist, paneTextWidth, paint)
-        val count = state.library.availableTracks.size
+        val count = state.library.musicTracks.size
         val processed = state.library.scanProgress.processedFiles.coerceAtLeast(0)
         cachedScanProgressFraction = Y2UiLogic.scanProgressFraction(processed, count)
         cachedScanProgressPhase =

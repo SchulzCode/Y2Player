@@ -7,11 +7,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryIndexTest {
-    private fun track(id: Long, available: Boolean = true, favorite: Boolean = false) = Track(
+    private fun track(
+        id: Long,
+        available: Boolean = true,
+        favorite: Boolean = false,
+        relativePath: String = "$id.mp3"
+    ) = Track(
         id = id,
         volumeId = "internal",
-        absolutePath = "/storage/sdcard0/$id.mp3",
-        relativePath = "$id.mp3",
+        absolutePath = "/storage/sdcard0/$relativePath",
+        relativePath = relativePath,
         title = "Track $id",
         artist = "Artist",
         album = "Album",
@@ -56,5 +61,18 @@ class LibraryIndexTest {
         assertEquals(listOf(one), state.recentlyPlayed)
         assertFalse(state.recentlyPlayed.isEmpty())
         assertTrue(state.availableTrackIds.contains(1L))
+    }
+
+    @Test fun audiobookTracksStayAvailableButAreExcludedFromMusicLookups() {
+        val song = track(1, favorite = true, relativePath = "Music/Album/01.mp3")
+        val chapter = track(2, favorite = true, relativePath = "AUDIOBOOKS/Book/01.mp3")
+        val state = LibraryState(tracks = listOf(song, chapter)).copy(recentlyPlayedIds = listOf(2L, 1L))
+
+        assertEquals(listOf(song, chapter), state.availableTracks)
+        assertEquals(listOf(song, chapter), state.favoriteTracks)
+        assertEquals(listOf(song), state.musicTracks)
+        assertEquals(listOf(song), state.favoriteMusicTracks)
+        assertEquals(listOf(song), state.recentlyPlayedMusic)
+        assertEquals(setOf(1L, 2L), state.availableTrackIds)
     }
 }

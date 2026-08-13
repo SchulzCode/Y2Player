@@ -427,7 +427,7 @@ class MainActivity : Activity() {
                 else -> { libraryRepository.scan(); showMessage("Library scan started") }
             }
             AppEffect.ShuffleAll -> {
-                val tracks = store.state.library.availableTracks.filterNot { it.decodeFailed }
+                val tracks = store.state.library.musicTracks.filterNot { it.decodeFailed }
                 if (tracks.isEmpty()) showMessage("No music found") else requirePlayback { binder ->
                     binder.playCollectionShuffled(tracks.map { track -> track.id })
                 }

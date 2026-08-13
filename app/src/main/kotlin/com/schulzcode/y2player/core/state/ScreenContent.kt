@@ -129,15 +129,15 @@ object ScreenContent {
         Screen.Audiobooks -> audiobookRows(state)
         is Screen.AudiobookOptions -> audiobookOptionRows(state, screen.folderKey)
         is Screen.AudiobookChapters -> audiobookChapterRows(state, screen.folderKey)
-        Screen.Songs -> collectionRows(sorted(state.library.availableTracks, state.preferences.sortOrder))
+        Screen.Songs -> collectionRows(sorted(state.library.musicTracks, state.preferences.sortOrder))
         Screen.Favorites -> favoriteRows(state)
-        Screen.RecentlyPlayed -> collectionRows(state.library.recentlyPlayed)
-        Screen.Albums -> albumRows(state.library.availableTracks)
-        is Screen.AlbumSongs -> albumDetailRows(state.library.availableTracks, screen.album, screen.albumArtist)
-        Screen.Artists -> artistRows(state.library.availableTracks)
-        is Screen.ArtistAlbums -> artistAlbumRows(state.library.availableTracks, screen.artist)
-        is Screen.ArtistSongs -> artistDetailRows(state.library.availableTracks, screen.artist)
-        is Screen.Folders -> folderRows(state.library.availableTracks, screen)
+        Screen.RecentlyPlayed -> collectionRows(state.library.recentlyPlayedMusic)
+        Screen.Albums -> albumRows(state.library.musicTracks)
+        is Screen.AlbumSongs -> albumDetailRows(state.library.musicTracks, screen.album, screen.albumArtist)
+        Screen.Artists -> artistRows(state.library.musicTracks)
+        is Screen.ArtistAlbums -> artistAlbumRows(state.library.musicTracks, screen.artist)
+        is Screen.ArtistSongs -> artistDetailRows(state.library.musicTracks, screen.artist)
+        is Screen.Folders -> folderRows(state.library.musicTracks, screen)
         Screen.Playlists -> playlistRows(state)
         is Screen.PlaylistTracks -> playlistTrackRows(state, screen)
         is Screen.TrackOptions -> trackOptionRows(state, screen)
@@ -231,8 +231,8 @@ object ScreenContent {
         ScreenRow.Action("Albums", null, "albums"),
         ScreenRow.Action("Artists", null, "artists"),
         ScreenRow.Action("Playlists", null, "playlists"),
-        ScreenRow.Action("Favorites", trackCountLabel(state.library.favoriteTracks.size), "favorites"),
-        ScreenRow.Action("Recently Played", trackCountLabel(state.library.recentlyPlayed.size), "recent"),
+        ScreenRow.Action("Favorites", trackCountLabel(state.library.favoriteMusicTracks.size), "favorites"),
+        ScreenRow.Action("Recently Played", trackCountLabel(state.library.recentlyPlayedMusic.size), "recent"),
         ScreenRow.Action("Folders", null, "folders")
     )
 
@@ -355,19 +355,26 @@ object ScreenContent {
     }
 
     private fun playlistRows(state: AppState): List<ScreenRow> = buildList {
-        state.library.playlists.forEach { add(ScreenRow.Action(it.name, trackCountLabel(it.trackCount), "playlist:${it.id}")) }
+        state.library.playlists.forEach { playlist ->
+            val visibleCount = state.library.playlistTrackIds[playlist.id]?.count { id ->
+                state.library.byId[id]?.isAudiobookChapter != true
+            } ?: playlist.trackCount
+            add(ScreenRow.Action(playlist.name, trackCountLabel(visibleCount), "playlist:${playlist.id}"))
+        }
         add(ScreenRow.Action("New Playlist", null, "playlist_create"))
     }
 
     private fun playlistTrackRows(state: AppState, screen: Screen.PlaylistTracks): List<ScreenRow> = buildList {
-        val tracks = state.library.playlistTrackIds[screen.playlistId].orEmpty().mapNotNull(state.library.byId::get)
+        val tracks = state.library.playlistTrackIds[screen.playlistId].orEmpty()
+            .mapNotNull(state.library.byId::get)
+            .filterNot(Track::isAudiobookChapter)
         if (tracks.isEmpty()) add(ScreenRow.Group("Playlist is empty", "Add tracks from Track Options", "playlist_empty"))
         else collectionRows(tracks).forEach(::add)
         add(ScreenRow.Action("Delete Playlist", "Removes this playlist, not its music", "playlist_delete:${screen.playlistId}"))
     }
 
     private fun favoriteRows(state: AppState): List<ScreenRow> =
-        collectionRows(sorted(state.library.favoriteTracks, state.preferences.sortOrder))
+        collectionRows(sorted(state.library.favoriteMusicTracks, state.preferences.sortOrder))
 
     // A one-track collection is already in order, so Shuffle would be a no-op row.
     private fun collectionRows(tracks: List<Track>): List<ScreenRow> {
@@ -1011,7 +1018,7 @@ object ScreenContent {
     ): List<ScreenRow> = collectionRows(artistSorted(tracks.filter { it.isCreditedTo(artist) }))
 
     internal fun albumArtistForArtistAlbum(state: AppState, artist: String, album: String): String? =
-        state.library.availableTracks.firstOrNull {
+        state.library.musicTracks.firstOrNull {
             it.displayAlbum == album && it.isCreditedTo(artist)
         }?.albumArtistName
 
