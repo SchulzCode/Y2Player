@@ -408,12 +408,16 @@ class MainActivity : Activity() {
         when (effect) {
             is AppEffect.PlayCollection ->
                 requirePlayback { it.playCollection(effect.trackIds, effect.startIndex, effect.shuffled, effect.fromStart) }
-            is AppEffect.PlayQueueIndex -> requirePlayback { it.playQueueIndex(effect.index) }
-            is AppEffect.RemoveQueueIndex -> requirePlayback { it.removeQueueIndex(effect.index) }
-            is AppEffect.MoveQueueItem -> requirePlayback { it.moveQueueItem(effect.index, effect.delta) }
-            is AppEffect.PlayNext -> { requirePlayback { it.playNext(effect.trackId) }; showMessage("Added to play next") }
-            is AppEffect.AddToQueue -> { requirePlayback { it.addToQueue(effect.trackId) }; showMessage("Added to queue") }
-            AppEffect.ClearUpcoming -> requirePlayback { it.clearUpcoming() }
+            is AppEffect.PlayQueueEntry -> requirePlayback { it.playQueueEntry(effect.entryId) }
+            is AppEffect.RemoveQueueEntry -> requirePlayback { it.removeQueueEntry(effect.entryId) }
+            is AppEffect.MoveQueueEntry -> requirePlayback { it.moveQueueEntry(effect.entryId, effect.delta) }
+            is AppEffect.PlayNext -> { requirePlayback { it.playNext(effect.trackIds) }; showMessage("Added to Play Next") }
+            is AppEffect.AddToUpNext -> {
+                requirePlayback { it.addToUpNext(effect.trackIds, effect.shuffled) }
+                showMessage(if (effect.shuffled) "Added shuffled to Up Next" else "Added to Up Next")
+            }
+            AppEffect.ClearUpNext -> requirePlayback { it.clearUpNext() }
+            AppEffect.ClearRemaining -> requirePlayback { it.clearRemaining() }
             AppEffect.ClearQueue -> requirePlayback { it.clearQueue() }
             AppEffect.TogglePlayback -> requirePlayback { it.togglePlayback() }
             AppEffect.NextTrack -> requirePlayback { it.next() }

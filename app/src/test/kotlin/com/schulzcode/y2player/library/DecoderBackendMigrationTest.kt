@@ -22,7 +22,7 @@ class DecoderBackendMigrationTest {
 
     @Test fun metadataMigrationSchedulesExactlyOneFingerprintRefresh() {
         assertEquals(11, FfmpegMetadataMigration.VERSION)
-        assertEquals(14, LibrarySchema.VERSION)
+        assertEquals(15, LibrarySchema.VERSION)
         assertEquals(
             1,
             FfmpegMetadataMigration.STATEMENTS.count {
@@ -45,6 +45,18 @@ class DecoderBackendMigrationTest {
         assertTrue(AudiobookProgressMigration.STATEMENTS.none { it.startsWith("ALTER TABLE tracks") })
         assertTrue(AudiobookProgressMigration.STATEMENTS.none { it.startsWith("DROP") })
         assertTrue(AudiobookProgressMigration.STATEMENTS.single().startsWith("CREATE TABLE IF NOT EXISTS"))
+    }
+
+    @Test fun queueModelMigrationPreservesTheLibraryAndMaterializesLegacyOrderFields() {
+        assertEquals(15, QueueModelMigration.VERSION)
+        assertEquals(5, QueueModelMigration.STATEMENTS.size)
+        assertTrue(QueueModelMigration.STATEMENTS.any { it.contains("entry_id") })
+        assertTrue(QueueModelMigration.STATEMENTS.any { it.contains("origin") })
+        assertTrue(QueueModelMigration.STATEMENTS.any { it.contains("source_order") })
+        assertTrue(QueueModelMigration.STATEMENTS.any { it.contains("current_entry_id") })
+        assertTrue(QueueModelMigration.STATEMENTS.none { it.contains("modified_at") })
+        assertTrue(QueueModelMigration.STATEMENTS.none { it.startsWith("ALTER TABLE tracks") })
+        assertTrue(QueueModelMigration.STATEMENTS.none { it.startsWith("DROP") })
     }
 
     @Test fun audiobookProgressIsOneRowPerBookWithNoCascadingDelete() {

@@ -6,6 +6,8 @@ import com.schulzcode.y2player.core.model.AudioCodecSupport
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.CodecSupport
 import com.schulzcode.y2player.core.model.RepeatMode
+import com.schulzcode.y2player.core.model.QueueEntry
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.diagnostics.PlaybackCapabilities
@@ -22,9 +24,25 @@ sealed interface ScreenRow {
     val subtitle: String?
 
     data class Action(override val title: String, override val subtitle: String? = null, val key: String) : ScreenRow
-    data class TrackRow(val track: Track) : ScreenRow {
+    data class TrackRow(
+        val track: Track,
+        val queueEntry: QueueEntry? = null,
+        val selectionIndex: Int? = null,
+        val selected: Boolean = false
+    ) : ScreenRow {
         override val title: String = track.title
         override val subtitle: String = buildString {
+            selectionIndex?.let {
+                append(if (selected) "Selected" else "Not selected")
+                append(" · ")
+            }
+            queueEntry?.let { entry ->
+                append(when (entry.origin) {
+                    QueueOrigin.UP_NEXT -> "Up Next"
+                    QueueOrigin.CONTINUATION -> "Continuing"
+                })
+                append(" · ")
+            }
             append(track.displayArtist)
             if (!track.available) append(" · unavailable")
             if (track.decodeFailed ||
@@ -63,6 +81,8 @@ object ScreenContent {
         is Screen.TrackBrowse -> "Browse Track"
         is Screen.TrackDetails -> "Track Details"
         is Screen.AddToPlaylist -> "Add to Playlist"
+        is Screen.CollectionOptions -> screen.title
+        is Screen.MultiSelect -> "Select Songs"
         is Screen.QueueOptions -> "Queue Item"
         Screen.QueueManagement -> "Queue Management"
         Screen.NowPlaying -> "Now Playing"
@@ -144,7 +164,9 @@ object ScreenContent {
         is Screen.TrackBrowse -> trackBrowseRows(state, screen.trackId)
         is Screen.TrackDetails -> trackDetailRows(state, screen.trackId)
         is Screen.AddToPlaylist -> addToPlaylistRows(state)
-        is Screen.QueueOptions -> queueOptionRows(state, screen.queueIndex)
+        is Screen.CollectionOptions -> collectionOptionRows(screen)
+        is Screen.MultiSelect -> multiSelectRows(state, screen)
+        is Screen.QueueOptions -> queueOptionRows(state, screen.entryId)
         Screen.QueueManagement -> queueManagementRows(state)
         Screen.Queue -> queueRows(state)
         Screen.NowPlaying -> emptyList()
@@ -207,7 +229,10 @@ object ScreenContent {
 
     fun sameRowIdentity(first: ScreenRow, second: ScreenRow): Boolean = when {
         first is ScreenRow.Action && second is ScreenRow.Action -> first.key == second.key
-        first is ScreenRow.TrackRow && second is ScreenRow.TrackRow -> first.track.id == second.track.id
+        first is ScreenRow.TrackRow && second is ScreenRow.TrackRow ->
+            if (first.selectionIndex != null || second.selectionIndex != null) first.selectionIndex == second.selectionIndex
+            else if (first.queueEntry != null || second.queueEntry != null) first.queueEntry?.id == second.queueEntry?.id
+            else first.track.id == second.track.id
         first is ScreenRow.Group && second is ScreenRow.Group -> first.key == second.key
         first is ScreenRow.Folder && second is ScreenRow.Folder ->
             first.volumeId == second.volumeId && first.relativePath == second.relativePath
@@ -223,6 +248,41 @@ object ScreenContent {
             add(ScreenRow.Action("Shuffle All", "Every track in random order", "shuffle_all"))
         }
         add(ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings"))
+    }
+
+    fun selectedCollection(state: AppState): Pair<String, List<Long>>? {
+        val row = rows(state).getOrNull(state.selectedIndex)
+        val tracks = state.library.musicTracks
+        val selection = when (val screen = state.currentScreen) {
+            Screen.Albums -> (row as? ScreenRow.Group)?.let { group ->
+                group.title to albumSorted(tracks.filter { it.displayAlbum == group.key })
+            }
+            Screen.Artists -> (row as? ScreenRow.Group)?.let { group ->
+                group.title to artistSorted(tracks.filter { it.isCreditedTo(group.key) })
+            }
+            is Screen.ArtistAlbums -> when {
+                (row as? ScreenRow.Action)?.key == "artist_all_songs" ->
+                    screen.artist to artistSorted(tracks.filter { it.isCreditedTo(screen.artist) })
+                row is ScreenRow.Group -> row.title to albumSorted(tracks.filter {
+                    it.displayAlbum == row.key && it.isCreditedTo(screen.artist)
+                })
+                else -> null
+            }
+            Screen.Playlists -> (row as? ScreenRow.Action)?.key?.takeIf { it.startsWith("playlist:") }
+                ?.substringAfter(':')?.toLongOrNull()?.let { playlistId ->
+                    row.title to state.library.playlistTrackIds[playlistId].orEmpty().mapNotNull(state.library.byId::get)
+                        .filterNot(Track::isAudiobookChapter)
+                }
+            is Screen.Folders -> (row as? ScreenRow.Folder)?.let { folder ->
+                val prefix = folder.relativePath.trim('/').let { if (it.isEmpty()) "" else "$it/" }
+                folder.title to albumSorted(tracks.filter {
+                    it.volumeId == folder.volumeId && it.relativePath.startsWith(prefix)
+                })
+            }
+            else -> null
+        } ?: return null
+        val ids = selection.second.asSequence().filter { it.available && !it.decodeFailed }.map(Track::id).toList()
+        return if (ids.isEmpty()) null else selection.first to ids
     }
 
     private fun musicRows(state: AppState): List<ScreenRow> = listOf(
@@ -393,11 +453,12 @@ object ScreenContent {
         val trackId = screen.trackId
         val track = state.library.byId[trackId] ?: return listOf(ScreenRow.Group("Track unavailable", null, "missing"))
         return buildList {
-            if (!screen.fromNowPlaying) {
+            if (!screen.fromNowPlaying && !track.isAudiobookChapter) {
                 add(ScreenRow.Action("Play Next", null, "track_next:$trackId"))
                 add(ScreenRow.Action("Add to Queue", null, "track_queue:$trackId"))
                 add(ScreenRow.Action("Favorite", onOff(track.favorite), "track_favorite:$trackId"))
                 add(ScreenRow.Action("Add to Playlist", null, "track_playlist:$trackId"))
+                add(ScreenRow.Action("Select Multiple", "Build a batch with Center", "track_multi:$trackId"))
             }
             screen.sourcePlaylistId?.let { playlistId ->
                 add(ScreenRow.Action("Remove from Playlist", "The music file is kept", "track_remove_playlist:$playlistId:$trackId"))
@@ -432,30 +493,60 @@ object ScreenContent {
         state.library.playlists.forEach { add(ScreenRow.Action(it.name, trackCountLabel(it.trackCount), "playlist_add:${it.id}")) }
     }
 
-    private fun queueRows(state: AppState): List<ScreenRow> = state.playback.queue.mapIndexed { index, id ->
-        state.library.byId[id]?.let(ScreenRow::TrackRow)
-            ?: ScreenRow.Group("Unavailable track", "Not in the current library", "queue_missing:$index")
+    private fun queueRows(state: AppState): List<ScreenRow> = state.playback.queue.map { entry ->
+        state.library.byId[entry.trackId]?.let { ScreenRow.TrackRow(it, entry) }
+            ?: ScreenRow.Group("Unavailable track", "Not in the current library", "queue_missing:${entry.id}")
     }
 
-    private fun queueOptionRows(state: AppState, index: Int): List<ScreenRow> {
-        val track = state.playback.queue.getOrNull(index)?.let(state.library.byId::get)
-        return listOf(
-            ScreenRow.Group(track?.title ?: "Unknown track", track?.displayArtist, "queue_track"),
-            ScreenRow.Action("Play Now", null, "queue_play:$index"),
-            ScreenRow.Action("Move Up", null, "queue_up:$index"),
-            ScreenRow.Action("Move Down", null, "queue_down:$index"),
-            ScreenRow.Action("Remove", null, "queue_remove:$index"),
-            ScreenRow.Action("Queue Management", "Clear upcoming or entire queue", "queue_management")
-        )
+    private fun collectionOptionRows(screen: Screen.CollectionOptions): List<ScreenRow> = listOf(
+        ScreenRow.Action("Play Next", trackCountLabel(screen.trackIds.size), "collection_next"),
+        ScreenRow.Action("Add to Up Next", "After added songs", "collection_up_next"),
+        ScreenRow.Action("Add Shuffled", "Random order in Up Next", "collection_up_next_shuffled")
+    )
+
+    private fun multiSelectRows(state: AppState, screen: Screen.MultiSelect): List<ScreenRow> =
+        screen.trackIds.mapIndexedNotNull { index, trackId ->
+            state.library.byId[trackId]?.let {
+                ScreenRow.TrackRow(it, selectionIndex = index, selected = index in screen.selectedIndices)
+            }
+        }
+
+    private fun queueOptionRows(state: AppState, entryId: Long): List<ScreenRow> {
+        val entry = state.playback.queue.firstOrNull { it.id == entryId }
+        val track = entry?.trackId?.let(state.library.byId::get)
+        val upcoming = entry != null && entry.id != state.playback.currentQueueEntryId
+        return buildList {
+            add(ScreenRow.Group(track?.title ?: "Unknown track", track?.displayArtist, "queue_track"))
+            add(ScreenRow.Action("Play Now", null, "queue_play:$entryId"))
+            if (upcoming) {
+                add(ScreenRow.Action("Move Earlier", null, "queue_up:$entryId"))
+                add(ScreenRow.Action("Move Later", null, "queue_down:$entryId"))
+            }
+            add(ScreenRow.Action("Remove", null, "queue_remove:$entryId"))
+        }
     }
 
     private fun queueManagementRows(state: AppState): List<ScreenRow> = listOf(
-        ScreenRow.Action("Clear Upcoming", queuePositionLabel(state), "queue_clear_upcoming"),
-        ScreenRow.Action("Clear Queue", trackCountLabel(state.playback.queue.size), "queue_clear")
+        ScreenRow.Action("Clear Up Next", upNextLabel(state), "queue_clear_up_next"),
+        ScreenRow.Action("Clear Remaining", remainingLabel(state), "queue_clear_remaining"),
+        ScreenRow.Action("Stop & Clear Queue", trackCountLabel(state.playback.queue.size), "queue_clear")
     )
 
     private fun nowPlayingOptionsRows(state: AppState): List<ScreenRow> {
         val track = state.playback.currentTrackId?.let(state.library.byId::get)
+        if (track?.isAudiobookChapter == true) {
+            val folderKey = track.audiobookFolderKey
+            return buildList {
+                if (folderKey != null) add(ScreenRow.Action(
+                    "Chapters", track.displayAlbum, "np_audiobook_chapters:$folderKey"
+                ))
+                add(ScreenRow.Action(
+                    "Queue", "${remainingLabel(state)} · Next: ${playingNextLabel(state)}", "queue"
+                ))
+                add(ScreenRow.Action("Sleep Timer", sleepTimerSubtitle(state), "sleep_timer"))
+                add(ScreenRow.Action("Track Details", track.title, "np_track_details:${track.id}"))
+            }
+        }
         return buildList {
             add(ScreenRow.Action("Shuffle", onOff(state.playback.shuffleEnabled), "shuffle"))
             add(ScreenRow.Action(
@@ -465,7 +556,7 @@ object ScreenContent {
             ))
             add(ScreenRow.Action(
                 "Queue",
-                "${queuePositionLabel(state)} · Next: ${playingNextLabel(state)}",
+                "${upNextLabel(state)} · Next: ${playingNextLabel(state)}",
                 "queue"
             ))
             if (track != null) {
@@ -486,23 +577,21 @@ object ScreenContent {
         if (playback.repeatMode == RepeatMode.ONE) {
             return state.library.byId[playback.currentTrackId]?.title?.let { "$it · repeat one" } ?: "Current track repeats"
         }
-        val nextId = playback.nextTrackId ?: run {
-            if (playback.shuffleEnabled) null
-            else playback.currentQueueIndex?.let { index ->
-                playback.queue.getOrNull(index + 1)
-                    ?: if (playback.repeatMode == RepeatMode.ALL) playback.queue.firstOrNull() else null
-            }
-        }
+        val nextId = playback.nextTrackId ?: playback.queue.getOrNull(1)?.trackId
         return when {
-            nextId == null -> if (playback.shuffleEnabled) "Decided by shuffle" else "End of queue"
+            nextId == null -> "End of queue"
             else -> state.library.byId[nextId]?.title ?: "Unavailable track"
         }
     }
 
-    private fun queuePositionLabel(state: AppState): String {
-        val size = state.playback.queue.size
-        val index = state.playback.currentQueueIndex
-        return if (size == 0) "Empty" else if (index == null) trackCountLabel(size) else "${index + 1} of $size"
+    private fun upNextLabel(state: AppState): String {
+        val count = state.playback.queue.count { it.origin == QueueOrigin.UP_NEXT }
+        return if (count == 0) "No added songs" else "$count added"
+    }
+
+    private fun remainingLabel(state: AppState): String {
+        val count = (state.playback.queue.size - 1).coerceAtLeast(0)
+        return if (count == 0) "Nothing after current" else "$count remaining"
     }
 
     private fun audioRows(state: AppState): List<ScreenRow> = listOf(
@@ -1217,7 +1306,7 @@ object ScreenContent {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
         Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
         is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
-        is Screen.Folders, is Screen.PlaylistTracks, is Screen.AudiobookChapters -> true
+        is Screen.Folders, is Screen.PlaylistTracks, is Screen.AudiobookChapters, is Screen.MultiSelect -> true
         else -> false
     }
 

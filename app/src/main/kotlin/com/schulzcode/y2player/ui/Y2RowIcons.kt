@@ -7,7 +7,7 @@ import com.schulzcode.y2player.core.state.ScreenRow
 object Y2RowIcons {
 
     fun forRow(row: ScreenRow, screen: Screen, currentTrackId: Long?, active: Boolean = false): Y2Icon = when (row) {
-        is ScreenRow.TrackRow -> if (row.track.id == currentTrackId) Y2Icon.PLAYING else Y2Icon.SONG
+        is ScreenRow.TrackRow -> if (active) Y2Icon.PLAYING else Y2Icon.SONG
         is ScreenRow.Folder -> Y2Icon.FOLDER
         is ScreenRow.Group -> forGroupKey(row.key, screen)
         is ScreenRow.Action -> if (active && Y2RowState.isFavoriteKey(row.key)) {
@@ -64,10 +64,12 @@ object Y2RowIcons {
         "favorites" -> Y2Icon.FAVORITE
         "recent" -> Y2Icon.RECENT
 
-        "shuffle_all", "collection_shuffle", "shuffle" -> Y2Icon.SHUFFLE
+        "shuffle_all", "collection_shuffle", "collection_up_next_shuffled", "shuffle" -> Y2Icon.SHUFFLE
+        "collection_next" -> Y2Icon.NEXT
+        "collection_up_next" -> Y2Icon.QUEUE
         "repeat" -> Y2Icon.REPEAT
         "queue", "queue_management" -> Y2Icon.QUEUE
-        "queue_clear_upcoming", "queue_clear" -> Y2Icon.REMOVE
+        "queue_clear_up_next", "queue_clear_remaining", "queue_clear" -> Y2Icon.REMOVE
         "sleep_timer" -> Y2Icon.TIMER
         "playlist_create", "playlist_create_and_add" -> Y2Icon.ADD
         "playlist_import_m3u", "playlist_export_m3u", "playlist_files" -> Y2Icon.PLAYLIST
@@ -116,6 +118,7 @@ object Y2RowIcons {
 
     private fun prefixedAction(key: String): Y2Icon = when {
         key.startsWith("audiobook_chapters:") -> Y2Icon.CHAPTERS
+        key.startsWith("np_audiobook_chapters:") -> Y2Icon.CHAPTERS
         key.startsWith("audiobook_restart:") -> Y2Icon.REFRESH
         key.startsWith("audiobook_clear:") -> Y2Icon.REMOVE
         key.startsWith("audiobook:") -> Y2Icon.BOOK
@@ -125,12 +128,14 @@ object Y2RowIcons {
         key.startsWith("track_queue:") -> Y2Icon.QUEUE
         key.startsWith("track_favorite:") || key.startsWith("np_favorite:") -> Y2Icon.FAVORITE
         key.startsWith("track_playlist:") || key.startsWith("np_playlist:") -> Y2Icon.PLAYLIST
+        key.startsWith("track_multi:") -> Y2Icon.CHECK
         key.startsWith("track_remove_playlist:") -> Y2Icon.REMOVE
         key.startsWith("track_browse:") -> Y2Icon.CHEVRON
         key.startsWith("track_details:") -> Y2Icon.INFO
         key.startsWith("track_album:") -> Y2Icon.ALBUM
         key.startsWith("track_artist:") -> Y2Icon.ARTIST
         key.startsWith("np_track_options:") -> Y2Icon.CHEVRON
+        key.startsWith("np_track_details:") -> Y2Icon.INFO
         key.startsWith("queue_play:") -> Y2Icon.PLAYING
         key.startsWith("queue_up:") || key.startsWith("queue_down:") -> Y2Icon.SORT
         key.startsWith("queue_remove:") -> Y2Icon.REMOVE

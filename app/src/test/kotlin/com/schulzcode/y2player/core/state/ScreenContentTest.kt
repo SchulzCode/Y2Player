@@ -117,14 +117,14 @@ class ScreenContentTest {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
             library = LibraryState(tracks = listOf(track)),
-            playback = PlaybackSnapshot(queue = listOf(99L, 1L), currentQueueIndex = 1)
+            playback = PlaybackSnapshot(queue = testQueue(99L, 1L), currentQueueEntryId = 2L)
         )
         val rows = ScreenContent.rows(state)
         assertEquals(2, rows.size)
         assertTrue("missing id renders as a placeholder, not dropped", rows[0] is ScreenRow.Group)
         assertTrue(rows[1] is ScreenRow.TrackRow)
         val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single()
-        assertEquals(AppEffect.PlayQueueIndex(1), effect)
+        assertEquals(AppEffect.PlayQueueEntry(2L), effect)
     }
 
     @Test fun recentlyPlayedBumpReusesCachedTrackRows() {

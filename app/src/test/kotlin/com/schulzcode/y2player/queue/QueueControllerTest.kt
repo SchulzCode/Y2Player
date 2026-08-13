@@ -1,429 +1,188 @@
 package com.schulzcode.y2player.queue
 
+import com.schulzcode.y2player.core.model.QueueEntry
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.RepeatMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class QueueControllerTest {
-    @Test
-    fun nextStopsAtEndWhenRepeatIsOff() {
-        val queue = QueueController(listOf(1, 2), initialIndex = 0)
+    private fun QueueController.ids() = snapshot().entries.map(QueueEntry::trackId)
+    private fun QueueController.visibleIds() = snapshot().visibleEntries.map(QueueEntry::trackId)
 
+    @Test fun orderedQueueAdvancesAndStops() {
+        val queue = QueueController(listOf(1, 2), initialIndex = 0)
         assertEquals(2L, queue.next())
         assertNull(queue.next())
     }
 
-    @Test
-    fun repeatAllWrapsToStart() {
-        val queue = QueueController(
-            initialItems = listOf(1, 2),
-            initialIndex = 1,
-            initialRepeatMode = RepeatMode.ALL
-        )
-
-        assertEquals(1L, queue.next())
-    }
-
-    @Test
-    fun shuffleKeepsCurrentTrackStable() {
-        val queue = QueueController(listOf(10, 20, 30, 40), initialIndex = 2)
-        val before = queue.currentTrackId()
-
-        queue.toggleShuffle()
-
-        assertEquals(before, queue.currentTrackId())
-        assertTrue(queue.snapshot().shuffleEnabled)
-    }
-
-    @Test
-    fun enablingShuffleCannotStrandUnplayedQueueItemsBehindTheCurrentTrack() {
-        val queue = QueueController(listOf(10, 20, 30, 40, 50), initialIndex = 2)
-
-        queue.toggleShuffle()
-
-        val remaining = generateSequence { queue.next() }.toList()
-        assertEquals(setOf(40L, 50L), remaining.toSet())
-        assertEquals(2, remaining.size)
-    }
-
-    @Test
-    fun changingShuffleModePreservesTraversalProgress() {
-        val queue = QueueController(listOf(10, 20, 30, 40, 50), initialIndex = 0)
-        queue.toggleShuffle()
-        val firstShuffled = queue.next()!!
-
-        queue.toggleShuffle()
-
-        val remainder = generateSequence { queue.next() }.toList()
-        assertEquals(setOf(10L, 20L, 30L, 40L, 50L) - setOf(10L, firstShuffled), remainder.toSet())
-        assertEquals(3, remainder.size)
-    }
-
-    @Test
-    fun shuffleAllStartsAtBeginningAndPlaysTheCompleteLibrary() {
-        val queue = QueueController()
-        val tracks = (1L..12L).toList()
-
-        queue.replaceShuffled(tracks)
-
-        val session = queue.session(positionMs = 0)
-        assertTrue(queue.snapshot().shuffleEnabled)
-        assertEquals(RepeatMode.ALL, queue.snapshot().repeatMode)
-        assertEquals(session.playOrder!!.first(), queue.currentIndex())
-
-        val firstPass = mutableListOf(queue.currentTrackId()!!)
-        repeat(tracks.size - 1) { firstPass += queue.next()!! }
-        assertEquals(tracks.toSet(), firstPass.toSet())
-        assertEquals(tracks.size, firstPass.distinct().size)
-    }
-
-    @Test
-    fun removeBeforeCurrentAdjustsIndexWithoutChangingTrack() {
-        val queue = QueueController(listOf(10, 20, 30), initialIndex = 2)
-
-        queue.removeAt(0)
-
-        assertEquals(30L, queue.currentTrackId())
-        assertEquals(1, queue.currentIndex())
-    }
-
-    @Test
-    fun addNextPlacesTrackAfterCurrent() {
-        val queue = QueueController(listOf(10, 30), initialIndex = 0)
-
-        queue.addNext(20)
-
-        assertEquals(listOf(10L, 20L, 30L), queue.snapshot().items)
+    @Test fun playNextTakesPriorityOverContinuation() {
+        val queue = QueueController(listOf(10, 20, 30), initialIndex = 0)
+        queue.playNext(listOf(90, 91))
+        assertEquals(listOf(10L, 90L, 91L, 20L, 30L), queue.visibleIds())
+        assertEquals(90L, queue.next())
+        assertEquals(91L, queue.next())
         assertEquals(20L, queue.next())
     }
 
-    @Test
-    fun shuffleOrderContinuesAfterRestore() {
-        val first = QueueController(listOf(10, 20, 30, 40), initialIndex = 0)
-        first.toggleShuffle()
-        first.next()
-        val saved = first.session(positionMs = 123)
-        val expectedNext = first.next()
-
-        val restored = QueueController()
-        restored.restore(listOf(10, 20, 30, 40), saved)
-
-        assertEquals(expectedNext, restored.next())
+    @Test fun latestPlayNextRequestWinsWithoutReversingItsBlock() {
+        val queue = QueueController(listOf(10, 20), initialIndex = 0)
+        queue.playNext(listOf(70, 71))
+        queue.playNext(listOf(80, 81))
+        assertEquals(listOf(10L, 80L, 81L, 70L, 71L, 20L), queue.visibleIds())
     }
 
-    @Test
-    fun addNextIsNextEvenWhileShuffled() {
-        val queue = QueueController(listOf(10, 20, 30), initialIndex = 1)
+    @Test fun addToUpNextIsFifoAndResumesContinuation() {
+        val queue = QueueController(listOf(10, 20, 30), initialIndex = 0)
+        queue.addToUpNext(listOf(70, 71))
+        queue.addToUpNext(listOf(80, 81))
+        assertEquals(listOf(10L, 70L, 71L, 80L, 81L, 20L, 30L), queue.visibleIds())
+        repeat(4) { queue.next() }
+        assertEquals(20L, queue.next())
+    }
+
+    @Test fun shuffleExposesTheExactPlaybackOrder() {
+        val queue = QueueController()
+        queue.replaceShuffled((1L..20L).toList(), repeatAll = false)
+        val displayed = queue.snapshot().visibleEntries.map(QueueEntry::trackId)
+        val played = generateSequence(queue.currentTrackId()) { queue.next() }.toList()
+        assertEquals(displayed, played)
+        assertEquals((1L..20L).toSet(), played.toSet())
+    }
+
+    @Test fun togglingShuffleLeavesManualEntriesOrderedAndVisibleFirst() {
+        val queue = QueueController(listOf(1, 2, 3, 4, 5), initialIndex = 0)
+        queue.addToUpNext(listOf(80, 81))
         queue.toggleShuffle()
-        queue.addNext(99)
-
-        assertEquals(99L, queue.next())
-    }
-    @Test
-    fun moveItemKeepsCurrentTrackStable() {
-        val queue = QueueController(listOf(10, 20, 30), initialIndex = 1)
-        queue.moveItem(0, 1)
-        assertEquals(listOf(20L, 10L, 30L), queue.snapshot().items)
-        assertEquals(20L, queue.currentTrackId())
+        val visible = queue.snapshot().visibleEntries
+        assertEquals(listOf(1L, 80L, 81L), visible.take(3).map(QueueEntry::trackId))
+        assertEquals(List(2) { QueueOrigin.UP_NEXT }, visible.drop(1).take(2).map(QueueEntry::origin))
     }
 
-    @Test
-    fun clearUpcomingKeepsCurrentAndPastItems() {
-        val queue = QueueController(listOf(10, 20, 30, 40), initialIndex = 1)
-        queue.clearUpcoming()
-        assertEquals(listOf(10L, 20L), queue.snapshot().items)
-        assertEquals(20L, queue.currentTrackId())
+    @Test fun disablingShuffleRestoresRemainingCollectionOrder() {
+        val queue = QueueController(listOf(1, 2, 3, 4, 5), initialIndex = 0)
+        queue.toggleShuffle()
+        queue.toggleShuffle()
+        assertEquals(listOf(1L, 2L, 3L, 4L, 5L), queue.visibleIds())
     }
 
-    @Test
-    fun moveItemPreservesTheExactCurrentOccurrenceWhenIdsRepeat() {
+    @Test fun repeatAllDoesNotRepeatManualEntries() {
+        val queue = QueueController(
+            initialItems = listOf(1, 2), initialIndex = 0, initialRepeatMode = RepeatMode.ALL
+        )
+        queue.addToUpNext(9)
+        assertEquals(9L, queue.next())
+        assertEquals(2L, queue.next())
+        assertEquals(1L, queue.next())
+        assertEquals(listOf(1L, 2L), queue.ids())
+    }
+
+    @Test fun previousWalksHiddenHistory() {
+        val queue = QueueController(listOf(1, 2, 3), initialIndex = 0)
+        queue.next()
+        queue.next()
+        assertEquals(listOf(3L), queue.visibleIds())
+        assertEquals(2L, queue.previous())
+        assertEquals(listOf(2L, 3L), queue.visibleIds())
+    }
+
+    @Test fun clearUpNextKeepsContinuation() {
+        val queue = QueueController(listOf(1, 2, 3), initialIndex = 0)
+        queue.addToUpNext(listOf(8, 9))
+        queue.clearUpNext()
+        assertEquals(listOf(1L, 2L, 3L), queue.visibleIds())
+    }
+
+    @Test fun clearRemainingKeepsCurrentPlaying() {
+        val queue = QueueController(listOf(1, 2, 3), initialIndex = 1)
+        queue.addToUpNext(9)
+        queue.clearRemaining()
+        assertEquals(listOf(2L), queue.visibleIds())
+        assertNull(queue.next())
+    }
+
+    @Test fun moveStaysInsideItsSection() {
+        val queue = QueueController(listOf(1, 2, 3), initialIndex = 0)
+        queue.addToUpNext(listOf(8, 9))
+        val manual = queue.snapshot().visibleEntries[2]
+        assertTrue(queue.moveEntry(manual.id, -1))
+        assertEquals(listOf(1L, 9L, 8L, 2L, 3L), queue.visibleIds())
+        assertTrue(queue.moveEntry(manual.id, 1))
+        assertEquals(listOf(1L, 8L, 9L, 2L, 3L), queue.visibleIds())
+        assertFalse(queue.moveEntry(manual.id, 1))
+    }
+
+    @Test fun duplicateTracksHaveStableDistinctEntryIds() {
+        val queue = QueueController(listOf(10, 10), initialIndex = 0)
+        val entries = queue.snapshot().entries
+        assertNotEquals(entries[0].id, entries[1].id)
+        queue.removeEntry(entries[1].id)
+        assertEquals(listOf(10L), queue.ids())
+        assertEquals(entries[0].id, queue.currentEntryId())
+    }
+
+    @Test fun removingTheLastCurrentEntryDoesNotRestartHistory() {
+        val queue = QueueController(listOf(1, 2), initialIndex = 1)
+        queue.removeEntry(queue.currentEntryId()!!)
+        assertNull(queue.currentTrackId())
+    }
+
+    @Test fun sessionRoundTripPreservesOriginsAndCurrentOccurrence() {
         val queue = QueueController(listOf(10, 20, 10), initialIndex = 2)
+        queue.addToUpNext(99)
+        val restored = QueueController()
+        restored.restore(queue.snapshot().entries, queue.session(321))
+        assertEquals(queue.currentEntryId(), restored.currentEntryId())
+        assertEquals(queue.snapshot().entries, restored.snapshot().entries)
+        assertEquals(99L, restored.next())
+    }
 
-        queue.moveItem(0, 1)
+    @Test fun legacyShuffleOrderIsMaterializedDuringRestore() {
+        val entries = listOf(10L, 20L, 30L).mapIndexed { index, id ->
+            QueueEntry(index + 1L, id, QueueOrigin.CONTINUATION, index)
+        }
+        val queue = QueueController()
+        queue.restore(entries, PersistedPlaybackSession(
+            currentEntryId = null,
+            legacyCurrentIndex = 2,
+            positionMs = 0,
+            repeatMode = RepeatMode.OFF,
+            shuffleEnabled = true,
+            shuffleSeed = 7,
+            legacyPlayOrder = listOf(2, 0, 1)
+        ))
+        assertEquals(listOf(30L, 10L, 20L), queue.ids())
+        assertEquals(30L, queue.currentTrackId())
+    }
 
-        assertEquals(listOf(20L, 10L, 10L), queue.snapshot().items)
-        assertEquals(2, queue.currentIndex())
+    @Test fun immutableEntryListIsReusedUntilContentChanges() {
+        val queue = QueueController(listOf(10, 20), initialIndex = 0)
+        val entries = queue.snapshot().entries
+        queue.next()
+        assertSame(entries, queue.snapshot().entries)
+        queue.addToUpNext(30)
+        assertTrue(entries !== queue.snapshot().entries)
+    }
+
+    @Test fun retainKnownPreservesTheExactCurrentDuplicate() {
+        val queue = QueueController(listOf(99, 10, 20, 10), initialIndex = 3)
+        val currentEntry = queue.currentEntryId()
+        queue.retainKnown(setOf(10, 20))
+        assertEquals(currentEntry, queue.currentEntryId())
         assertEquals(10L, queue.currentTrackId())
     }
 
-    @Test
-    fun errorAdvanceEscapesRepeatOne() {
+    @Test fun currentPassIgnoresRepeatAllWrap() {
         val queue = QueueController(
-            initialItems = listOf(10, 20),
-            initialIndex = 0,
-            initialRepeatMode = RepeatMode.ONE
+            initialItems = listOf(10, 20), initialIndex = 1, initialRepeatMode = RepeatMode.ALL
         )
-
-        assertEquals(20L, queue.nextIgnoringRepeatOne())
-        assertEquals(RepeatMode.ONE, queue.snapshot().repeatMode)
-    }
-
-    @Test
-    fun explicitNextAndPreviousEscapeRepeatOneWithoutChangingTheMode() {
-        val queue = QueueController(
-            initialItems = listOf(10, 20, 30),
-            initialIndex = 1,
-            initialRepeatMode = RepeatMode.ONE
-        )
-
-        assertEquals(30L, queue.nextIgnoringRepeatOne())
-        assertEquals(20L, queue.previousIgnoringRepeatOne())
-        assertEquals(RepeatMode.ONE, queue.snapshot().repeatMode)
-    }
-
-    @Test
-    fun clearUpcomingUsesLogicalShuffleOrderAndRestoresIt() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(10, 20, 30, 40, 50),
-            session = PersistedPlaybackSession(
-                currentIndex = 2,
-                positionMs = 0,
-                repeatMode = RepeatMode.OFF,
-                shuffleEnabled = true,
-                shuffleSeed = 7,
-                playOrder = listOf(3, 0, 2, 4, 1)
-            )
-        )
-
-        queue.clearUpcoming()
-
-        assertEquals(30L, queue.currentTrackId())
-        assertNull(queue.next())
-
-        val restored = QueueController()
-        restored.restore(queue.snapshot().items, queue.session(positionMs = 321))
-        assertEquals(30L, restored.currentTrackId())
-        assertNull(restored.next())
-    }
-
-    @Test
-    fun invalidPersistedPlayOrderFallsBackToAValidOrder() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(10, 20, 30),
-            session = PersistedPlaybackSession(
-                currentIndex = 1,
-                positionMs = 0,
-                repeatMode = RepeatMode.OFF,
-                shuffleEnabled = false,
-                shuffleSeed = 1,
-                playOrder = listOf(0, 0, 99)
-            )
-        )
-
-        assertEquals(20L, queue.currentTrackId())
-        assertEquals(30L, queue.next())
-    }
-
-    @Test fun queueRepairRemovesUnknownRowsAndSelectsLogicalSuccessor() {
-        val queue = QueueController(listOf(10, 20, 30, 40), initialIndex = 1)
-
-        queue.retainKnown(setOf(10, 30, 40))
-
-        assertEquals(listOf(10L, 30L, 40L), queue.snapshot().items)
-        assertEquals(30L, queue.currentTrackId())
-    }
-
-    @Test fun queueRepairPreservesDuplicateKnownTracks() {
-        val queue = QueueController(listOf(10, 20, 10), initialIndex = 2)
-        queue.retainKnown(setOf(10))
-
-        assertEquals(listOf(10L, 10L), queue.snapshot().items)
-        assertEquals(1, queue.currentIndex())
-    }
-
-    @Test
-    fun currentPassNavigationIgnoresRepeatOneAndDoesNotWrapRepeatAll() {
-        val queue = QueueController(
-            initialItems = listOf(10, 20, 30),
-            initialIndex = 1,
-            initialRepeatMode = RepeatMode.ONE
-        )
-
-        assertEquals(30L, queue.peekNextInCurrentPass())
-        assertEquals(30L, queue.nextInCurrentPass())
-
-        while (queue.cycleRepeat() != RepeatMode.ALL) Unit
         assertNull(queue.peekNextInCurrentPass())
         assertNull(queue.nextInCurrentPass())
-        assertEquals(30L, queue.currentTrackId())
-    }
-
-    @Test
-    fun currentPassNavigationUsesLogicalShuffleOrder() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(10, 20, 30, 40),
-            session = PersistedPlaybackSession(
-                currentIndex = 2,
-                positionMs = 0,
-                repeatMode = RepeatMode.ALL,
-                shuffleEnabled = true,
-                shuffleSeed = 7,
-                playOrder = listOf(3, 2, 0, 1)
-            )
-        )
-
-        assertEquals(10L, queue.peekNextInCurrentPass())
-        assertEquals(10L, queue.nextInCurrentPass())
-        assertEquals(20L, queue.nextInCurrentPass())
-        assertNull(queue.nextInCurrentPass())
-    }
-
-    @Test
-    fun shufflePreviousWalksTheActualHistoryAndNextContinuesForward() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(1, 2, 3, 4, 5),
-            session = PersistedPlaybackSession(
-                currentIndex = 3, positionMs = 0, repeatMode = RepeatMode.OFF,
-                shuffleEnabled = true, shuffleSeed = 7, playOrder = listOf(3, 0, 2, 4, 1)
-            )
-        )
-        val played = mutableListOf(queue.currentTrackId()!!)
-        repeat(3) { played += queue.next()!! }
-        assertEquals(listOf(4L, 1L, 3L, 5L), played)
-
-        assertEquals(3L, queue.previous())
-        assertEquals(1L, queue.previous())
-        assertEquals(4L, queue.previous())
-
-        assertEquals(1L, queue.next())
-        assertEquals(3L, queue.next())
-        assertEquals(5L, queue.next())
-    }
-
-    @Test
-    fun shufflePlaysEveryTrackOnceBeforeExhaustion() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(1, 2, 3, 4, 5, 6, 7, 8),
-            session = PersistedPlaybackSession(
-                currentIndex = 5, positionMs = 0, repeatMode = RepeatMode.OFF,
-                shuffleEnabled = true, shuffleSeed = 7, playOrder = listOf(5, 2, 7, 0, 3, 6, 1, 4)
-            )
-        )
-        val seen = mutableSetOf(queue.currentTrackId()!!)
-        while (true) {
-            val next = queue.next() ?: break
-            assertTrue("track $next repeated before the shuffle cycle was exhausted", seen.add(next))
-        }
-        assertEquals(8, seen.size)
-    }
-
-    @Test
-    fun shuffleHistorySurvivesPersistenceRoundTrip() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(1, 2, 3, 4, 5),
-            session = PersistedPlaybackSession(
-                currentIndex = 3, positionMs = 0, repeatMode = RepeatMode.OFF,
-                shuffleEnabled = true, shuffleSeed = 7, playOrder = listOf(3, 0, 2, 4, 1)
-            )
-        )
-        val first = queue.currentTrackId()!!
-        val second = queue.next()!!
-        val third = queue.next()!!
-
-        val restored = QueueController()
-        restored.restore(queue.snapshot().items, queue.session(positionMs = 0))
-
-        assertEquals(third, restored.currentTrackId())
-        assertEquals(second, restored.previous())
-        assertEquals(first, restored.previous())
-    }
-
-    @Test
-    fun repeatAllShuffleStartsFreshPassWithoutImmediateRepeat() {
-        val queue = QueueController()
-        queue.restore(
-            newItems = listOf(1, 2, 3),
-            session = PersistedPlaybackSession(
-                currentIndex = 2, positionMs = 0, repeatMode = RepeatMode.ALL,
-                shuffleEnabled = true, shuffleSeed = 7, playOrder = listOf(2, 0, 1)
-            )
-        )
-        val pass = mutableListOf(queue.currentTrackId()!!)
-        repeat(2) { pass += queue.next()!! }
-        assertEquals(listOf(3L, 1L, 2L), pass)
-
-        val oldSession = queue.session(positionMs = 0)
-        val peeked = queue.peekNext()
-        val nextPassFirst = queue.next()
-        val newSession = queue.session(positionMs = 0)
-
-        assertEquals(peeked, nextPassFirst)
-        assertTrue(nextPassFirst != pass.last())
-        assertTrue(oldSession.shuffleSeed != newSession.shuffleSeed)
-        assertEquals(setOf(0, 1, 2), newSession.playOrder!!.toSet())
-    }
-
-    @Test
-    fun snapshotsReuseImmutableQueueItemsUntilQueueContentChanges() {
-        val queue = QueueController(listOf(10, 20), initialIndex = 0)
-        val first = queue.snapshot().items
-        assertSame(first, queue.snapshot().items)
-        queue.moveToQueueIndex(1)
-        assertSame(first, queue.snapshot().items)
-        queue.append(30)
-        org.junit.Assert.assertNotSame(first, queue.snapshot().items)
-    }
-
-    @Test
-    fun sessionsReusePlayOrderUntilItsStructureChanges() {
-        val queue = QueueController(listOf(10, 20, 30), initialIndex = 0)
-        assertNull(queue.session(positionMs = 0).playOrder)
-        queue.toggleShuffle()
-        val first = queue.session(positionMs = 0).playOrder
-
-        queue.next()
-        assertSame(first, queue.session(positionMs = 1_000).playOrder)
-
-        queue.addNext(40)
-        org.junit.Assert.assertNotSame(first, queue.session(positionMs = 1_000).playOrder)
-    }
-
-    @Test
-    fun retainingKnownTracksPreservesTheExactDuplicateOccurrence() {
-        val queue = QueueController(listOf(10, 20, 10), initialIndex = 2)
-
-        queue.retainKnown(setOf(10, 20))
-
-        assertEquals(2, queue.currentIndex())
-        assertEquals(10L, queue.currentTrackId())
-    }
-
-    @Test
-    fun retainingKnownTracksMapsTheExactDuplicateAfterEarlierRemoval() {
-        val queue = QueueController(listOf(99, 10, 20, 10), initialIndex = 3)
-
-        queue.retainKnown(setOf(10, 20))
-
-        assertEquals(listOf(10L, 20L, 10L), queue.snapshot().items)
-        assertEquals(2, queue.currentIndex())
-        assertEquals(10L, queue.currentTrackId())
-    }
-
-    @Test
-    fun peekNextDoesNotAdvanceAndRespectsRepeatModes() {
-        val queue = QueueController(listOf(10, 20), initialIndex = 0)
-        assertEquals(20L, queue.peekNext())
-        assertEquals(10L, queue.currentTrackId())
-
-        queue.moveToQueueIndex(1)
-        assertNull(queue.peekNext())
-    }
-
-    @Test
-    fun peekNextRepeatOneReturnsCurrentAndRepeatAllWraps() {
-        val repeatOne = QueueController(listOf(10, 20), initialIndex = 0, initialRepeatMode = RepeatMode.ONE)
-        assertEquals(10L, repeatOne.peekNext())
-
-        val repeatAll = QueueController(listOf(10, 20), initialIndex = 1, initialRepeatMode = RepeatMode.ALL)
-        assertEquals(10L, repeatAll.peekNext())
+        assertEquals(20L, queue.currentTrackId())
     }
 }

@@ -43,12 +43,13 @@ sealed interface AppEffect {
         val shuffled: Boolean = false,
         val fromStart: Boolean = false
     ) : AppEffect
-    data class PlayQueueIndex(val index: Int) : AppEffect
-    data class RemoveQueueIndex(val index: Int) : AppEffect
-    data class MoveQueueItem(val index: Int, val delta: Int) : AppEffect
-    data class PlayNext(val trackId: Long) : AppEffect
-    data class AddToQueue(val trackId: Long) : AppEffect
-    data object ClearUpcoming : AppEffect
+    data class PlayQueueEntry(val entryId: Long) : AppEffect
+    data class RemoveQueueEntry(val entryId: Long) : AppEffect
+    data class MoveQueueEntry(val entryId: Long, val delta: Int) : AppEffect
+    data class PlayNext(val trackIds: List<Long>) : AppEffect
+    data class AddToUpNext(val trackIds: List<Long>, val shuffled: Boolean = false) : AppEffect
+    data object ClearUpNext : AppEffect
+    data object ClearRemaining : AppEffect
     data object ClearQueue : AppEffect
     data object TogglePlayback : AppEffect
     data object NextTrack : AppEffect

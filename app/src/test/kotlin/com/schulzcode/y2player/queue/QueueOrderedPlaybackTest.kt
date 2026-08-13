@@ -77,7 +77,7 @@ class QueueOrderedPlaybackTest {
     fun `every item survives straightening exactly once`() {
         val queue = controller(shuffle = true, repeat = RepeatMode.ALL)
         queue.applyOrderedPlayback()
-        val items = queue.snapshot().items
+        val items = queue.snapshot().entries.map { it.trackId }
         assertEquals(listOf(10L, 11L, 12L, 13L, 14L), items)
         assertEquals(items.size, items.toSet().size)
     }

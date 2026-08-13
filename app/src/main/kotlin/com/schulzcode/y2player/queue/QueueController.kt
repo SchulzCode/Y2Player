@@ -1,9 +1,18 @@
 package com.schulzcode.y2player.queue
 
+import com.schulzcode.y2player.core.model.QueueEntry
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.RepeatMode
 import java.util.Collections
 import java.util.Random
 
+/**
+ * Owns the single, materialized playback order.
+ *
+ * Entries through [currentIndex] are playback history. Future UP_NEXT entries always sit before
+ * future CONTINUATION entries. Shuffle only rearranges unplayed continuation entries, which means
+ * the order exposed to the UI is exactly the order that playback will follow.
+ */
 class QueueController(
     initialItems: List<Long> = emptyList(),
     initialIndex: Int? = null,
@@ -11,313 +20,250 @@ class QueueController(
     initialShuffleEnabled: Boolean = false,
     initialShuffleSeed: Long = System.nanoTime()
 ) {
-    private val items = initialItems.take(MAX_QUEUE_ITEMS).toMutableList()
-    private var itemsRevision = 0L
-    private var cachedItemsRevision = -1L
-    private var cachedItems: List<Long> = emptyList()
-    private var currentIndex: Int? = initialIndex?.takeIf { it in items.indices }
-    private var repeatMode: RepeatMode = initialRepeatMode
-    private var shuffleEnabled: Boolean = initialShuffleEnabled
-    private var shuffleSeed: Long = initialShuffleSeed
-    private var playOrder: MutableList<Int> = buildPlayOrder()
-    private var cursor: Int? = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
-    private var playOrderRevision = 0L
-    private var cachedPlayOrderRevision = -1L
-    private var cachedPlayOrder: List<Int> = emptyList()
+    private val entries = initialItems.take(MAX_QUEUE_ITEMS).mapIndexedTo(ArrayList()) { index, trackId ->
+        QueueEntry(index + 1L, trackId, QueueOrigin.CONTINUATION, index)
+    }
+    private var currentIndex: Int? = initialIndex?.takeIf { it in entries.indices }
+    private var repeatMode = initialRepeatMode
+    private var shuffleEnabled = initialShuffleEnabled
+    private var shuffleSeed = initialShuffleSeed
+    private var nextEntryId = (entries.maxOfOrNull(QueueEntry::id) ?: 0L) + 1L
 
-    @Synchronized
-    // Clears shuffle. replaceShuffled is the deliberate opposite.
-    fun replace(newItems: List<Long>, startIndex: Int = 0) {
-        items.clear()
-        items.addAll(newItems.take(MAX_QUEUE_ITEMS))
-        touchItems()
-        currentIndex = startIndex.takeIf { it in items.indices }
-        shuffleEnabled = false
-        shuffleSeed = System.nanoTime()
-        rebuildOrderKeepingCurrent()
+    private var entriesRevision = 0L
+    private var cachedEntriesRevision = -1L
+    private var cachedEntries: List<QueueEntry> = emptyList()
+    private var visibleRevision = 0L
+    private var cachedVisibleRevision = -1L
+    private var cachedVisibleEntries: List<QueueEntry> = emptyList()
+
+    init {
+        if (shuffleEnabled) reorderFutureContinuation(shuffled = true)
     }
 
     @Synchronized
-    fun replaceShuffled(newItems: List<Long>, repeatAll: Boolean = true) {
-        items.clear()
-        items.addAll(newItems.take(MAX_QUEUE_ITEMS))
-        touchItems()
+    fun replace(trackIds: List<Long>, startIndex: Int = 0) {
+        entries.clear()
+        entries += continuationEntries(trackIds)
+        currentIndex = startIndex.takeIf { it in entries.indices }
+        shuffleEnabled = false
+        shuffleSeed = System.nanoTime()
+        touchEntries()
+    }
+
+    @Synchronized
+    fun replaceShuffled(trackIds: List<Long>, repeatAll: Boolean = true) {
+        entries.clear()
+        entries += continuationEntries(trackIds)
         if (repeatAll) repeatMode = RepeatMode.ALL
         shuffleEnabled = true
         shuffleSeed = System.nanoTime()
-        playOrder = buildPlayOrder()
-        touchPlayOrder()
-        cursor = if (playOrder.isEmpty()) null else 0
-        currentIndex = cursor?.let(playOrder::get)
+        shuffleEntries(entries, shuffleSeed)
+        currentIndex = entries.indices.firstOrNull()
+        touchEntries()
     }
 
     @Synchronized
-    fun restore(newItems: List<Long>, session: PersistedPlaybackSession?) {
-        items.clear()
-        items.addAll(newItems.take(MAX_QUEUE_ITEMS))
-        touchItems()
-        currentIndex = session?.currentIndex?.takeIf { it in items.indices }
+    fun restore(restoredEntries: List<QueueEntry>, session: PersistedPlaybackSession?) {
+        val normalized = normalizeEntries(restoredEntries.take(MAX_QUEUE_ITEMS))
+        val legacyOrder = session?.legacyPlayOrder?.takeIf { order ->
+            order.size == normalized.size && order.toSet() == normalized.indices.toSet()
+        }
+        val legacyCurrentEntryId = session?.legacyCurrentIndex
+            ?.takeIf { it in normalized.indices }
+            ?.let { normalized[it].id }
+
+        entries.clear()
+        if (legacyOrder == null) entries += normalized else legacyOrder.forEach { entries += normalized[it] }
+        currentIndex = when {
+            session?.currentEntryId != null -> entries.indexOfFirst { it.id == session.currentEntryId }.takeIf { it >= 0 }
+            legacyCurrentEntryId != null -> entries.indexOfFirst { it.id == legacyCurrentEntryId }.takeIf { it >= 0 }
+            else -> null
+        }
         repeatMode = session?.repeatMode ?: RepeatMode.OFF
         shuffleEnabled = session?.shuffleEnabled ?: false
         shuffleSeed = session?.shuffleSeed ?: System.nanoTime()
-        val restoredOrder = session?.playOrder?.takeIf(::isValidPlayOrder)
-        playOrder = restoredOrder?.toMutableList() ?: buildPlayOrder()
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+        nextEntryId = (entries.maxOfOrNull(QueueEntry::id) ?: 0L) + 1L
+        touchEntries()
     }
 
     @Synchronized
-    fun currentTrackId(): Long? = currentIndex?.let(items::getOrNull)
+    fun currentTrackId(): Long? = currentIndex?.let(entries::getOrNull)?.trackId
 
     @Synchronized
-    fun currentIndex(): Int? = currentIndex
+    fun currentEntryId(): Long? = currentIndex?.let(entries::getOrNull)?.id
 
     @Synchronized
-    fun moveToQueueIndex(index: Int): Long? {
-        if (index !in items.indices) return null
+    fun moveToEntry(entryId: Long): Long? {
+        val index = entries.indexOfFirst { it.id == entryId }
+        if (index < 0) return null
         currentIndex = index
-        cursor = playOrder.indexOf(index).takeIf { it >= 0 }
-        return items[index]
+        touchVisible()
+        return entries[index].trackId
     }
 
     @Synchronized
     fun peekNext(): Long? {
-        val currentCursor = cursor ?: return playOrder.firstOrNull()?.let(items::getOrNull)
         if (repeatMode == RepeatMode.ONE) return currentTrackId()
-        val nextCursor = currentCursor + 1
-        if (nextCursor < playOrder.size) return items.getOrNull(playOrder[nextCursor])
-        if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) {
-            val firstIndex = if (shuffleEnabled) nextShuffleOrder().first() else playOrder[0]
-            return items.getOrNull(firstIndex)
-        }
-        return null
+        val next = nextInList()
+        if (next != null) return next.trackId
+        if (repeatMode != RepeatMode.ALL) return null
+        return nextContinuationPass(mutate = false).firstOrNull()?.trackId
     }
 
     @Synchronized
-    fun peekNextInCurrentPass(): Long? {
-        val currentCursor = cursor ?: return playOrder.firstOrNull()?.let(items::getOrNull)
-        val nextCursor = currentCursor + 1
-        return if (nextCursor < playOrder.size) items.getOrNull(playOrder[nextCursor]) else null
-    }
+    fun peekNextInCurrentPass(): Long? = nextInList()?.trackId
 
     @Synchronized
     fun nextInCurrentPass(): Long? {
-        val currentCursor = cursor ?: return first()
-        val nextCursor = currentCursor + 1
-        if (nextCursor >= playOrder.size) return null
-        cursor = nextCursor
-        currentIndex = playOrder[nextCursor]
+        val index = currentIndex
+        if (index == null) return first()
+        if (index + 1 !in entries.indices) return null
+        currentIndex = index + 1
+        touchVisible()
         return currentTrackId()
     }
 
     @Synchronized
     fun next(): Long? {
-        val currentCursor = cursor ?: return first()
         if (repeatMode == RepeatMode.ONE) return currentTrackId()
-        val nextCursor = currentCursor + 1
-        if (nextCursor < playOrder.size) {
-            cursor = nextCursor
-            currentIndex = playOrder[nextCursor]
+        val index = currentIndex
+        if (index == null) return first()
+        if (index + 1 in entries.indices) {
+            currentIndex = index + 1
+            touchVisible()
             return currentTrackId()
         }
-        if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) {
-            if (shuffleEnabled) {
-                shuffleSeed = nextShuffleSeed()
-                playOrder = buildShuffleOrder(shuffleSeed, avoidFirstIndex = currentIndex)
-                touchPlayOrder()
-            }
-            cursor = 0
-            currentIndex = playOrder[0]
-            return currentTrackId()
-        }
-        return null
-    }
-
-    @Synchronized
-    fun previous(): Long? {
-        val currentCursor = cursor ?: return first()
-        if (repeatMode == RepeatMode.ONE) return currentTrackId()
-        val previousCursor = currentCursor - 1
-        if (previousCursor >= 0) {
-            cursor = previousCursor
-            currentIndex = playOrder[previousCursor]
-            return currentTrackId()
-        }
-        if (repeatMode == RepeatMode.ALL && playOrder.isNotEmpty()) {
-            cursor = playOrder.lastIndex
-            currentIndex = playOrder.last()
-            return currentTrackId()
-        }
+        if (repeatMode != RepeatMode.ALL) return null
+        val nextPass = nextContinuationPass(mutate = true)
+        if (nextPass.isEmpty()) return null
+        entries.clear()
+        entries += nextPass
+        currentIndex = 0
+        touchEntries()
         return currentTrackId()
     }
 
     @Synchronized
-    fun addNext(trackId: Long) {
-        if (items.size >= MAX_QUEUE_ITEMS) return
-        val insertAt = ((currentIndex ?: -1) + 1).coerceAtMost(items.size)
-        items.add(insertAt, trackId)
-        touchItems()
-
-        for (index in playOrder.indices) {
-            if (playOrder[index] >= insertAt) playOrder[index] = playOrder[index] + 1
+    fun previous(): Long? {
+        val index = currentIndex ?: return first()
+        if (repeatMode == RepeatMode.ONE) return currentTrackId()
+        if (index > 0) {
+            currentIndex = index - 1
+            touchVisible()
+            return currentTrackId()
         }
-        currentIndex = currentIndex?.let { if (it >= insertAt) it + 1 else it }
+        if (repeatMode == RepeatMode.ALL) {
+            val lastContinuation = entries.indexOfLast { it.origin == QueueOrigin.CONTINUATION }
+            if (lastContinuation >= 0) {
+                currentIndex = lastContinuation
+                touchVisible()
+            }
+        }
+        return currentTrackId()
+    }
 
-        val insertionCursor = ((cursor ?: -1) + 1).coerceIn(0, playOrder.size)
-        playOrder.add(insertionCursor, insertAt)
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+    /** Latest Play Next request wins; a multi-track block retains its internal order. */
+    @Synchronized
+    fun playNext(trackIds: List<Long>) {
+        val additions = upNextEntries(trackIds)
+        if (additions.isEmpty()) return
+        val insertionIndex = ((currentIndex ?: -1) + 1).coerceIn(0, entries.size)
+        entries.addAll(insertionIndex, additions)
+        touchEntries()
     }
 
     @Synchronized
-    fun append(trackId: Long) {
-        if (items.size >= MAX_QUEUE_ITEMS) return
-        val index = items.size
-        items += trackId
-        touchItems()
-        playOrder += index
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+    fun playNext(trackId: Long) = playNext(listOf(trackId))
+
+    /** Appends to the explicit FIFO Up Next section, before the underlying continuation. */
+    @Synchronized
+    fun addToUpNext(trackIds: List<Long>, shuffled: Boolean = false) {
+        val additions = upNextEntries(trackIds).toMutableList()
+        if (additions.isEmpty()) return
+        if (shuffled) Collections.shuffle(additions, Random(System.nanoTime()))
+        val firstContinuation = entries.indexOfFirstFrom((currentIndex ?: -1) + 1) {
+            it.origin == QueueOrigin.CONTINUATION
+        }
+        entries.addAll(if (firstContinuation < 0) entries.size else firstContinuation, additions)
+        touchEntries()
     }
 
     @Synchronized
-    fun removeAt(index: Int): Long? {
-        if (index !in items.indices) return null
+    fun addToUpNext(trackId: Long) = addToUpNext(listOf(trackId))
+
+    @Synchronized
+    fun removeEntry(entryId: Long): Long? {
+        val index = entries.indexOfFirst { it.id == entryId }
+        if (index < 0) return null
         val wasCurrent = index == currentIndex
-        val removedOrderPosition = playOrder.indexOf(index)
-        val removed = items.removeAt(index)
-        touchItems()
-
-        if (removedOrderPosition >= 0) playOrder.removeAt(removedOrderPosition)
-        for (position in playOrder.indices) {
-            if (playOrder[position] > index) playOrder[position] = playOrder[position] - 1
+        val removed = entries.removeAt(index)
+        currentIndex = when {
+            entries.isEmpty() -> null
+            wasCurrent -> index.takeIf { it in entries.indices }
+            currentIndex != null && index < currentIndex!! -> currentIndex!! - 1
+            else -> currentIndex
         }
-        touchPlayOrder()
-
-        if (items.isEmpty()) {
-            currentIndex = null
-            cursor = null
-            return removed
-        }
-
-        currentIndex = if (wasCurrent) {
-            val nextOrderPosition = removedOrderPosition.coerceIn(0, playOrder.lastIndex)
-            playOrder[nextOrderPosition]
-        } else {
-            currentIndex?.let { if (index < it) it - 1 else it }
-        }
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
-        return removed
+        touchEntries()
+        return removed.trackId
     }
 
+    /** Reorders an upcoming item inside its own section without breaking the two-layer model. */
     @Synchronized
-    fun moveItem(index: Int, delta: Int): Boolean {
+    fun moveEntry(entryId: Long, delta: Int): Boolean {
+        val index = entries.indexOfFirst { it.id == entryId }
         val target = index + delta
-        if (index !in items.indices || target !in items.indices || index == target) return false
-        val previousCurrent = currentIndex
-        val value = items.removeAt(index)
-        items.add(target, value)
-        touchItems()
-        currentIndex = when {
-            previousCurrent == null -> null
-            previousCurrent == index -> target
-            index < previousCurrent && target >= previousCurrent -> previousCurrent - 1
-            index > previousCurrent && target <= previousCurrent -> previousCurrent + 1
-            else -> previousCurrent
-        }
-        rebuildOrderKeepingCurrent()
+        val current = currentIndex ?: -1
+        if (index <= current || target <= current || index !in entries.indices || target !in entries.indices) return false
+        if (entries[index].origin != entries[target].origin) return false
+        val entry = entries.removeAt(index)
+        entries.add(target, entry)
+        touchEntries()
         return true
     }
 
     @Synchronized
-    fun nextIgnoringRepeatOne(): Long? {
-        if (repeatMode != RepeatMode.ONE) return next()
-        val original = repeatMode
-        repeatMode = RepeatMode.OFF
-        return try { next() } finally { repeatMode = original }
+    fun nextIgnoringRepeatOne(): Long? = ignoringRepeatOne(::next)
+
+    @Synchronized
+    fun previousIgnoringRepeatOne(): Long? = ignoringRepeatOne(::previous)
+
+    @Synchronized
+    fun clearUpNext() {
+        val start = ((currentIndex ?: -1) + 1).coerceAtLeast(0)
+        if (entries.removeAllFrom(start) { it.origin == QueueOrigin.UP_NEXT }) touchEntries()
     }
 
     @Synchronized
-    fun previousIgnoringRepeatOne(): Long? {
-        if (repeatMode != RepeatMode.ONE) return previous()
-        val original = repeatMode
-        repeatMode = RepeatMode.OFF
-        return try { previous() } finally { repeatMode = original }
-    }
-
-    @Synchronized
-    fun clearUpcoming() {
-        val oldCurrent = currentIndex
-        val currentCursor = cursor
-        if (oldCurrent == null || currentCursor == null) {
-            clear()
-            return
+    fun clearRemaining() {
+        val keep = currentIndex?.plus(1) ?: 0
+        if (keep < entries.size) {
+            entries.subList(keep, entries.size).clear()
+            touchEntries()
         }
-
-        val keptOrder = playOrder.take(currentCursor + 1)
-        val keptIndices = keptOrder.toHashSet()
-        val oldToNew = HashMap<Int, Int>(keptIndices.size)
-        val keptItems = ArrayList<Long>(keptIndices.size)
-        items.forEachIndexed { oldIndex, trackId ->
-            if (oldIndex in keptIndices) {
-                oldToNew[oldIndex] = keptItems.size
-                keptItems += trackId
-            }
-        }
-
-        items.clear()
-        items.addAll(keptItems)
-        touchItems()
-        currentIndex = oldToNew[oldCurrent]
-        playOrder = keptOrder.mapNotNull(oldToNew::get).toMutableList()
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
     }
 
     @Synchronized
     fun clear() {
-        items.clear()
-        touchItems()
+        if (entries.isEmpty() && currentIndex == null) return
+        entries.clear()
         currentIndex = null
-        playOrder.clear()
-        touchPlayOrder()
-        cursor = null
+        touchEntries()
     }
 
     @Synchronized
-    fun retainKnown(trackIds: Set<Long>) {
-        if (items.all { it in trackIds }) return
-
-        val oldCurrentIndex = currentIndex
-        val oldCursor = cursor
-        val oldPlayOrder = playOrder.toList()
-        val oldToNew = HashMap<Int, Int>(items.size)
-        val keptItems = ArrayList<Long>(items.size)
-        items.forEachIndexed { oldIndex, trackId ->
-            if (trackId in trackIds) {
-                oldToNew[oldIndex] = keptItems.size
-                keptItems += trackId
-            }
-        }
-
-        items.clear()
-        items.addAll(keptItems)
-        touchItems()
-        currentIndex = oldCurrentIndex?.let(oldToNew::get) ?: run {
-            val logicalCandidates = if (oldCursor == null) oldPlayOrder else
-                oldPlayOrder.drop(oldCursor + 1) + oldPlayOrder.take(oldCursor)
-            logicalCandidates.firstNotNullOfOrNull(oldToNew::get)
-        }
-        playOrder = playOrder.mapNotNull(oldToNew::get).toMutableList()
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+    fun retainKnown(knownTrackIds: Set<Long>) {
+        val currentId = currentEntryId()
+        if (!entries.removeAll { it.trackId !in knownTrackIds }) return
+        currentIndex = currentId?.let { id -> entries.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+            ?: currentIndex?.coerceAtMost(entries.lastIndex)?.takeIf { entries.isNotEmpty() }
+        touchEntries()
     }
 
     @Synchronized
     fun toggleShuffle(): Boolean {
         shuffleEnabled = !shuffleEnabled
         if (shuffleEnabled) shuffleSeed = System.nanoTime()
-        rebuildOrderKeepingProgress()
+        reorderFutureContinuation(shuffleEnabled)
         return shuffleEnabled
     }
 
@@ -327,21 +273,22 @@ class QueueController(
         return repeatMode
     }
 
+    /** Used by audiobook playback: chapters remain ordered and do not loop. */
     @Synchronized
     fun applyOrderedPlayback(): Boolean {
-        val shuffleChanged = shuffleEnabled
-        val repeatChanged = repeatMode != RepeatMode.OFF
-        if (!shuffleChanged && !repeatChanged) return false
+        val changed = shuffleEnabled || repeatMode != RepeatMode.OFF
+        if (!changed) return false
         shuffleEnabled = false
         repeatMode = RepeatMode.OFF
-        if (shuffleChanged) rebuildOrderKeepingCurrent()
+        reorderFutureContinuation(shuffled = false)
         return true
     }
 
     @Synchronized
     fun snapshot(): QueueSnapshot = QueueSnapshot(
-        items = immutableItems(),
-        currentIndex = currentIndex,
+        entries = immutableEntries(),
+        visibleEntries = immutableVisibleEntries(),
+        currentEntryId = currentEntryId(),
         repeatMode = repeatMode,
         shuffleEnabled = shuffleEnabled,
         shuffleSeed = shuffleSeed
@@ -349,99 +296,138 @@ class QueueController(
 
     @Synchronized
     fun session(positionMs: Long): PersistedPlaybackSession = PersistedPlaybackSession(
-        currentIndex = currentIndex,
+        currentEntryId = currentEntryId(),
         positionMs = positionMs,
         repeatMode = repeatMode,
         shuffleEnabled = shuffleEnabled,
-        shuffleSeed = shuffleSeed,
-        playOrder = if (shuffleEnabled) immutablePlayOrder() else null
+        shuffleSeed = shuffleSeed
     )
 
-    private fun touchItems() {
-        itemsRevision += 1
-    }
-
-    private fun touchPlayOrder() {
-        playOrderRevision += 1
-    }
-
-    private fun immutableItems(): List<Long> {
-        if (cachedItemsRevision != itemsRevision) {
-            cachedItems = items.toList()
-            cachedItemsRevision = itemsRevision
-        }
-        return cachedItems
-    }
-
-    private fun immutablePlayOrder(): List<Int> {
-        if (cachedPlayOrderRevision != playOrderRevision) {
-            cachedPlayOrder = playOrder.toList()
-            cachedPlayOrderRevision = playOrderRevision
-        }
-        return cachedPlayOrder
-    }
-
     private fun first(): Long? {
-        if (playOrder.isEmpty()) return null
-        cursor = 0
-        currentIndex = playOrder[0]
+        if (entries.isEmpty()) return null
+        currentIndex = 0
+        touchVisible()
         return currentTrackId()
     }
 
-    private fun isValidPlayOrder(order: List<Int>): Boolean =
-        order.size == items.size && order.toSet().size == items.size && order.all { it in items.indices }
-
-    private fun rebuildOrderKeepingCurrent() {
-        playOrder = buildPlayOrder()
-        touchPlayOrder()
-        cursor = currentIndex?.let(playOrder::indexOf)?.takeIf { it >= 0 }
+    private fun nextInList(): QueueEntry? {
+        val nextIndex = (currentIndex ?: -1) + 1
+        return entries.getOrNull(nextIndex)
     }
 
-    private fun rebuildOrderKeepingProgress() {
-        val completedThrough = cursor
-        if (completedThrough == null || currentIndex == null) {
-            rebuildOrderKeepingCurrent()
-            return
+    private fun nextContinuationPass(mutate: Boolean): List<QueueEntry> {
+        val continuation = entries.filter { it.origin == QueueOrigin.CONTINUATION }.toMutableList()
+        if (continuation.isEmpty()) return emptyList()
+        if (shuffleEnabled) {
+            val seed = nextShuffleSeed()
+            shuffleEntries(continuation, seed)
+            avoidImmediateRepeat(continuation)
+            if (mutate) shuffleSeed = seed
+        } else {
+            continuation.sortBy { it.sourceOrder ?: Int.MAX_VALUE }
         }
-
-        val rebuilt = ArrayList<Int>(items.size)
-        val traversed = BooleanArray(items.size)
-        for (position in 0..completedThrough.coerceAtMost(playOrder.lastIndex)) {
-            val index = playOrder[position]
-            rebuilt += index
-            traversed[index] = true
-        }
-        val remaining = ArrayList<Int>(items.size - rebuilt.size)
-        for (index in items.indices) if (!traversed[index]) remaining += index
-        if (shuffleEnabled && remaining.size > 1) Collections.shuffle(remaining, Random(shuffleSeed))
-        rebuilt.addAll(remaining)
-
-        playOrder = rebuilt
-        touchPlayOrder()
-        cursor = completedThrough.coerceAtMost(playOrder.lastIndex)
-        currentIndex = cursor?.let(playOrder::get)
+        return continuation
     }
 
-    private fun buildPlayOrder(): MutableList<Int> = buildShuffleOrder(shuffleSeed)
-
-    private fun buildShuffleOrder(seed: Long, avoidFirstIndex: Int? = null): MutableList<Int> {
-        val order = items.indices.toMutableList()
-        if (shuffleEnabled && order.size > 1) {
-            Collections.shuffle(order, Random(seed))
-            if (order.first() == avoidFirstIndex) Collections.swap(order, 0, 1)
-        }
-        return order
+    private fun reorderFutureContinuation(shuffled: Boolean) {
+        val start = ((currentIndex ?: -1) + 1).coerceAtLeast(0)
+        if (start >= entries.size) return
+        val future = entries.subList(start, entries.size).toList()
+        val manual = future.filter { it.origin == QueueOrigin.UP_NEXT }
+        val continuation = future.filter { it.origin == QueueOrigin.CONTINUATION }.toMutableList()
+        if (shuffled) shuffleEntries(continuation, shuffleSeed)
+        else continuation.sortBy { it.sourceOrder ?: Int.MAX_VALUE }
+        entries.subList(start, entries.size).clear()
+        entries += manual
+        entries += continuation
+        touchEntries()
     }
 
-    private fun nextShuffleOrder(): MutableList<Int> =
-        buildShuffleOrder(nextShuffleSeed(), avoidFirstIndex = currentIndex)
+    private fun continuationEntries(trackIds: List<Long>): List<QueueEntry> {
+        val available = (MAX_QUEUE_ITEMS - entries.size).coerceAtLeast(0)
+        return trackIds.take(available).mapIndexed { sourceOrder, id ->
+            QueueEntry(nextEntryId++, id, QueueOrigin.CONTINUATION, sourceOrder)
+        }
+    }
 
-    private fun nextShuffleSeed(): Long =
-        shuffleSeed * NEXT_SEED_MULTIPLIER + NEXT_SEED_INCREMENT
+    private fun upNextEntries(trackIds: List<Long>): List<QueueEntry> {
+        val available = (MAX_QUEUE_ITEMS - entries.size).coerceAtLeast(0)
+        return trackIds.take(available).map { QueueEntry(nextEntryId++, it, QueueOrigin.UP_NEXT, null) }
+    }
+
+    private fun normalizeEntries(values: List<QueueEntry>): List<QueueEntry> {
+        val used = HashSet<Long>(values.size)
+        var generated = (values.maxOfOrNull(QueueEntry::id) ?: 0L) + 1L
+        var continuationOrder = 0
+        return values.map { entry ->
+            val id = entry.id.takeIf { it > 0 && used.add(it) } ?: generated++.also(used::add)
+            val sourceOrder = if (entry.origin == QueueOrigin.CONTINUATION) {
+                (entry.sourceOrder ?: continuationOrder).also { continuationOrder = maxOf(continuationOrder, it + 1) }
+            } else null
+            QueueEntry(id, entry.trackId, entry.origin, sourceOrder)
+        }
+    }
+
+    private fun ignoringRepeatOne(operation: () -> Long?): Long? {
+        if (repeatMode != RepeatMode.ONE) return operation()
+        repeatMode = RepeatMode.OFF
+        return try { operation() } finally { repeatMode = RepeatMode.ONE }
+    }
+
+    private fun shuffleEntries(values: MutableList<QueueEntry>, seed: Long) {
+        Collections.shuffle(values, Random(seed))
+    }
+
+    private fun avoidImmediateRepeat(values: MutableList<QueueEntry>) {
+        val currentId = currentEntryId() ?: return
+        if (values.size > 1 && values.first().id == currentId) Collections.swap(values, 0, 1)
+    }
+
+    private fun nextShuffleSeed(): Long = shuffleSeed xor -7046029254386353131L
+
+    private fun touchEntries() {
+        entriesRevision += 1
+        touchVisible()
+    }
+
+    private fun touchVisible() {
+        visibleRevision += 1
+    }
+
+    private fun immutableEntries(): List<QueueEntry> {
+        if (cachedEntriesRevision != entriesRevision) {
+            cachedEntries = Collections.unmodifiableList(ArrayList(entries))
+            cachedEntriesRevision = entriesRevision
+        }
+        return cachedEntries
+    }
+
+    private fun immutableVisibleEntries(): List<QueueEntry> {
+        if (cachedVisibleRevision != visibleRevision) {
+            val start = currentIndex?.coerceIn(0, entries.size) ?: 0
+            cachedVisibleEntries = Collections.unmodifiableList(ArrayList(entries.subList(start, entries.size)))
+            cachedVisibleRevision = visibleRevision
+        }
+        return cachedVisibleEntries
+    }
+
+    private inline fun <T> List<T>.indexOfFirstFrom(start: Int, predicate: (T) -> Boolean): Int {
+        for (index in start.coerceAtLeast(0)..lastIndex) if (predicate(this[index])) return index
+        return -1
+    }
+
+    private inline fun <T> MutableList<T>.removeAllFrom(start: Int, predicate: (T) -> Boolean): Boolean {
+        var changed = false
+        for (index in lastIndex downTo start.coerceAtLeast(0)) {
+            if (predicate(this[index])) {
+                removeAt(index)
+                changed = true
+            }
+        }
+        return changed
+    }
 
     companion object {
         const val MAX_QUEUE_ITEMS = 50_000
-        private const val NEXT_SEED_MULTIPLIER = 6_364_136_223_846_793_005L
-        private const val NEXT_SEED_INCREMENT = 1_442_695_040_888_963_407L
     }
 }

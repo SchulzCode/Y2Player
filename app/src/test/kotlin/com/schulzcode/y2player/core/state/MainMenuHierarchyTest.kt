@@ -37,8 +37,8 @@ class MainMenuHierarchyTest {
     private val library = LibraryState(tracks = listOf(track))
     private val playing = PlaybackSnapshot(
         currentTrackId = 1L,
-        queue = listOf(1L),
-        currentQueueIndex = 0,
+        queue = testQueue(1L),
+        currentQueueEntryId = 1L,
         status = PlaybackStatus.PLAYING
     )
 

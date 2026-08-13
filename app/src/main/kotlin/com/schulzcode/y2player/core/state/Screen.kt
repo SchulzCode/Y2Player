@@ -25,7 +25,13 @@ sealed interface Screen {
     data class TrackBrowse(val trackId: Long) : Screen
     data class TrackDetails(val trackId: Long) : Screen
     data class AddToPlaylist(val trackId: Long) : Screen
-    data class QueueOptions(val queueIndex: Int) : Screen
+    data class CollectionOptions(val title: String, val trackIds: List<Long>) : Screen
+    data class MultiSelect(
+        val title: String,
+        val trackIds: List<Long>,
+        val selectedIndices: Set<Int> = emptySet()
+    ) : Screen
+    data class QueueOptions(val entryId: Long) : Screen
     data object QueueManagement : Screen
     data object NowPlaying : Screen
     data object NowPlayingOptions : Screen
@@ -85,6 +91,8 @@ val Screen.code: String get() = when (this) {
     is Screen.TrackBrowse -> "track_browse"
     is Screen.TrackDetails -> "track_details"
     is Screen.AddToPlaylist -> "add_to_playlist"
+    is Screen.CollectionOptions -> "collection_options"
+    is Screen.MultiSelect -> "multi_select"
     is Screen.QueueOptions -> "queue_options"
     Screen.QueueManagement -> "queue_management"
     Screen.NowPlaying -> "now_playing"

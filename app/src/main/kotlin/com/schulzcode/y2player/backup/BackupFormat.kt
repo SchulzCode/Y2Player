@@ -31,20 +31,21 @@ object BackupFormat {
     internal fun encode(document: BackupDocument, extraSections: Map<String, ByteArray>): ByteArray {
         validateDocument(document)
         val sections = linkedMapOf(
-            "settings" to section { writeStringMap(this, document.settings) },
-            "user-data" to section { writeUserData(this, document.userData) },
-            "listening-history" to section { writeStringList(this, document.listeningHistory) }
+            "settings" to (1 to section { writeStringMap(this, document.settings) }),
+            "user-data" to (2 to section { writeUserData(this, document.userData) }),
+            "listening-history" to (1 to section { writeStringList(this, document.listeningHistory) })
         )
         extraSections.forEach { (name, bytes) ->
             require(name.matches(Regex("[a-z0-9-]{1,64}"))) { "Invalid section name" }
             require(bytes.size <= MAX_SECTION_BYTES) { "Section is too large" }
-            sections[name] = bytes
+            sections[name] = 1 to bytes
         }
         val payload = section {
             writeInt(sections.size)
-            sections.forEach { (name, bytes) ->
+            sections.forEach { (name, value) ->
+                val (version, bytes) = value
                 writeString(this, name)
-                writeInt(1)
+                writeInt(version)
                 writeInt(bytes.size)
                 write(bytes)
             }
@@ -98,23 +99,26 @@ object BackupFormat {
                 val length = checkedLength(payloadInput.readInt(), MAX_SECTION_BYTES, "section")
                 val sectionBytes = ByteArray(length)
                 payloadInput.readFully(sectionBytes)
-                if (version != 1) return@repeat
                 val sectionInput = DataInputStream(ByteArrayInputStream(sectionBytes))
-                when (name) {
-                    "settings" -> {
+                val handled = when {
+                    name == "settings" && version == 1 -> {
                         if (settings != null) throw BackupFormatException("Duplicate settings section")
                         settings = readStringMap(sectionInput)
+                        true
                     }
-                    "user-data" -> {
+                    name == "user-data" && version in 1..2 -> {
                         if (userData != null) throw BackupFormatException("Duplicate user-data section")
-                        userData = readUserData(sectionInput)
+                        userData = readUserData(sectionInput, version)
+                        true
                     }
-                    "listening-history" -> {
+                    name == "listening-history" && version == 1 -> {
                         if (history != null) throw BackupFormatException("Duplicate listening-history section")
                         history = readStringList(sectionInput, MAX_HISTORY_RECORDS, MAX_HISTORY_LINE_BYTES)
+                        true
                     }
+                    else -> false
                 }
-                if (name in KNOWN_SECTIONS && sectionInput.available() != 0) {
+                if (handled && sectionInput.available() != 0) {
                     throw BackupFormatException("Invalid $name section")
                 }
             }
@@ -224,15 +228,17 @@ object BackupFormat {
             writeString(out, queue.repeatMode)
             out.writeBoolean(queue.shuffleEnabled)
             out.writeLong(queue.shuffleSeed)
-            out.writeBoolean(queue.playOrder != null)
-            queue.playOrder?.let { order ->
-                out.writeInt(order.size)
-                order.forEach(out::writeInt)
+            queue.tracks.indices.forEach { index ->
+                out.writeByte(when (queue.origins?.getOrNull(index) ?: com.schulzcode.y2player.core.model.QueueOrigin.CONTINUATION) {
+                    com.schulzcode.y2player.core.model.QueueOrigin.CONTINUATION -> 0
+                    com.schulzcode.y2player.core.model.QueueOrigin.UP_NEXT -> 1
+                })
+                out.writeInt(queue.sourceOrders?.getOrNull(index) ?: -1)
             }
         }
     }
 
-    private fun readUserData(input: DataInputStream): PortableUserData {
+    private fun readUserData(input: DataInputStream, version: Int): PortableUserData {
         val favorites = readIdentityList(input, PortableUserDataResolver.MAX_FAVORITES)
         val playlists = buildList {
             repeat(checkedCount(input.readInt(), PortableUserDataResolver.MAX_PLAYLISTS, "playlists")) {
@@ -259,12 +265,26 @@ object BackupFormat {
             val repeat = readString(input, 32)
             val shuffle = input.readBoolean()
             val seed = input.readLong()
-            val order = if (!input.readBoolean()) null else buildList<Int> {
-                repeat(checkedCount(input.readInt(), PortableUserDataResolver.MAX_QUEUE_TRACKS, "shuffle order")) {
-                    add(input.readInt())
+            if (version == 1) {
+                val order = if (!input.readBoolean()) null else buildList<Int> {
+                    repeat(checkedCount(input.readInt(), PortableUserDataResolver.MAX_QUEUE_TRACKS, "shuffle order")) {
+                        add(input.readInt())
+                    }
                 }
+                PortableQueue(tracks, current, position, repeat, shuffle, seed, legacyPlayOrder = order)
+            } else {
+                val origins = ArrayList<com.schulzcode.y2player.core.model.QueueOrigin>(tracks.size)
+                val sourceOrders = ArrayList<Int?>(tracks.size)
+                repeat(tracks.size) {
+                    origins += when (input.readUnsignedByte()) {
+                        0 -> com.schulzcode.y2player.core.model.QueueOrigin.CONTINUATION
+                        1 -> com.schulzcode.y2player.core.model.QueueOrigin.UP_NEXT
+                        else -> throw BackupFormatException("Invalid queue origin")
+                    }
+                    sourceOrders += input.readInt().takeIf { it >= 0 }
+                }
+                PortableQueue(tracks, current, position, repeat, shuffle, seed, origins, sourceOrders)
             }
-            PortableQueue(tracks, current, position, repeat, shuffle, seed, order)
         }
         return PortableUserData(favorites, playlists, progress, recent, queue)
     }
@@ -345,7 +365,6 @@ object BackupFormat {
     }
 
     private val MAGIC = "Y2PLAYER-BACKUP\u0000".toByteArray(Charsets.US_ASCII)
-    private val KNOWN_SECTIONS = setOf("settings", "user-data", "listening-history")
     private const val SHA256_BYTES = 32
     private const val MAX_SECTIONS = 64
     private const val MAX_SECTION_BYTES = 24 * 1024 * 1024

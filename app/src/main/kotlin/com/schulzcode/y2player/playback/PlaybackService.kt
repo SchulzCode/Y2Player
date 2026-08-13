@@ -100,9 +100,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             prepareCurrent(autoPlay = true, positionMs = 0)
         }
 
-        fun playQueueIndex(index: Int) = post {
+        fun playQueueEntry(entryId: Long) = post {
             releaseCurrentTrack(PlaybackExitReason.MANUAL_SELECT)
-            if (queue.moveToQueueIndex(index) != null) {
+            if (queue.moveToEntry(entryId) != null) {
                 beginExplicitPlaybackRequest()
                 currentRetryCount = 0
                 consecutiveErrors = 0
@@ -115,26 +115,31 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         fun previous() = post { previousInternal() }
         fun seekBy(deltaMs: Long) = post { seekByInternal(deltaMs) }
         fun cancelVolumeKeyRepeat() = post { cancelHardwareVolumeRepeat("foreground_input") }
-        fun removeQueueIndex(index: Int) = post { removeQueueIndexInternal(index) }
+        fun removeQueueEntry(entryId: Long) = post { removeQueueEntryInternal(entryId) }
 
-        fun moveQueueItem(index: Int, delta: Int) = post {
-            if (queue.moveItem(index, delta)) afterQueueMutation()
+        fun moveQueueEntry(entryId: Long, delta: Int) = post {
+            if (queue.moveEntry(entryId, delta)) afterQueueMutation()
         }
 
-        fun clearUpcoming() = post {
-            queue.clearUpcoming()
+        fun clearUpNext() = post {
+            queue.clearUpNext()
+            afterQueueMutation()
+        }
+
+        fun clearRemaining() = post {
+            queue.clearRemaining()
             afterQueueMutation()
         }
 
         fun clearQueue() = post(::clearQueueInternal)
 
-        fun playNext(trackId: Long) = post {
-            queue.addNext(trackId)
+        fun playNext(trackIds: List<Long>) = post {
+            queue.playNext(trackIds)
             afterQueueMutation()
         }
 
-        fun addToQueue(trackId: Long) = post {
-            queue.append(trackId)
+        fun addToUpNext(trackIds: List<Long>, shuffled: Boolean = false) = post {
+            queue.addToUpNext(trackIds, shuffled)
             afterQueueMutation()
         }
 
@@ -279,7 +284,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private var preloadedRequestId: Long? = null
     private var preloadedTrack: Track? = null
     private var lastNotificationKey: NotificationKey? = null
-    @Volatile private var lastPersistedQueueItems: List<Long>? = null
+    @Volatile private var lastPersistedQueueEntries: List<com.schulzcode.y2player.core.model.QueueEntry>? = null
     private var queuePersistScheduled = false
     private val queuePersistRunnable = Runnable {
         queuePersistScheduled = false
@@ -465,7 +470,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 if (::queue.isInitialized) runCatching {
                     playbackHandler.removeCallbacks(queuePersistRunnable)
                     queuePersistScheduled = false
-                    if (queue.snapshot().items === lastPersistedQueueItems) persistSession() else flushQueuePersist()
+                    if (queue.snapshot().entries === lastPersistedQueueEntries) persistSession() else flushQueuePersist()
                 }
                 if (::audioFocus.isInitialized) audioFocus.abandon()
                 if (::remoteControl.isInitialized) remoteControl.release()
@@ -658,8 +663,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 "Playback",
                 "queue transition mismatch expected=${promotedTrack.id} actual=$advanced"
             )
-            queue.snapshot().items.indexOf(promotedTrack.id).takeIf { it >= 0 }
-                ?.let(queue::moveToQueueIndex)
+            queue.snapshot().entries.firstOrNull { it.trackId == promotedTrack.id }
+                ?.let { queue.moveToEntry(it.id) }
         }
         currentTrack = promotedTrack
         activeRequestId = promotedRequestId
@@ -776,7 +781,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
         releaseCurrentTrack(PlaybackExitReason.ERROR)
         consecutiveErrors += 1
-        if (consecutiveErrors < queue.snapshot().items.size.coerceAtLeast(1) && moveToNextAvailable(ignoreRepeatOne = true)) {
+        if (consecutiveErrors < queue.snapshot().entries.size.coerceAtLeast(1) && moveToNextAvailable(ignoreRepeatOne = true)) {
             currentRetryCount = 0
             prepareCurrent(autoPlay = shouldAutoPlay && safetyPolicy.canAutomaticallyStart(), positionMs = 0)
         } else {
@@ -1007,7 +1012,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             }
             PlaybackStatus.IDLE, PlaybackStatus.ERROR -> {
                 beginExplicitPlaybackRequest()
-                if (queue.currentTrackId() == null && queue.snapshot().items.isNotEmpty()) queue.moveToQueueIndex(0)
+                if (queue.currentTrackId() == null) queue.snapshot().visibleEntries.firstOrNull()?.let { queue.moveToEntry(it.id) }
                 prepareCurrent(autoPlay = true, positionMs = snapshot.positionMs)
             }
         }
@@ -1200,8 +1205,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         ignoreRepeatOne: Boolean = false,
         currentPassOnly: Boolean = false
     ): Boolean {
-        val size = queue.snapshot().items.size
-        val startIndex = queue.snapshot().currentIndex
+        val size = queue.snapshot().entries.size
+        val startEntryId = queue.currentEntryId()
         repeat(size.coerceAtLeast(1)) {
             val next = when {
                 currentPassOnly -> queue.nextInCurrentPass()
@@ -1209,7 +1214,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 else -> queue.next()
             }
             if (next == null) {
-                startIndex?.let(queue::moveToQueueIndex)
+                startEntryId?.let(queue::moveToEntry)
                 return false
             }
             val track = libraryRepository.findTrack(next)
@@ -1219,16 +1224,16 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
                 "skipping track=$next reason=${if (track?.decodeFailed == true) "undecodable" else "unavailable"}"
             )
         }
-        startIndex?.let(queue::moveToQueueIndex)
+        startEntryId?.let(queue::moveToEntry)
         return false
     }
 
-    private fun removeQueueIndexInternal(index: Int) {
-        val oldId = queue.currentTrackId()
-        queue.removeAt(index)
-        val newId = queue.currentTrackId()
-        if (oldId != newId) {
-            if (newId == null) clearQueueInternal()
+    private fun removeQueueEntryInternal(entryId: Long) {
+        val oldEntryId = queue.currentEntryId()
+        queue.removeEntry(entryId)
+        val newEntryId = queue.currentEntryId()
+        if (oldEntryId != newEntryId) {
+            if (newEntryId == null) clearQueueInternal()
             else prepareCurrent(snapshot.status == PlaybackStatus.PLAYING, 0)
         } else {
             afterQueueMutation()
@@ -1700,12 +1705,12 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         }.getOrNull()
         queue.restore(persistedQueue, persistedSession)
         syncTransition()
-        val validTrackIds = runCatching { database.validTrackIds(persistedQueue) }.onFailure {
+        val validTrackIds = runCatching { database.validTrackIds(persistedQueue.map { it.trackId }) }.onFailure {
             logger.error("Playback", "queue validation failed; removing unsafe references", it)
         }.getOrDefault(emptySet())
         queue.retainKnown(validTrackIds)
-        if (queue.currentTrackId() == null && queue.snapshot().items.isNotEmpty()) queue.moveToQueueIndex(0)
-        lastPersistedQueueItems = null
+        if (queue.currentTrackId() == null) queue.snapshot().visibleEntries.firstOrNull()?.let { queue.moveToEntry(it.id) }
+        lastPersistedQueueEntries = null
         val trackId = queue.currentTrackId()
         currentTrack = trackId?.let(libraryRepository::findTrack)
         if (currentTrack != null) safetyPolicy.onRestoredPausedSession(routeMonitor.snapshot())
@@ -2114,8 +2119,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             nextTrackId = preloadedTrack?.id,
             positionMs = positionMs.coerceAtLeast(0),
             durationMs = durationMs.coerceAtLeast(0),
-            queue = queueState.items,
-            currentQueueIndex = queueState.currentIndex,
+            queue = queueState.visibleEntries,
+            currentQueueEntryId = queueState.currentEntryId,
             repeatMode = queueState.repeatMode,
             shuffleEnabled = queueState.shuffleEnabled,
             pauseReason = pauseReason,
@@ -2135,8 +2140,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun persistQueueState(positionOverride: Long? = null) {
         if (!::queue.isInitialized) return
-        val items = queue.snapshot().items
-        if (items === lastPersistedQueueItems) {
+        val entries = queue.snapshot().entries
+        if (entries === lastPersistedQueueEntries) {
             val session = queue.session(positionOverride ?: currentPersistPosition())
             submitPersistence("session persistence") { database.savePlaybackSession(session) }
         } else if (!queuePersistScheduled) {
@@ -2147,13 +2152,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun flushQueuePersist() {
         if (!::queue.isInitialized) return
-        val items = queue.snapshot().items
+        val entries = queue.snapshot().entries
         val session = queue.session(currentPersistPosition())
-        lastPersistedQueueItems = items
+        lastPersistedQueueEntries = entries
         submitPersistence("atomic queue persistence") {
-            runCatching { database.saveQueueState(items, session) }
+            runCatching { database.saveQueueState(entries, session) }
                 .onFailure {
-                    lastPersistedQueueItems = null
+                    lastPersistedQueueEntries = null
                     throw it
                 }
         }

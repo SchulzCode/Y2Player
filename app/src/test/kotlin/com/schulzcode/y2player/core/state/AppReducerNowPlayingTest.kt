@@ -28,7 +28,7 @@ class AppReducerNowPlayingTest {
     private fun nowPlayingState() = AppState(
         screenStack = listOf(ScreenEntry(Screen.NowPlaying)),
         library = LibraryState(tracks = listOf(track)),
-        playback = PlaybackSnapshot(currentTrackId = 1, queue = listOf(1L), currentQueueIndex = 0)
+        playback = PlaybackSnapshot(currentTrackId = 1, queue = testQueue(1L), currentQueueEntryId = 1L)
     )
 
     private fun optionsState() = nowPlayingState().let {
@@ -164,13 +164,13 @@ class AppReducerNowPlayingTest {
 
     @Test fun queueOpensFocusedOnTheCurrentTrackFromPlaybackOptions() {
         val base = optionsState().let {
-            it.copy(playback = it.playback.copy(queue = listOf(7L, 8L, 1L), currentQueueIndex = 2))
+            it.copy(playback = it.playback.copy(queue = testQueue(7L, 8L, 1L), currentQueueEntryId = 3L))
         }
         val index = ScreenContent.rows(base).indexOfFirst { (it as? ScreenRow.Action)?.key == "queue" }
         val selected = base.copy(screenStack = base.screenStack.dropLast(1) + base.currentEntry.copy(selectedIndex = index))
         val result = AppReducer.reduce(selected, AppAction.Confirm).state
         assertEquals(Screen.Queue, result.currentScreen)
-        assertEquals(2, result.selectedIndex)
+        assertEquals(0, result.selectedIndex)
     }
 
     @Test fun shuffleAllStartsPlaybackAndOpensThePlayer() {
@@ -187,7 +187,7 @@ class AppReducerNowPlayingTest {
         val idleResult = AppReducer.reduce(idle, AppAction.Right)
         assertEquals(Screen.MainMenu, idleResult.state.currentScreen)
         assertEquals(AppEffect.NextTrack, idleResult.effects.single())
-        val playing = idle.copy(playback = PlaybackSnapshot(currentTrackId = 1, queue = listOf(1L), currentQueueIndex = 0))
+        val playing = idle.copy(playback = PlaybackSnapshot(currentTrackId = 1, queue = testQueue(1L), currentQueueEntryId = 1L))
         val playingResult = AppReducer.reduce(playing, AppAction.Right)
         assertEquals(Screen.MainMenu, playingResult.state.currentScreen)
         assertEquals(AppEffect.NextTrack, playingResult.effects.single())
@@ -258,10 +258,37 @@ class AppReducerNowPlayingTest {
         assertTrue(queueRow.subtitle!!.contains("repeat one"))
 
         val linear = base.copy(
-            playback = base.playback.copy(queue = listOf(1L, 1L), currentQueueIndex = 0)
+            playback = base.playback.copy(queue = testQueue(1L, 1L), currentQueueEntryId = 1L)
         )
         val linearRow = ScreenContent.rows(linear)
             .filterIsInstance<ScreenRow.Action>().first { it.key == "queue" }
-        assertEquals("1 of 2 · Next: Song", linearRow.subtitle)
+        assertEquals("No added songs · Next: Song", linearRow.subtitle)
+    }
+
+    @Test fun audiobookPlaybackOptionsAreChapterFocused() {
+        val audiobook = track.copy(
+            absolutePath = "/storage/sdcard/AUDIOBOOKS/Book/01.mp3",
+            relativePath = "AUDIOBOOKS/Book/01.mp3"
+        )
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions)),
+            library = LibraryState(tracks = listOf(audiobook)),
+            playback = PlaybackSnapshot(
+                currentTrackId = audiobook.id,
+                queue = testQueue(audiobook.id),
+                currentQueueEntryId = 1L
+            )
+        )
+        val keys = ScreenContent.rows(state).filterIsInstance<ScreenRow.Action>().map { it.key }
+        assertTrue(keys.first().startsWith("np_audiobook_chapters:"))
+        assertEquals(listOf("queue", "sleep_timer"), keys.drop(1).take(2))
+        assertEquals("np_track_details:${audiobook.id}", keys.last())
+        val details = AppReducer.reduce(
+            state.copy(screenStack = listOf(ScreenEntry(Screen.NowPlayingOptions, keys.lastIndex))),
+            AppAction.Confirm
+        ).state
+        assertEquals(Screen.TrackDetails(audiobook.id), details.currentScreen)
+        assertTrue("audiobooks must not expose shuffle", "shuffle" !in keys)
+        assertTrue("audiobooks must not expose repeat", "repeat" !in keys)
     }
 }

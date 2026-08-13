@@ -1852,7 +1852,7 @@ class Y2PlayerView(
             !isNowPlayingSurface() && rows.isNotEmpty() ->
                 "${state.selectedIndex + 1}/${rows.size}"
             isNowPlayingSurface() && state.playback.queue.isNotEmpty() ->
-                state.playback.currentQueueIndex?.let { "${it + 1}/${state.playback.queue.size}" } ?: ""
+                "${(state.playback.queue.size - 1).coerceAtLeast(0)} next"
             else -> ""
         }
     }

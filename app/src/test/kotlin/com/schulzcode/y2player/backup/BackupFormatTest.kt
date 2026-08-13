@@ -1,6 +1,7 @@
 package com.schulzcode.y2player.backup
 
 import com.schulzcode.y2player.core.model.Track
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.playback.VolumeMode
 import org.junit.Assert.assertEquals
@@ -32,7 +33,11 @@ class BackupFormatTest {
             playlists = listOf(PortablePlaylist("Road trip 日本語", listOf(card, internal))),
             audiobookProgress = listOf(PortableAudiobookProgress(card, 42_000, 1_700_000_000_000)),
             recentlyPlayed = listOf(PortableRecentTrack(internal, 1_700_000_100_000, 3)),
-            queue = PortableQueue(listOf(card, internal), 1, 12_345, "all", true, 99, listOf(1, 0))
+            queue = PortableQueue(
+                listOf(card, internal), 1, 12_345, "all", true, 99,
+                origins = listOf(QueueOrigin.UP_NEXT, QueueOrigin.CONTINUATION),
+                sourceOrders = listOf(null, 0)
+            )
         ),
         listeningHistory = listOf("{\"event\":\"listen\",\"path\":\"One Song.flac\"}")
     )
@@ -138,14 +143,14 @@ class BackupFormatTest {
                 repeatMode = "off",
                 shuffleEnabled = false,
                 shuffleSeed = 1,
-                playOrder = listOf(0, 1)
+                legacyPlayOrder = listOf(0, 1)
             )
         )
         val resolved = PortableUserDataResolver.resolve(source, listOf(track(9_999, "sdcard", "Music/A Song.mp3")))
         assertEquals(listOf(9_999L), resolved.favoriteTrackIds)
         assertEquals(listOf(9_999L), resolved.playlists.single().trackIds)
-        assertEquals(listOf(9_999L), resolved.queueTrackIds)
-        assertEquals(0, resolved.playbackSession?.currentIndex)
+        assertEquals(listOf(9_999L), resolved.queueEntries.map { it.trackId })
+        assertEquals(resolved.queueEntries.single().id, resolved.playbackSession?.currentEntryId)
         assertEquals(555L, resolved.playbackSession?.positionMs)
         assertTrue(resolved.unresolvedReferences > 0)
     }

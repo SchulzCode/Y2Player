@@ -57,6 +57,26 @@ enum class RepeatMode(val storageId: String) {
     }
 }
 
+enum class QueueOrigin(val storageId: String) {
+    CONTINUATION("continuation"),
+    UP_NEXT("up_next");
+
+    companion object {
+        fun fromStorage(value: String?): QueueOrigin = values().firstOrNull {
+            it.storageId == value || it.name == value
+        } ?: CONTINUATION
+    }
+}
+
+/** A unique occurrence in the materialized playback order. */
+data class QueueEntry(
+    val id: Long,
+    val trackId: Long,
+    val origin: QueueOrigin,
+    /** Original collection position, used to restore ordered playback after shuffle. */
+    val sourceOrder: Int?
+)
+
 // Codes are written to the history file and read off-device. R8 renames the
 // constants, so the code is the contract, not the name.
 enum class PlaybackExitReason(val code: String) {
@@ -118,8 +138,9 @@ data class PlaybackSnapshot(
     val nextTrackId: Long? = null,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
-    val queue: List<Long> = emptyList(),
-    val currentQueueIndex: Int? = null,
+    /** Current entry followed by the exact upcoming playback order; history is intentionally hidden. */
+    val queue: List<QueueEntry> = emptyList(),
+    val currentQueueEntryId: Long? = null,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val shuffleEnabled: Boolean = false,
     val pauseReason: PauseReason = PauseReason.NONE,

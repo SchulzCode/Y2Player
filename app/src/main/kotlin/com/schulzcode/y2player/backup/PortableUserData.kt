@@ -1,5 +1,7 @@
 package com.schulzcode.y2player.backup
 
+import com.schulzcode.y2player.core.model.QueueEntry
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.queue.PersistedPlaybackSession
@@ -57,7 +59,10 @@ data class PortableQueue(
     val repeatMode: String,
     val shuffleEnabled: Boolean,
     val shuffleSeed: Long,
-    val playOrder: List<Int>?
+    val origins: List<QueueOrigin>? = null,
+    val sourceOrders: List<Int?>? = null,
+    /** Present only when decoding a backup written by the legacy queue. */
+    val legacyPlayOrder: List<Int>? = null
 )
 
 data class PortableUserData(
@@ -77,7 +82,7 @@ data class ResolvedUserData(
     val playlists: List<ResolvedPlaylist>,
     val audiobookProgress: List<ResolvedAudiobookProgress>,
     val recentlyPlayed: List<ResolvedRecentTrack>,
-    val queueTrackIds: List<Long>,
+    val queueEntries: List<QueueEntry>,
     val playbackSession: PersistedPlaybackSession?,
     val restoredReferences: Int,
     val unresolvedReferences: Int
@@ -128,17 +133,27 @@ object PortableUserDataResolver {
             }
         }
         val queue = source.queue
-        val currentIndex = queue?.currentIndex?.let(oldToNew::get)
-        val playOrder = queue?.playOrder?.mapNotNull(oldToNew::get)
+        val currentRawIndex = queue?.currentIndex?.let(oldToNew::get)
+        val legacyOrder = queue?.legacyPlayOrder?.mapNotNull(oldToNew::get)
             ?.takeIf { it.size == queueIds.size && it.toSet().size == queueIds.size }
+        val actualOrder = legacyOrder ?: queueIds.indices.toList()
+        val currentIndex = currentRawIndex?.let(actualOrder::indexOf)?.takeIf { it >= 0 }
+        val newToOld = oldToNew.entries.associate { (old, new) -> new to old }
+        val queueEntries = actualOrder.mapIndexed { actualIndex, rawIndex ->
+            val oldIndex = newToOld[rawIndex] ?: rawIndex
+            val origin = queue?.origins?.getOrNull(oldIndex) ?: QueueOrigin.CONTINUATION
+            val sourceOrder = if (origin == QueueOrigin.CONTINUATION) {
+                queue?.sourceOrders?.getOrNull(oldIndex) ?: oldIndex
+            } else null
+            QueueEntry(actualIndex + 1L, queueIds[rawIndex], origin, sourceOrder)
+        }
         val session = queue?.let {
             PersistedPlaybackSession(
-                currentIndex = currentIndex,
+                currentEntryId = currentIndex?.let { index -> queueEntries[index].id },
                 positionMs = if (currentIndex == null) 0 else it.positionMs,
                 repeatMode = RepeatMode.fromStorage(it.repeatMode),
                 shuffleEnabled = it.shuffleEnabled,
-                shuffleSeed = it.shuffleSeed,
-                playOrder = playOrder
+                shuffleSeed = it.shuffleSeed
             )
         }
 
@@ -147,7 +162,7 @@ object PortableUserDataResolver {
             playlists = playlists,
             audiobookProgress = audiobook,
             recentlyPlayed = recent,
-            queueTrackIds = queueIds,
+            queueEntries = queueEntries,
             playbackSession = session,
             restoredReferences = restored,
             unresolvedReferences = unresolved
@@ -183,7 +198,15 @@ object PortableUserDataResolver {
             require(queue.currentIndex == null || queue.currentIndex in queue.tracks.indices) { "Invalid queue index" }
             require(queue.positionMs >= 0) { "Invalid queue position" }
             require(RepeatMode.values().any { it.storageId == queue.repeatMode }) { "Invalid repeat mode" }
-            queue.playOrder?.let { order ->
+            queue.origins?.let { origins ->
+                require(origins.size == queue.tracks.size) { "Invalid queue origins" }
+            }
+            queue.sourceOrders?.let { orders ->
+                require(orders.size == queue.tracks.size && orders.all { it == null || it >= 0 }) {
+                    "Invalid queue source order"
+                }
+            }
+            queue.legacyPlayOrder?.let { order ->
                 require(order.size == queue.tracks.size && order.toSet() == queue.tracks.indices.toSet()) {
                     "Invalid shuffle order"
                 }

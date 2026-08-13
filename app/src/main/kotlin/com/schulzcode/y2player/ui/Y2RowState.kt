@@ -13,7 +13,9 @@ import com.schulzcode.y2player.playback.ReplayGainMode
 
 object Y2RowState {
     fun isActive(row: ScreenRow, state: AppState): Boolean {
-        if (row is ScreenRow.TrackRow) return row.track.id == state.playback.currentTrackId &&
+        if (row is ScreenRow.TrackRow) return if (row.selectionIndex != null) row.selected else
+            (row.queueEntry?.id?.let { it == state.playback.currentQueueEntryId }
+            ?: (row.track.id == state.playback.currentTrackId)) &&
             (state.playback.status == PlaybackStatus.PLAYING || state.playback.status == PlaybackStatus.PREPARING)
         val action = row as? ScreenRow.Action ?: return false
         val key = action.key

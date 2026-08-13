@@ -35,8 +35,8 @@ class UiCorrectnessTest {
 
     private val playing = PlaybackSnapshot(
         currentTrackId = 1L,
-        queue = listOf(1L),
-        currentQueueIndex = 0,
+        queue = testQueue(1L),
+        currentQueueEntryId = 1L,
         status = PlaybackStatus.PLAYING
     )
 
@@ -60,7 +60,7 @@ class UiCorrectnessTest {
     @Test fun `a restored queue has neither Shuffle All nor a duplicate Now Playing row`() {
         val restored = AppState(
             library = LibraryState(tracks = listOf(track)),
-            playback = PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
+            playback = PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
         assertEquals(
             listOf("music", "audiobooks", "settings"),
@@ -80,7 +80,7 @@ class UiCorrectnessTest {
     @Test fun `long Play reaches Now Playing for a restored queue`() {
         val restored = AppState(
             library = LibraryState(tracks = listOf(track)),
-            playback = PlaybackSnapshot(queue = listOf(1L), currentQueueIndex = 0)
+            playback = PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
         assertEquals(
             Screen.NowPlaying,

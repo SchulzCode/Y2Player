@@ -16,6 +16,8 @@ import com.schulzcode.y2player.backup.PortableUserData
 import com.schulzcode.y2player.backup.ResolvedUserData
 import com.schulzcode.y2player.core.model.AudiobookProgress
 import com.schulzcode.y2player.core.model.PlaylistSummary
+import com.schulzcode.y2player.core.model.QueueEntry
+import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackDraft
@@ -31,7 +33,18 @@ internal object DecoderBackendMigration {
 }
 
 internal object LibrarySchema {
-    const val VERSION = 14
+    const val VERSION = 15
+}
+
+internal object QueueModelMigration {
+    const val VERSION = 15
+    val STATEMENTS = listOf(
+        "ALTER TABLE queue_items ADD COLUMN entry_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE queue_items ADD COLUMN origin TEXT NOT NULL DEFAULT 'continuation'",
+        "ALTER TABLE queue_items ADD COLUMN source_order INTEGER",
+        "UPDATE queue_items SET entry_id = position + 1, source_order = position",
+        "ALTER TABLE playback_session ADD COLUMN current_entry_id INTEGER"
+    )
 }
 
 // Additive only. Invalidating track metadata here would trigger a full rescan.
@@ -85,8 +98,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     DATABASE_VERSION,
     BackupCorruptionHandler(appContext.applicationContext)
 ) {
-    private var cachedPlayOrderSource: List<Int>? = null
-    private var cachedPlayOrderText: String? = null
     private var writeAheadLoggingRequested = false
 
     init {
@@ -194,6 +205,10 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
             if (version < 14) {
                 AudiobookProgressMigration.STATEMENTS.forEach(::execSQL)
                 version = AudiobookProgressMigration.VERSION
+            }
+            if (version < 15) {
+                QueueModelMigration.STATEMENTS.forEach(::execSQL)
+                version = QueueModelMigration.VERSION
             }
             if (version != newVersion) error("No migration exists from $oldVersion to $newVersion")
         }
@@ -326,16 +341,24 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         )
     }
 
-    fun saveQueueState(trackIds: List<Long>, session: PersistedPlaybackSession) {
+    fun saveQueueState(entries: List<QueueEntry>, session: PersistedPlaybackSession) {
         writableDatabase.transaction {
-            replaceQueueRows(this, trackIds)
+            replaceQueueRows(this, entries)
             savePlaybackSessionRow(this, session)
         }
     }
 
-    fun loadQueue(): List<Long> = readableDatabase.query(
-        "queue_items", arrayOf("track_id"), null, null, null, null, "position", QueueController.MAX_QUEUE_ITEMS.toString()
-    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) } }
+    fun loadQueue(): List<QueueEntry> = readableDatabase.query(
+        "queue_items", arrayOf("entry_id", "track_id", "origin", "source_order"),
+        null, null, null, null, "position", QueueController.MAX_QUEUE_ITEMS.toString()
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) add(QueueEntry(
+            id = cursor.getLong(0),
+            trackId = cursor.getLong(1),
+            origin = QueueOrigin.fromStorage(cursor.getString(2)),
+            sourceOrder = if (cursor.isNull(3)) null else cursor.getInt(3)
+        ))
+    } }
 
     fun validTrackIds(trackIds: Collection<Long>): Set<Long> {
         if (trackIds.isEmpty()) return emptySet()
@@ -371,17 +394,18 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     fun loadPlaybackSession(): PersistedPlaybackSession? = readableDatabase.query(
         "playback_session",
-        arrayOf("current_index", "position_ms", "repeat_mode", "shuffle_enabled", "shuffle_seed", "play_order"),
+        arrayOf("current_entry_id", "current_index", "position_ms", "repeat_mode", "shuffle_enabled", "shuffle_seed", "play_order"),
         "id = 1", null, null, null, null
     ).use { cursor ->
         if (!cursor.moveToFirst()) return@use null
         PersistedPlaybackSession(
-            currentIndex = if (cursor.isNull(0)) null else cursor.getInt(0),
-            positionMs = cursor.getLong(1).coerceAtLeast(0),
-            repeatMode = RepeatMode.fromStorage(cursor.getString(2)),
-            shuffleEnabled = cursor.getInt(3) != 0,
-            shuffleSeed = cursor.getLong(4),
-            playOrder = if (cursor.isNull(5)) null else decodePlayOrder(cursor.getString(5))
+            currentEntryId = if (cursor.isNull(0)) null else cursor.getLong(0),
+            legacyCurrentIndex = if (cursor.isNull(1)) null else cursor.getInt(1),
+            positionMs = cursor.getLong(2).coerceAtLeast(0),
+            repeatMode = RepeatMode.fromStorage(cursor.getString(3)),
+            shuffleEnabled = cursor.getInt(4) != 0,
+            shuffleSeed = cursor.getLong(5),
+            legacyPlayOrder = if (cursor.isNull(6)) null else decodePlayOrder(cursor.getString(6))
         )
     }
 
@@ -622,33 +646,50 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 add(PortableRecentTrack(identity, cursor.getLong(1).coerceAtLeast(0), cursor.getInt(2).coerceAtLeast(1)))
             }
         } }
-        val queueIdentities = query(
-            "queue_items", arrayOf("track_id"), null, null, null, null, "position", QueueController.MAX_QUEUE_ITEMS.toString()
-        ).use { cursor -> buildList { while (cursor.moveToNext()) identities[cursor.getLong(0)]?.let(::add) } }
+        val queueRecords = query(
+            "queue_items", arrayOf("entry_id", "track_id", "origin", "source_order"),
+            null, null, null, null, "position", QueueController.MAX_QUEUE_ITEMS.toString()
+        ).use { cursor -> buildList {
+            while (cursor.moveToNext()) identities[cursor.getLong(1)]?.let { identity ->
+                add(Pair(
+                    QueueEntry(
+                        cursor.getLong(0), cursor.getLong(1), QueueOrigin.fromStorage(cursor.getString(2)),
+                        if (cursor.isNull(3)) null else cursor.getInt(3)
+                    ),
+                    identity
+                ))
+            }
+        } }
         val session = query(
             "playback_session",
-            arrayOf("current_index", "position_ms", "repeat_mode", "shuffle_enabled", "shuffle_seed", "play_order"),
+            arrayOf("current_entry_id", "current_index", "position_ms", "repeat_mode", "shuffle_enabled", "shuffle_seed", "play_order"),
             "id = 1", null, null, null, null
         ).use { cursor ->
             if (!cursor.moveToFirst()) null else PersistedPlaybackSession(
-                currentIndex = if (cursor.isNull(0)) null else cursor.getInt(0),
-                positionMs = cursor.getLong(1).coerceAtLeast(0),
-                repeatMode = RepeatMode.fromStorage(cursor.getString(2)),
-                shuffleEnabled = cursor.getInt(3) != 0,
-                shuffleSeed = cursor.getLong(4),
-                playOrder = if (cursor.isNull(5)) null else decodePlayOrder(cursor.getString(5))
+                currentEntryId = if (cursor.isNull(0)) null else cursor.getLong(0),
+                legacyCurrentIndex = if (cursor.isNull(1)) null else cursor.getInt(1),
+                positionMs = cursor.getLong(2).coerceAtLeast(0),
+                repeatMode = RepeatMode.fromStorage(cursor.getString(3)),
+                shuffleEnabled = cursor.getInt(4) != 0,
+                shuffleSeed = cursor.getLong(5),
+                legacyPlayOrder = if (cursor.isNull(6)) null else decodePlayOrder(cursor.getString(6))
             )
         }
-        val queue = if (session == null && queueIdentities.isEmpty()) null else PortableQueue(
-            tracks = queueIdentities,
-            currentIndex = session?.currentIndex?.takeIf { it in queueIdentities.indices },
+        val validLegacyOrder = session?.legacyPlayOrder?.takeIf { order ->
+            order.size == queueRecords.size && order.toSet() == queueRecords.indices.toSet()
+        }
+        val orderedRecords = validLegacyOrder?.map(queueRecords::get) ?: queueRecords
+        val legacyCurrentEntryId = session?.legacyCurrentIndex?.let(queueRecords::getOrNull)?.first?.id
+        val currentEntryId = session?.currentEntryId ?: legacyCurrentEntryId
+        val queue = if (session == null && orderedRecords.isEmpty()) null else PortableQueue(
+            tracks = orderedRecords.map { it.second },
+            currentIndex = currentEntryId?.let { id -> orderedRecords.indexOfFirst { it.first.id == id }.takeIf { it >= 0 } },
             positionMs = session?.positionMs ?: 0,
             repeatMode = (session?.repeatMode ?: RepeatMode.OFF).storageId,
             shuffleEnabled = session?.shuffleEnabled ?: false,
             shuffleSeed = session?.shuffleSeed ?: 0,
-            playOrder = session?.playOrder?.takeIf { order ->
-                order.size == queueIdentities.size && order.toSet() == queueIdentities.indices.toSet()
-            }
+            origins = orderedRecords.map { it.first.origin },
+            sourceOrders = orderedRecords.map { it.first.sourceOrder }
         )
         PortableUserData(favorites, playlists, audiobook, recent, queue)
     }
@@ -722,7 +763,7 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 })
             }
 
-            replaceQueueRows(this, data.queueTrackIds)
+            replaceQueueRows(this, data.queueEntries)
             delete("playback_session", null, null)
             data.playbackSession?.let { savePlaybackSessionRow(this, it) }
             applyExternal()
@@ -760,14 +801,19 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         }
     }
 
-    private fun replaceQueueRows(db: SQLiteDatabase, trackIds: List<Long>) {
+    private fun replaceQueueRows(db: SQLiteDatabase, entries: List<QueueEntry>) {
         db.delete("queue_items", null, null)
-        val statement = db.compileStatement("INSERT INTO queue_items(position, track_id) VALUES(?, ?)")
+        val statement = db.compileStatement(
+            "INSERT INTO queue_items(position, entry_id, track_id, origin, source_order) VALUES(?, ?, ?, ?, ?)"
+        )
         try {
-            trackIds.forEachIndexed { index, id ->
+            entries.forEachIndexed { index, entry ->
                 statement.clearBindings()
                 statement.bindLong(1, index.toLong())
-                statement.bindLong(2, id)
+                statement.bindLong(2, entry.id)
+                statement.bindLong(3, entry.trackId)
+                statement.bindString(4, entry.origin.storageId)
+                entry.sourceOrder?.let { statement.bindLong(5, it.toLong()) } ?: statement.bindNull(5)
                 statement.executeInsert()
             }
         } finally {
@@ -781,12 +827,13 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
             null,
             ContentValues().apply {
                 put("id", 1)
-                session.currentIndex?.let { put("current_index", it) } ?: putNull("current_index")
+                session.currentEntryId?.let { put("current_entry_id", it) } ?: putNull("current_entry_id")
+                putNull("current_index")
                 put("position_ms", session.positionMs.coerceAtLeast(0))
                 put("repeat_mode", session.repeatMode.storageId)
                 put("shuffle_enabled", if (session.shuffleEnabled) 1 else 0)
                 put("shuffle_seed", session.shuffleSeed)
-                session.playOrder?.let { put("play_order", encodePlayOrder(it)) } ?: putNull("play_order")
+                putNull("play_order")
             },
             SQLiteDatabase.CONFLICT_REPLACE
         )
@@ -947,14 +994,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     private fun Cursor.nullableFloat(index: Int): Float? =
         if (isNull(index)) null else getFloat(index)
 
-    private fun encodePlayOrder(order: List<Int>): String {
-        if (cachedPlayOrderSource === order) return cachedPlayOrderText.orEmpty()
-        return order.joinToString(",").also {
-            cachedPlayOrderSource = order
-            cachedPlayOrderText = it
-        }
-    }
-
     private fun decodePlayOrder(raw: String): List<Int>? {
         if (raw.length > MAX_PLAY_ORDER_CHARS) return null
         val result = ArrayList<Int>()
@@ -1072,9 +1111,15 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
     }
 
     private fun createPlayback(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE queue_items (position INTEGER PRIMARY KEY, track_id INTEGER NOT NULL, FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE)")
         db.execSQL(
-            "CREATE TABLE playback_session (id INTEGER PRIMARY KEY CHECK(id = 1), current_index INTEGER, position_ms INTEGER NOT NULL, repeat_mode TEXT NOT NULL, shuffle_enabled INTEGER NOT NULL, shuffle_seed INTEGER NOT NULL, play_order TEXT)"
+            "CREATE TABLE queue_items (position INTEGER PRIMARY KEY, entry_id INTEGER NOT NULL, " +
+                "track_id INTEGER NOT NULL, origin TEXT NOT NULL, source_order INTEGER, " +
+                "FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE)"
+        )
+        db.execSQL(
+            "CREATE TABLE playback_session (id INTEGER PRIMARY KEY CHECK(id = 1), current_entry_id INTEGER, " +
+                "current_index INTEGER, position_ms INTEGER NOT NULL, repeat_mode TEXT NOT NULL, " +
+                "shuffle_enabled INTEGER NOT NULL, shuffle_seed INTEGER NOT NULL, play_order TEXT)"
         )
     }
 
