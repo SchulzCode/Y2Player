@@ -1,5 +1,8 @@
 package com.schulzcode.y2player.core.state
 
+import com.schulzcode.y2player.core.model.AlbumKey
+import com.schulzcode.y2player.core.model.LibraryScope
+
 sealed interface Screen {
     data object MainMenu : Screen
     data object Music : Screen
@@ -14,6 +17,18 @@ sealed interface Screen {
     data object Artists : Screen
     data class ArtistAlbums(val artist: String) : Screen
     data class ArtistSongs(val artist: String) : Screen
+    data object Genres : Screen
+    data object Years : Screen
+    data class FacetMenu(val scope: LibraryScope) : Screen
+    data class FacetArtists(val scope: LibraryScope) : Screen
+    data class FacetAlbums(val scope: LibraryScope) : Screen
+    data class FacetArtistAlbums(val scope: LibraryScope, val artist: String) : Screen
+    data class FacetTracks(
+        val scope: LibraryScope,
+        val title: String,
+        val artist: String? = null,
+        val album: AlbumKey? = null
+    ) : Screen
     data class Folders(val volumeId: String? = null, val relativePath: String = "") : Screen
     data object Playlists : Screen
     data class PlaylistTracks(val playlistId: Long, val name: String) : Screen
@@ -48,6 +63,9 @@ sealed interface Screen {
     data object OutputInformation : Screen
     data object EqualizerBands : Screen
     data object SortOrder : Screen
+    data object TrackSorting : Screen
+    data object AlbumSorting : Screen
+    data object YearSorting : Screen
     data object Bluetooth : Screen
     data class BluetoothDevice(val address: String) : Screen
     data class ConfirmAction(val key: String) : Screen
@@ -89,6 +107,13 @@ val Screen.code: String get() = when (this) {
     Screen.Artists -> "artists"
     is Screen.ArtistAlbums -> "artist_albums"
     is Screen.ArtistSongs -> "artist_songs"
+    Screen.Genres -> "genres"
+    Screen.Years -> "years"
+    is Screen.FacetMenu -> "facet_menu"
+    is Screen.FacetArtists -> "facet_artists"
+    is Screen.FacetAlbums -> "facet_albums"
+    is Screen.FacetArtistAlbums -> "facet_artist_albums"
+    is Screen.FacetTracks -> "facet_tracks"
     is Screen.Folders -> "folders"
     Screen.Playlists -> "playlists"
     is Screen.PlaylistTracks -> "playlist_tracks"
@@ -115,6 +140,9 @@ val Screen.code: String get() = when (this) {
     Screen.OutputInformation -> "output_information"
     Screen.EqualizerBands -> "equalizer_bands"
     Screen.SortOrder -> "sort_order"
+    Screen.TrackSorting -> "track_sorting"
+    Screen.AlbumSorting -> "album_sorting"
+    Screen.YearSorting -> "year_sorting"
     Screen.Bluetooth -> "bluetooth"
     is Screen.BluetoothDevice -> "bluetooth_device"
     is Screen.ConfirmAction -> "confirm_action"

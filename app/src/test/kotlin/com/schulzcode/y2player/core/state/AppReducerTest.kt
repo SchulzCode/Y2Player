@@ -281,7 +281,7 @@ class AppReducerTest {
             library = LibraryState(tracks = listOf(track)),
             playback = loaded
         )
-        assertEquals(Screen.AlbumSongs("Album"), AppReducer.reduce(albums, AppAction.Confirm).state.currentScreen)
+        assertEquals(Screen.AlbumSongs("Album", "Artist"), AppReducer.reduce(albums, AppAction.Confirm).state.currentScreen)
 
         val music = AppState(
             screenStack = listOf(ScreenEntry(Screen.Music)),
@@ -960,7 +960,7 @@ class AppReducerTest {
             listOf("Greatest Hits", "Hunky Dory"),
             rows.drop(1).map { it.title }
         )
-        assertEquals(listOf("1 track", "2 tracks"), rows.drop(1).map { it.subtitle })
+        assertEquals(listOf("Year unknown · 1 track", "Year unknown · 2 tracks"), rows.drop(1).map { it.subtitle })
         assertEquals("the header names the artist", "Bowie", ScreenContent.title(albums))
     }
 
@@ -972,15 +972,17 @@ class AppReducerTest {
         assertEquals(listOf("Cell"), ScreenContent.rows(songs).map { it.title })
     }
 
-    @Test fun theGlobalAlbumsListStillMergesSharedAlbumNames() {
+    @Test fun theGlobalAlbumsListKeepsSameNamedAlbumsSeparateByAlbumArtist() {
         val albums = AppState(screenStack = listOf(ScreenEntry(Screen.Albums)), library = artistLibrary)
-        val songs = AppReducer.reduce(selectGroup(albums, "Greatest Hits"), AppAction.Confirm).state
+        val rows = ScreenContent.rows(albums).filterIsInstance<ScreenRow.Group>()
+            .filter { it.title == "Greatest Hits" }
+        assertEquals(2, rows.size)
+        val bowieIndex = ScreenContent.rows(albums).indexOf(rows.single { it.subtitle?.endsWith("Bowie") == true })
+        val chosen = albums.copy(screenStack = listOf(ScreenEntry(Screen.Albums, bowieIndex)))
+        val songs = AppReducer.reduce(chosen, AppAction.Confirm).state
 
-        assertEquals(Screen.AlbumSongs("Greatest Hits", null), songs.currentScreen)
-        assertEquals(
-            listOf("Cell", "Dust"),
-            ScreenContent.rows(songs).filterIsInstance<ScreenRow.TrackRow>().map { it.track.title }.sorted()
-        )
+        assertEquals(Screen.AlbumSongs("Greatest Hits", "Bowie"), songs.currentScreen)
+        assertEquals(listOf("Cell"), ScreenContent.rows(songs).filterIsInstance<ScreenRow.TrackRow>().map { it.track.title })
     }
 
     @Test fun allSongsStillReachesTheFlatArtistList() {

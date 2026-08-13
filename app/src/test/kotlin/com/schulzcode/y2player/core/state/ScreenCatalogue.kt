@@ -1,5 +1,7 @@
 package com.schulzcode.y2player.core.state
 
+import com.schulzcode.y2player.core.model.AlbumKey
+import com.schulzcode.y2player.core.model.LibraryScope
 import kotlin.reflect.KClass
 
 /**
@@ -24,6 +26,13 @@ object ScreenCatalogue {
         put(Screen.Artists)
         put(Screen.ArtistAlbums("Artist"))
         put(Screen.ArtistSongs("Artist"))
+        put(Screen.Genres)
+        put(Screen.Years)
+        put(Screen.FacetMenu(LibraryScope.Year(2000)))
+        put(Screen.FacetArtists(LibraryScope.Year(2000)))
+        put(Screen.FacetAlbums(LibraryScope.Year(2000)))
+        put(Screen.FacetArtistAlbums(LibraryScope.Year(2000), "Artist"))
+        put(Screen.FacetTracks(LibraryScope.Year(2000), "2000", album = AlbumKey("album", "artist")))
         put(Screen.Folders())
         put(Screen.Playlists)
         put(Screen.PlaylistTracks(5, "Road Trip"))
@@ -50,6 +59,9 @@ object ScreenCatalogue {
         put(Screen.OutputInformation)
         put(Screen.EqualizerBands)
         put(Screen.SortOrder)
+        put(Screen.TrackSorting)
+        put(Screen.AlbumSorting)
+        put(Screen.YearSorting)
         put(Screen.Bluetooth)
         put(Screen.BluetoothDevice("AA:BB:CC:DD:EE:FF"))
         put(Screen.ConfirmAction(ConfirmPrompts.CLEAR_QUEUE))
@@ -82,11 +94,15 @@ object ScreenCatalogue {
     /** Screens whose content depends on a library, so emptiness is legitimate. */
     val contentScreens: Set<String> = setOf(
         Screen.Songs.code, Screen.Favorites.code, Screen.RecentlyPlayed.code,
-        Screen.Albums.code, Screen.Artists.code, Screen.Audiobooks.code,
+        Screen.Albums.code, Screen.Artists.code, Screen.Genres.code, Screen.Years.code, Screen.Audiobooks.code,
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,
         Screen.AudiobookChapters("").code, Screen.MultiSelect("", emptyList(), emptySet()).code,
         Screen.QueueOptions(0).code, Screen.QueueMove(0, 0).code, Screen.QueueManagement.code,
+        Screen.FacetArtists(LibraryScope.Year(2000)).code,
+        Screen.FacetAlbums(LibraryScope.Year(2000)).code,
+        Screen.FacetArtistAlbums(LibraryScope.Year(2000), "").code,
+        Screen.FacetTracks(LibraryScope.Year(2000), "").code,
         Screen.EqualizerBands.code
     )
 }

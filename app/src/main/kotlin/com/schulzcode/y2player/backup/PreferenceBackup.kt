@@ -1,7 +1,9 @@
 package com.schulzcode.y2player.backup
 
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
@@ -27,6 +29,8 @@ object PreferenceBackup {
         "pause_on_disconnect" to value.pauseOnDisconnect.toString(),
         "resume_position" to value.resumePosition.toString(),
         "sort_order" to value.sortOrder.storageId,
+        "album_sort_order" to value.albumSortOrder.storageId,
+        "year_sort_order" to value.yearSortOrder.storageId,
         "gapless" to value.gaplessEnabled.toString(),
         "crossfade_ms" to value.crossfadeMs.toString(),
         "crossfade_mode" to value.crossfadeMode.storageId,
@@ -60,6 +64,11 @@ object PreferenceBackup {
             return candidates.firstOrNull { storageId(it) == raw }
                 ?: throw IllegalArgumentException("Invalid $key setting")
         }
+        fun <T> optionalEnum(key: String, candidates: Array<T>, fallback: T, storageId: (T) -> String): T {
+            val raw = values[key] ?: return fallback
+            return candidates.firstOrNull { storageId(it) == raw }
+                ?: throw IllegalArgumentException("Invalid $key setting")
+        }
         fun member(key: String, allowed: List<Int>): Int = integer(key).also {
             require(it in allowed) { "Invalid $key setting" }
         }
@@ -85,6 +94,12 @@ object PreferenceBackup {
             pauseOnDisconnect = boolean("pause_on_disconnect"),
             resumePosition = boolean("resume_position"),
             sortOrder = enum("sort_order", TrackSortOrder.values(), TrackSortOrder::storageId),
+            albumSortOrder = optionalEnum(
+                "album_sort_order", AlbumSortOrder.values(), AlbumSortOrder.TITLE, AlbumSortOrder::storageId
+            ),
+            yearSortOrder = optionalEnum(
+                "year_sort_order", YearSortOrder.values(), YearSortOrder.NEWEST_FIRST, YearSortOrder::storageId
+            ),
             gaplessEnabled = boolean("gapless"),
             crossfadeMs = member("crossfade_ms", AppPreferences.CROSSFADE_LEVELS),
             crossfadeMode = enum("crossfade_mode", CrossfadeMode.values(), CrossfadeMode::storageId),
@@ -103,5 +118,6 @@ object PreferenceBackup {
         )
     }
 
-    private val REQUIRED_KEYS = encode(PlayerPreferencesState()).keys
+    private val OPTIONAL_KEYS = setOf("album_sort_order", "year_sort_order")
+    private val REQUIRED_KEYS = encode(PlayerPreferencesState()).keys - OPTIONAL_KEYS
 }

@@ -47,7 +47,9 @@ object Y2RowState {
                 "bt_device:${it.address}" == key &&
                     (it.audioStreaming || it.linkState == BluetoothLinkState.CONNECTED)
             }
-            key.startsWith("sort:") -> key.substringAfter(':') == state.preferences.sortOrder.storageId
+            key.startsWith("track_sort:") -> key.substringAfter(':') == state.preferences.sortOrder.storageId
+            key.startsWith("album_sort:") -> key.substringAfter(':') == state.preferences.albumSortOrder.storageId
+            key.startsWith("year_sort:") -> key.substringAfter(':') == state.preferences.yearSortOrder.storageId
             key.startsWith("balance:") -> key.substringAfter(':').toIntOrNull() == state.preferences.balance
             key.startsWith("brightness:") -> key.substringAfter(':').toIntOrNull()?.let {
                 kotlin.math.abs(state.display.brightnessPercent - it) <= 5

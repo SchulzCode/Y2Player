@@ -2,6 +2,9 @@ package com.schulzcode.y2player.core.state
 
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.AlbumSortOrder
+import com.schulzcode.y2player.core.model.LibraryScope
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.AppEffect.*
 import com.schulzcode.y2player.core.state.ScreenRow.Action
 import com.schulzcode.y2player.core.state.ScreenRow.Folder
@@ -94,12 +97,17 @@ object AppReducer {
             is Screen.AudiobookOptions -> confirmAudiobookOptions(state, screen, row)
             is Screen.AudiobookChapters -> confirmAudiobookChapter(state, screen, row)
             Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed,
-            is Screen.ArtistSongs, is Screen.AlbumSongs ->
+            is Screen.ArtistSongs, is Screen.AlbumSongs, is Screen.FacetTracks ->
                 if ((row as? Action)?.key == ScreenContent.COLLECTION_SHUFFLE_KEY) shuffleCollection(state)
                 else playSelected(state)
             is Screen.ArtistAlbums -> confirmArtistAlbums(state, screen, row)
-            Screen.Albums -> (row as? Group)?.key?.let { push(state, Screen.AlbumSongs(it)) } ?: Reduction(state)
-            Screen.Artists -> (row as? Group)?.key?.let { push(state, Screen.ArtistAlbums(it)) } ?: Reduction(state)
+            Screen.Albums -> openAlbum(state, LibraryScope.All, row)
+            Screen.Artists -> openArtist(state, row, scoped = null)
+            Screen.Genres, Screen.Years -> confirmFacetValue(state, row)
+            is Screen.FacetMenu -> confirmFacetMenu(state, screen, row)
+            is Screen.FacetArtists -> openArtist(state, row, screen.scope)
+            is Screen.FacetAlbums -> openFacetAlbum(state, screen.scope, row)
+            is Screen.FacetArtistAlbums -> confirmFacetArtistAlbums(state, screen, row)
             is Screen.Folders -> when (row) {
                 is Folder -> push(state, Screen.Folders(row.volumeId, row.relativePath))
                 is TrackRow -> playSelected(state)
@@ -138,6 +146,9 @@ object AppReducer {
             Screen.OutputInformation -> confirmOutput(state, row)
             Screen.EqualizerBands -> confirmEqualizerBands(state, row)
             Screen.SortOrder -> confirmSortOrder(state, row)
+            Screen.TrackSorting -> confirmTrackSorting(state, row)
+            Screen.AlbumSorting -> confirmAlbumSorting(state, row)
+            Screen.YearSorting -> confirmYearSorting(state, row)
             Screen.Bluetooth -> confirmBluetooth(state, row)
             is Screen.BluetoothDevice -> confirmBluetoothDevice(state, row)
             is Screen.ConfirmAction -> confirmConfirmAction(state, screen, row)
@@ -177,6 +188,8 @@ object AppReducer {
             "songs" -> push(state, Screen.Songs)
             "albums" -> push(state, Screen.Albums)
             "artists" -> push(state, Screen.Artists)
+            "genres" -> push(state, Screen.Genres)
+            "years" -> push(state, Screen.Years)
             "playlists" -> push(state, Screen.Playlists)
             "favorites" -> push(state, Screen.Favorites)
             "recent" -> push(state, Screen.RecentlyPlayed)
@@ -405,9 +418,32 @@ object AppReducer {
 
     private fun confirmSortOrder(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
-        val raw = key.substringAfter("sort:", "")
+        return when (key) {
+            "sort_tracks" -> push(state, Screen.TrackSorting)
+            "sort_albums" -> push(state, Screen.AlbumSorting)
+            "sort_years" -> push(state, Screen.YearSorting)
+            else -> Reduction(state)
+        }
+    }
+
+    private fun confirmTrackSorting(state: AppState, row: ScreenRow): Reduction {
+        val raw = (row as? Action)?.key?.substringAfter("track_sort:", "") ?: return Reduction(state)
         val order = TrackSortOrder.fromStorage(raw).takeIf { raw == it.storageId || raw == it.name } ?: return Reduction(state)
         return Reduction(pop(state), listOf(SetSortOrder(order)))
+    }
+
+    private fun confirmAlbumSorting(state: AppState, row: ScreenRow): Reduction {
+        val raw = (row as? Action)?.key?.substringAfter("album_sort:", "") ?: return Reduction(state)
+        val order = AlbumSortOrder.fromStorage(raw).takeIf { raw == it.storageId || raw == it.name }
+            ?: return Reduction(state)
+        return Reduction(pop(state), listOf(SetAlbumSortOrder(order)))
+    }
+
+    private fun confirmYearSorting(state: AppState, row: ScreenRow): Reduction {
+        val raw = (row as? Action)?.key?.substringAfter("year_sort:", "") ?: return Reduction(state)
+        val order = YearSortOrder.fromStorage(raw).takeIf { raw == it.storageId || raw == it.name }
+            ?: return Reduction(state)
+        return Reduction(pop(state), listOf(SetYearSortOrder(order)))
     }
 
     private fun confirmBluetooth(state: AppState, row: ScreenRow): Reduction {
@@ -526,13 +562,50 @@ object AppReducer {
 
     private fun confirmArtistAlbums(state: AppState, screen: Screen.ArtistAlbums, row: ScreenRow): Reduction = when {
         (row as? Action)?.key == "artist_all_songs" -> push(state, Screen.ArtistSongs(screen.artist))
-        row is Group -> push(
-            state,
-            Screen.AlbumSongs(
-                row.key,
-                ScreenContent.albumArtistForArtistAlbum(state, screen.artist, row.key)
-            )
-        )
+        row is Group -> openAlbum(state, LibraryScope.All, row)
+        else -> Reduction(state)
+    }
+
+    private fun confirmFacetValue(state: AppState, row: ScreenRow): Reduction {
+        val scope = ((row as? Group)?.target as? ScreenGroupTarget.Scope)?.scope ?: return Reduction(state)
+        return push(state, Screen.FacetMenu(scope))
+    }
+
+    private fun confirmFacetMenu(state: AppState, screen: Screen.FacetMenu, row: ScreenRow): Reduction =
+        when ((row as? Action)?.key) {
+            "facet_all_tracks" -> push(state, Screen.FacetTracks(screen.scope, screen.scope.label))
+            "facet_artists" -> push(state, Screen.FacetArtists(screen.scope))
+            "facet_albums" -> push(state, Screen.FacetAlbums(screen.scope))
+            else -> Reduction(state)
+        }
+
+    private fun openArtist(state: AppState, row: ScreenRow, scoped: LibraryScope?): Reduction {
+        val group = row as? Group ?: return Reduction(state)
+        val artist = (group.target as? ScreenGroupTarget.Artist)?.name ?: group.key
+        return if (scoped == null) push(state, Screen.ArtistAlbums(artist))
+        else push(state, Screen.FacetArtistAlbums(scoped, artist))
+    }
+
+    private fun openAlbum(state: AppState, scope: LibraryScope, row: ScreenRow): Reduction {
+        val key = ((row as? Group)?.target as? ScreenGroupTarget.Album)?.key ?: return Reduction(state)
+        val album = ScreenContent.albumEntry(state, scope, key) ?: return Reduction(state)
+        return push(state, Screen.AlbumSongs(album.title, album.albumArtist))
+    }
+
+    private fun openFacetAlbum(state: AppState, scope: LibraryScope, row: ScreenRow): Reduction {
+        val key = ((row as? Group)?.target as? ScreenGroupTarget.Album)?.key ?: return Reduction(state)
+        val album = ScreenContent.albumEntry(state, scope, key) ?: return Reduction(state)
+        return push(state, Screen.FacetTracks(scope, album.title, album = key))
+    }
+
+    private fun confirmFacetArtistAlbums(
+        state: AppState,
+        screen: Screen.FacetArtistAlbums,
+        row: ScreenRow
+    ): Reduction = when {
+        (row as? Action)?.key == "facet_artist_all_tracks" ->
+            push(state, Screen.FacetTracks(screen.scope, screen.artist, artist = screen.artist))
+        row is Group -> openFacetAlbum(state, screen.scope, row)
         else -> Reduction(state)
     }
 
@@ -780,7 +853,7 @@ object AppReducer {
             else Reduction(state)
         }
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, is Screen.AlbumSongs,
-        is Screen.ArtistSongs, is Screen.AudiobookChapters -> {
+        is Screen.ArtistSongs, is Screen.FacetTracks, is Screen.AudiobookChapters -> {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
             if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id))
         }
@@ -789,7 +862,9 @@ object AppReducer {
             if (key == null || !key.startsWith(ScreenContent.AUDIOBOOK_KEY_PREFIX)) Reduction(state)
             else push(state, Screen.AudiobookOptions(key.substringAfter(':')))
         }
-        Screen.Albums, Screen.Artists, is Screen.ArtistAlbums, Screen.Playlists ->
+        Screen.Albums, Screen.Artists, is Screen.ArtistAlbums,
+        is Screen.FacetAlbums, is Screen.FacetArtists, is Screen.FacetArtistAlbums,
+        Screen.Playlists ->
             ScreenContent.selectedCollection(state)?.let { (title, ids) ->
                 push(state, Screen.CollectionOptions(title, ids))
             } ?: Reduction(state)

@@ -4,12 +4,18 @@ import com.schulzcode.y2player.BuildConfig
 import com.schulzcode.y2player.core.model.AudioCodecLabels
 import com.schulzcode.y2player.core.model.AudioCodecSupport
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.AlbumEntry
+import com.schulzcode.y2player.core.model.AlbumKey
+import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.CodecSupport
+import com.schulzcode.y2player.core.model.LibraryScope
+import com.schulzcode.y2player.core.model.NaturalTextOrder
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.QueueEntry
 import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.PlaybackCapabilities
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
@@ -53,10 +59,21 @@ sealed interface ScreenRow {
             if (track.favorite) append(" · ★")
         }
     }
-    data class Group(override val title: String, override val subtitle: String? = null, val key: String) : ScreenRow
+    data class Group(
+        override val title: String,
+        override val subtitle: String? = null,
+        val key: String,
+        val target: ScreenGroupTarget? = null
+    ) : ScreenRow
     data class Folder(override val title: String, val volumeId: String, val relativePath: String) : ScreenRow {
         override val subtitle: String? = null
     }
+}
+
+sealed interface ScreenGroupTarget {
+    data class Album(val key: AlbumKey) : ScreenGroupTarget
+    data class Artist(val name: String) : ScreenGroupTarget
+    data class Scope(val scope: LibraryScope) : ScreenGroupTarget
 }
 
 object ScreenContent {
@@ -74,6 +91,13 @@ object ScreenContent {
         Screen.Artists -> "Artists"
         is Screen.ArtistAlbums -> screen.artist
         is Screen.ArtistSongs -> "Artist"
+        Screen.Genres -> "Genres"
+        Screen.Years -> "Years"
+        is Screen.FacetMenu -> screen.scope.label
+        is Screen.FacetArtists -> "${screen.scope.label} Artists"
+        is Screen.FacetAlbums -> "${screen.scope.label} Albums"
+        is Screen.FacetArtistAlbums -> screen.artist
+        is Screen.FacetTracks -> screen.title
         is Screen.Folders -> if (screen.volumeId == null) "Folders" else screen.relativePath.takeIf { it.isNotBlank() } ?: volumeName(screen.volumeId)
         Screen.Playlists -> "Playlists"
         is Screen.PlaylistTracks -> screen.name
@@ -102,6 +126,9 @@ object ScreenContent {
         Screen.OutputInformation -> "Output"
         Screen.EqualizerBands -> "Equalizer Bands"
         Screen.SortOrder -> "Sort Order"
+        Screen.TrackSorting -> "Track Order"
+        Screen.AlbumSorting -> "Album Order"
+        Screen.YearSorting -> "Year Lists"
         Screen.Bluetooth -> "Bluetooth"
         is Screen.BluetoothDevice -> "Device"
         is Screen.ConfirmAction -> "Confirm"
@@ -129,6 +156,8 @@ object ScreenContent {
             contentRevision = contentRevision(state),
             indexIdentity = System.identityHashCode(state.library.index),
             sortOrder = state.preferences.sortOrder,
+            albumSortOrder = state.preferences.albumSortOrder,
+            yearSortOrder = state.preferences.yearSortOrder,
             queueFingerprint = if (state.currentScreen == Screen.Queue || state.currentScreen is Screen.QueueMove) {
                 System.identityHashCode(state.playback.queue)
             } else 0
@@ -154,14 +183,23 @@ object ScreenContent {
         Screen.Audiobooks -> audiobookRows(state)
         is Screen.AudiobookOptions -> audiobookOptionRows(state, screen.folderKey)
         is Screen.AudiobookChapters -> audiobookChapterRows(state, screen.folderKey)
-        Screen.Songs -> collectionRows(sorted(state.library.musicTracks, state.preferences.sortOrder))
+        Screen.Songs -> collectionRows(state.library.index.organization.sortTracks(
+            state.library.musicTracks, state.preferences.sortOrder
+        ))
         Screen.Favorites -> favoriteRows(state)
         Screen.RecentlyPlayed -> collectionRows(state.library.recentlyPlayedMusic)
-        Screen.Albums -> albumRows(state.library.musicTracks)
+        Screen.Albums -> albumRows(state)
         is Screen.AlbumSongs -> albumDetailRows(state.library.musicTracks, screen.album, screen.albumArtist)
-        Screen.Artists -> artistRows(state.library.musicTracks)
-        is Screen.ArtistAlbums -> artistAlbumRows(state.library.musicTracks, screen.artist)
-        is Screen.ArtistSongs -> artistDetailRows(state.library.musicTracks, screen.artist)
+        Screen.Artists -> artistRows(state)
+        is Screen.ArtistAlbums -> artistAlbumRows(state, screen.artist)
+        is Screen.ArtistSongs -> artistDetailRows(state, screen.artist)
+        Screen.Genres -> genreRows(state)
+        Screen.Years -> yearRows(state)
+        is Screen.FacetMenu -> facetMenuRows(screen.scope)
+        is Screen.FacetArtists -> facetArtistRows(state, screen.scope)
+        is Screen.FacetAlbums -> facetAlbumRows(state, screen.scope)
+        is Screen.FacetArtistAlbums -> facetArtistAlbumRows(state, screen.scope, screen.artist)
+        is Screen.FacetTracks -> facetTrackRows(state, screen)
         is Screen.Folders -> folderRows(state.library.musicTracks, screen)
         Screen.Playlists -> playlistRows(state)
         is Screen.PlaylistTracks -> playlistTrackRows(state, screen)
@@ -188,6 +226,9 @@ object ScreenContent {
         Screen.OutputInformation -> outputInformationRows(state)
         Screen.EqualizerBands -> equalizerBandRows(state)
         Screen.SortOrder -> sortOrderRows(state)
+        Screen.TrackSorting -> trackSortRows()
+        Screen.AlbumSorting -> albumSortRows()
+        Screen.YearSorting -> yearSortRows()
         Screen.Bluetooth -> bluetoothRows(state)
         is Screen.BluetoothDevice -> bluetoothDeviceRows(state, screen)
         is Screen.ConfirmAction -> confirmActionRows(state, screen)
@@ -239,7 +280,10 @@ object ScreenContent {
             if (first.selectionIndex != null || second.selectionIndex != null) first.selectionIndex == second.selectionIndex
             else if (first.queueEntry != null || second.queueEntry != null) first.queueEntry?.id == second.queueEntry?.id
             else first.track.id == second.track.id
-        first is ScreenRow.Group && second is ScreenRow.Group -> first.key == second.key
+        first is ScreenRow.Group && second is ScreenRow.Group ->
+            (first.target != null || second.target != null).let { hasTarget ->
+                if (hasTarget) first.target == second.target else first.key == second.key
+            }
         first is ScreenRow.Folder && second is ScreenRow.Folder ->
             first.volumeId == second.volumeId && first.relativePath == second.relativePath
         else -> false
@@ -259,19 +303,34 @@ object ScreenContent {
     fun selectedCollection(state: AppState): Pair<String, List<Long>>? {
         val row = rows(state).getOrNull(state.selectedIndex)
         val tracks = state.library.musicTracks
+        val organization = state.library.index.organization
+        fun album(scope: LibraryScope, group: ScreenRow.Group): Pair<String, List<Track>>? =
+            (group.target as? ScreenGroupTarget.Album)?.key?.let { key ->
+                group.title to organization.albumTracks(scope, key)
+            }
+        fun artist(scope: LibraryScope, group: ScreenRow.Group): Pair<String, List<Track>> {
+            val name = (group.target as? ScreenGroupTarget.Artist)?.name ?: group.key
+            return group.title to organization.artistTracks(scope, name, state.preferences.albumSortOrder)
+        }
         val selection = when (val screen = state.currentScreen) {
-            Screen.Albums -> (row as? ScreenRow.Group)?.let { group ->
-                group.title to albumSorted(tracks.filter { it.displayAlbum == group.key })
-            }
-            Screen.Artists -> (row as? ScreenRow.Group)?.let { group ->
-                group.title to artistSorted(tracks.filter { it.isCreditedTo(group.key) })
-            }
+            Screen.Albums -> (row as? ScreenRow.Group)?.let { album(LibraryScope.All, it) }
+            Screen.Artists -> (row as? ScreenRow.Group)?.let { artist(LibraryScope.All, it) }
             is Screen.ArtistAlbums -> when {
                 (row as? ScreenRow.Action)?.key == "artist_all_songs" ->
-                    screen.artist to artistSorted(tracks.filter { it.isCreditedTo(screen.artist) })
-                row is ScreenRow.Group -> row.title to albumSorted(tracks.filter {
-                    it.displayAlbum == row.key && it.isCreditedTo(screen.artist)
-                })
+                    screen.artist to organization.artistTracks(
+                        LibraryScope.All, screen.artist, state.preferences.albumSortOrder
+                    )
+                row is ScreenRow.Group -> album(LibraryScope.All, row)
+                else -> null
+            }
+            is Screen.FacetAlbums -> (row as? ScreenRow.Group)?.let { album(screen.scope, it) }
+            is Screen.FacetArtists -> (row as? ScreenRow.Group)?.let { artist(screen.scope, it) }
+            is Screen.FacetArtistAlbums -> when {
+                (row as? ScreenRow.Action)?.key == "facet_artist_all_tracks" ->
+                    screen.artist to organization.artistTracks(
+                        screen.scope, screen.artist, state.preferences.albumSortOrder
+                    )
+                row is ScreenRow.Group -> album(screen.scope, row)
                 else -> null
             }
             Screen.Playlists -> (row as? ScreenRow.Action)?.key?.takeIf { it.startsWith("playlist:") }
@@ -296,6 +355,8 @@ object ScreenContent {
         ScreenRow.Action("Songs", null, "songs"),
         ScreenRow.Action("Albums", null, "albums"),
         ScreenRow.Action("Artists", null, "artists"),
+        ScreenRow.Action("Genres", null, "genres"),
+        ScreenRow.Action("Years", null, "years"),
         ScreenRow.Action("Playlists", null, "playlists"),
         ScreenRow.Action("Favorites", trackCountLabel(state.library.favoriteMusicTracks.size), "favorites"),
         ScreenRow.Action("Recently Played", trackCountLabel(state.library.recentlyPlayedMusic.size), "recent"),
@@ -440,7 +501,9 @@ object ScreenContent {
     }
 
     private fun favoriteRows(state: AppState): List<ScreenRow> =
-        collectionRows(sorted(state.library.favoriteMusicTracks, state.preferences.sortOrder))
+        collectionRows(state.library.index.organization.sortTracks(
+            state.library.favoriteMusicTracks, state.preferences.sortOrder
+        ))
 
     // A one-track collection is already in order, so Shuffle would be a no-op row.
     private fun collectionRows(tracks: List<Track>): List<ScreenRow> {
@@ -688,7 +751,7 @@ object ScreenContent {
 
     private fun librarySettingsRows(state: AppState): List<ScreenRow> = listOf(
         ScreenRow.Action("Storage & Scan", scanSubtitle(state), "storage"),
-        ScreenRow.Action("Sort Order", sortLabel(state.preferences.sortOrder), "sort"),
+        ScreenRow.Action("Sorting", sortingSummary(state), "sort"),
         ScreenRow.Action("Listening History", historySummaryLabel(state), "playback_history"),
         ScreenRow.Action("Import Playlists", "Find M3U/M3U8 files on music storage", "playlist_import_m3u"),
         ScreenRow.Action("Export Playlists", "Write M3U files to Y2Player/Playlists", "playlist_export_m3u")
@@ -874,8 +937,22 @@ object ScreenContent {
         }
     }
 
-    private fun sortOrderRows(state: AppState): List<ScreenRow> = TrackSortOrder.entries.map { order ->
-        ScreenRow.Action(sortLabel(order), null, "sort:${order.storageId}")
+    private fun sortOrderRows(state: AppState): List<ScreenRow> = listOf(
+        ScreenRow.Action("Tracks", sortLabel(state.preferences.sortOrder), "sort_tracks"),
+        ScreenRow.Action("Albums", albumSortLabel(state.preferences.albumSortOrder), "sort_albums"),
+        ScreenRow.Action("Year Lists", yearSortLabel(state.preferences.yearSortOrder), "sort_years")
+    )
+
+    private fun trackSortRows(): List<ScreenRow> = TrackSortOrder.entries.map { order ->
+        ScreenRow.Action(sortLabel(order), null, "track_sort:${order.storageId}")
+    }
+
+    private fun albumSortRows(): List<ScreenRow> = AlbumSortOrder.entries.map { order ->
+        ScreenRow.Action(albumSortLabel(order), null, "album_sort:${order.storageId}")
+    }
+
+    private fun yearSortRows(): List<ScreenRow> = YearSortOrder.entries.map { order ->
+        ScreenRow.Action(yearSortLabel(order), null, "year_sort:${order.storageId}")
     }
 
     private fun bluetoothRows(state: AppState): List<ScreenRow> = buildList {
@@ -1067,20 +1144,19 @@ object ScreenContent {
         ScreenRow.Group("Build", "Local-only · API 19 · no network", "about_build")
     )
 
-    private fun albumRows(tracks: List<Track>): List<ScreenRow> {
-        val albums = LinkedHashMap<String, AlbumAccumulator>()
-        tracks.forEach { track ->
-            val album = track.displayAlbum
-            val artist = track.albumArtistName
-            val value = albums[album]
-            if (value == null) albums[album] = AlbumAccumulator(1, artist)
-            else {
-                value.count += 1
-                if (value.singleArtist != artist) value.singleArtist = null
-            }
-        }
-        return albums.entries.sortedWith { first, second -> compareText(first.key, second.key) }.map { (album, value) ->
-            ScreenRow.Group(album, value.singleArtist ?: trackCountLabel(value.count), album)
+    private fun albumRows(state: AppState): List<ScreenRow> = albumRows(
+        state.library.index.organization.albums(LibraryScope.All, state.preferences.albumSortOrder)
+    )
+
+    private fun albumRows(albums: List<AlbumEntry>): List<ScreenRow> {
+        val duplicateTitles = albums.groupingBy { it.key.title }.eachCount().filterValues { it > 1 }.keys
+        return albums.map { album ->
+        ScreenRow.Group(
+            album.title,
+            albumSubtitle(album.year, album.albumArtist),
+            if (album.key.title in duplicateTitles) "${album.title}\u0000${album.albumArtist}" else album.title,
+            ScreenGroupTarget.Album(album.key)
+        )
         }
     }
 
@@ -1097,59 +1173,108 @@ object ScreenContent {
         )
     }
 
-    private fun artistAlbumRows(tracks: List<Track>, artist: String): List<ScreenRow> {
-        val byArtist = tracks.filter { it.isCreditedTo(artist) }
-        val counts = LinkedHashMap<String, Int>()
-        val owners = HashMap<String, String>()
-        byArtist.forEach { track ->
-            val album = track.displayAlbum
-            counts[album] = (counts[album] ?: 0) + 1
-            if (album !in owners) owners[album] = track.albumArtistName
-        }
+    private fun artistAlbumRows(state: AppState, artist: String): List<ScreenRow> {
+        val organization = state.library.index.organization
+        val byArtist = organization.tracks(LibraryScope.All).filter { it.isCreditedTo(artist) }
+        val albums = organization.artistAlbums(LibraryScope.All, artist, state.preferences.albumSortOrder)
         return buildList {
             add(ScreenRow.Action("All Songs", trackCountLabel(byArtist.size), "artist_all_songs"))
-            counts.entries.sortedWith { first, second -> compareText(first.key, second.key) }
-                .forEach { (album, count) ->
-                    // A guest appearance names whose album it is; an own album counts tracks.
-                    val owner = owners[album]
-                    val subtitle = if (owner != null && !owner.equals(artist, ignoreCase = true)) owner else trackCountLabel(count)
-                    add(ScreenRow.Group(album, subtitle, album))
-                }
-        }
-    }
-
-    private fun artistRows(tracks: List<Track>): List<ScreenRow> {
-        val performers = LinkedHashMap<String, String>()
-        val counts = LinkedHashMap<String, Int>()
-        tracks.forEach { track ->
-            track.creditedArtists.forEach { artist ->
-                val key = artistKey(artist)
-                if (!isSyntheticArtist(artist)) {
-                    if (key !in performers) performers[key] = artist
-                    counts[key] = (counts[key] ?: 0) + 1
-                }
+            albums.forEach { album ->
+                val detail = if (!album.albumArtist.equals(artist, ignoreCase = true)) {
+                    album.albumArtist
+                } else trackCountLabel(album.tracks.size)
+                add(ScreenRow.Group(
+                    album.title,
+                    albumSubtitle(album.year, detail),
+                    album.title,
+                    ScreenGroupTarget.Album(album.key)
+                ))
             }
         }
-        return counts.entries.sortedWith { first, second ->
-            compareText(performers.getValue(first.key), performers.getValue(second.key))
-        }.map { (key, count) ->
-            val artist = performers.getValue(key)
-            ScreenRow.Group(artist, trackCountLabel(count), artist)
+    }
+
+    private fun artistRows(state: AppState): List<ScreenRow> = state.library.index.organization
+        .artists(LibraryScope.All).map { artist ->
+            ScreenRow.Group(
+                artist.name,
+                trackCountLabel(artist.tracks.size),
+                artist.name,
+                ScreenGroupTarget.Artist(artist.name)
+            )
+        }
+
+    private fun artistDetailRows(
+        state: AppState,
+        artist: String
+    ): List<ScreenRow> = collectionRows(state.library.index.organization.artistTracks(
+        LibraryScope.All, artist, state.preferences.albumSortOrder
+    ))
+
+    private fun genreRows(state: AppState): List<ScreenRow> = state.library.index.organization.genres().map { genre ->
+        val scope = LibraryScope.Genre(genre.key, genre.label)
+        ScreenRow.Group(genre.label, trackCountLabel(genre.tracks.size), genre.key, ScreenGroupTarget.Scope(scope))
+    }
+
+    private fun yearRows(state: AppState): List<ScreenRow> = state.library.index.organization
+        .years(state.preferences.yearSortOrder).map { year ->
+            val scope = LibraryScope.Year(year.year)
+            ScreenRow.Group(scope.label, trackCountLabel(year.tracks.size), scope.label, ScreenGroupTarget.Scope(scope))
+        }
+
+    private fun facetMenuRows(scope: LibraryScope): List<ScreenRow> = listOf(
+        ScreenRow.Action("All Tracks", "Every track in ${scope.label}", "facet_all_tracks"),
+        ScreenRow.Action("Artists", "Browse artists in ${scope.label}", "facet_artists"),
+        ScreenRow.Action("Albums", "Browse albums in ${scope.label}", "facet_albums")
+    )
+
+    private fun facetArtistRows(state: AppState, scope: LibraryScope): List<ScreenRow> =
+        state.library.index.organization.artists(scope).map { artist ->
+            ScreenRow.Group(
+                artist.name,
+                trackCountLabel(artist.tracks.size),
+                artist.name,
+                ScreenGroupTarget.Artist(artist.name)
+            )
+        }
+
+    private fun facetAlbumRows(state: AppState, scope: LibraryScope): List<ScreenRow> = albumRows(
+        state.library.index.organization.albums(scope, state.preferences.albumSortOrder)
+    )
+
+    private fun facetArtistAlbumRows(state: AppState, scope: LibraryScope, artist: String): List<ScreenRow> {
+        val organization = state.library.index.organization
+        val tracks = organization.tracks(scope).filter { it.isCreditedTo(artist) }
+        val albums = organization.artistAlbums(scope, artist, state.preferences.albumSortOrder)
+        return buildList {
+            add(ScreenRow.Action("All Tracks", trackCountLabel(tracks.size), "facet_artist_all_tracks"))
+            albums.forEach { album ->
+                val detail = if (!album.albumArtist.equals(artist, ignoreCase = true)) {
+                    album.albumArtist
+                } else trackCountLabel(album.tracks.size)
+                add(ScreenRow.Group(
+                    album.title,
+                    albumSubtitle(album.year, detail),
+                    album.title,
+                    ScreenGroupTarget.Album(album.key)
+                ))
+            }
         }
     }
 
-    private fun artistKey(name: String): String = name.trim().lowercase(Locale.US)
-    private fun isSyntheticArtist(name: String): Boolean = name.trim().equals("Various Artists", ignoreCase = true)
+    private fun facetTrackRows(state: AppState, screen: Screen.FacetTracks): List<ScreenRow> {
+        val organization = state.library.index.organization
+        val tracks = when {
+            screen.album != null -> organization.albumTracks(screen.scope, screen.album)
+            screen.artist != null -> organization.artistTracks(
+                screen.scope, screen.artist, state.preferences.albumSortOrder
+            )
+            else -> organization.sortTracks(organization.tracks(screen.scope), state.preferences.sortOrder)
+        }
+        return collectionRows(tracks)
+    }
 
-    private fun artistDetailRows(
-        tracks: List<Track>,
-        artist: String
-    ): List<ScreenRow> = collectionRows(artistSorted(tracks.filter { it.isCreditedTo(artist) }))
-
-    internal fun albumArtistForArtistAlbum(state: AppState, artist: String, album: String): String? =
-        state.library.musicTracks.firstOrNull {
-            it.displayAlbum == album && it.isCreditedTo(artist)
-        }?.albumArtistName
+    internal fun albumEntry(state: AppState, scope: LibraryScope, key: AlbumKey): AlbumEntry? =
+        state.library.index.organization.albums(scope, AlbumSortOrder.TITLE).firstOrNull { it.key == key }
 
     private fun folderRows(tracks: List<Track>, screen: Screen.Folders): List<ScreenRow> {
         if (screen.volumeId == null) return tracks.groupBy { it.volumeId }.keys.sorted().map { ScreenRow.Folder(volumeName(it), it, "") }
@@ -1166,25 +1291,6 @@ object ScreenContent {
             folders.sortedWith(::compareText).forEach { add(ScreenRow.Folder(it, screen.volumeId, (prefix + it).trim('/'))) }
             albumSorted(directTracks).forEach { add(ScreenRow.TrackRow(it)) }
         }
-    }
-
-    private fun sorted(tracks: List<Track>, order: TrackSortOrder): List<Track> = when (order) {
-        TrackSortOrder.TITLE -> tracks.sortedWith { first, second ->
-            compareText(first.title, second.title).takeUnless { it == 0 }
-                ?: compareText(first.displayArtist, second.displayArtist)
-        }
-        TrackSortOrder.ARTIST -> tracks.sortedWith { first, second ->
-            compareText(first.displayArtist, second.displayArtist).takeUnless { it == 0 }
-                ?: compareText(first.title, second.title)
-        }
-        TrackSortOrder.ALBUM -> tracks.sortedWith { first, second ->
-            compareText(first.displayAlbum, second.displayAlbum).takeUnless { it == 0 }
-                ?: compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
-                ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE).takeUnless { it == 0 }
-                ?: NaturalOrder.compare(first.fileName, second.fileName)
-        }
-        TrackSortOrder.ADDED -> tracks.sortedByDescending { it.addedAt }
-        TrackSortOrder.RECENT -> tracks.sortedByDescending { it.modifiedAt }
     }
 
     private fun albumSorted(tracks: List<Track>): List<Track> {
@@ -1213,13 +1319,6 @@ object ScreenContent {
         }
     }
 
-    private fun artistSorted(tracks: List<Track>): List<Track> = tracks.sortedWith { first, second ->
-        compareText(first.displayAlbum, second.displayAlbum).takeUnless { it == 0 }
-            ?: compareValues(first.discNumber ?: 0, second.discNumber ?: 0).takeUnless { it == 0 }
-            ?: compareValues(first.trackNumber ?: Int.MAX_VALUE, second.trackNumber ?: Int.MAX_VALUE).takeUnless { it == 0 }
-            ?: NaturalOrder.compare(first.fileName, second.fileName).takeUnless { it == 0 }
-            ?: compareText(first.title, second.title)
-    }
     private fun compareText(first: String, second: String): Int = String.CASE_INSENSITIVE_ORDER.compare(first, second)
     private fun playbackSummary(state: AppState): String = buildList {
         if (state.playback.shuffleEnabled) add("Shuffle")
@@ -1268,9 +1367,28 @@ object ScreenContent {
         TrackSortOrder.TITLE -> "Title"
         TrackSortOrder.ARTIST -> "Artist"
         TrackSortOrder.ALBUM -> "Album"
+        TrackSortOrder.YEAR -> "Release Year"
         TrackSortOrder.ADDED -> "Recently Added"
         TrackSortOrder.RECENT -> "File Modified"
     }
+
+    private fun albumSortLabel(order: AlbumSortOrder): String = when (order) {
+        AlbumSortOrder.TITLE -> "Title"
+        AlbumSortOrder.ARTIST -> "Artist"
+        AlbumSortOrder.YEAR_ASCENDING -> "Year · oldest first"
+        AlbumSortOrder.YEAR_DESCENDING -> "Year · newest first"
+    }
+
+    private fun yearSortLabel(order: YearSortOrder): String = when (order) {
+        YearSortOrder.NEWEST_FIRST -> "Newest first"
+        YearSortOrder.OLDEST_FIRST -> "Oldest first"
+    }
+
+    private fun sortingSummary(state: AppState): String =
+        "Tracks: ${sortLabel(state.preferences.sortOrder)} · Albums: ${albumSortLabel(state.preferences.albumSortOrder)}"
+
+    private fun albumSubtitle(year: Int?, detail: String): String =
+        "${year?.toString() ?: "Year unknown"} · $detail"
 
     private fun millisecondsLabel(value: Int): String = if (value <= 0) "Off" else if (value < 1_000) "${value} ms" else "${value / 1_000} seconds"
     private fun secondsLabel(value: Int): String = "${value / 1_000} seconds"
@@ -1325,10 +1443,10 @@ object ScreenContent {
         val contentRevision: Long,
         val indexIdentity: Int,
         val sortOrder: TrackSortOrder,
+        val albumSortOrder: AlbumSortOrder,
+        val yearSortOrder: YearSortOrder,
         val queueFingerprint: Int
     )
-
-    private data class AlbumAccumulator(var count: Int, var singleArtist: String?)
 
     private val cachedRows = LinkedHashMap<LargeRowsKey, List<ScreenRow>>(
         ROW_CACHE_ENTRIES + 1, 0.75f, true
@@ -1344,8 +1462,10 @@ object ScreenContent {
 
     private fun isLargeScreen(screen: Screen): Boolean = when (screen) {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
-        Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
+        Screen.Genres, Screen.Years, Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
         is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
+        is Screen.FacetMenu, is Screen.FacetArtists, is Screen.FacetAlbums,
+        is Screen.FacetArtistAlbums, is Screen.FacetTracks,
         is Screen.Folders, is Screen.PlaylistTracks, is Screen.AudiobookChapters,
         is Screen.MultiSelect, is Screen.QueueMove -> true
         else -> false
@@ -1449,55 +1569,5 @@ internal object ConfirmPrompts {
 }
 
 internal object NaturalOrder {
-    fun compare(first: String, second: String): Int {
-        var i = 0
-        var j = 0
-        while (i < first.length && j < second.length) {
-            val left = first[i]
-            val right = second[j]
-            if (left.isDigit() && right.isDigit()) {
-                val endLeft = digitRunEnd(first, i)
-                val endRight = digitRunEnd(second, j)
-                compareDigitRuns(first, i, endLeft, second, j, endRight).takeIf { it != 0 }?.let { return it }
-                i = endLeft
-                j = endRight
-            } else {
-                val result = left.lowercaseChar().compareTo(right.lowercaseChar())
-                if (result != 0) return result
-                i++
-                j++
-            }
-        }
-        return (first.length - i) - (second.length - j)
-    }
-
-    private fun digitRunEnd(text: String, from: Int): Int {
-        var index = from
-        while (index < text.length && text[index].isDigit()) index++
-        return index
-    }
-
-    private fun compareDigitRuns(
-        first: String,
-        startFirst: Int,
-        endFirst: Int,
-        second: String,
-        startSecond: Int,
-        endSecond: Int
-    ): Int {
-        var left = startFirst
-        var right = startSecond
-        while (left < endFirst - 1 && first[left] == '0') left++
-        while (right < endSecond - 1 && second[right] == '0') right++
-        val lengthLeft = endFirst - left
-        val lengthRight = endSecond - right
-        if (lengthLeft != lengthRight) return lengthLeft - lengthRight
-        while (left < endFirst) {
-            val result = first[left].compareTo(second[right])
-            if (result != 0) return result
-            left++
-            right++
-        }
-        return 0
-    }
+    fun compare(first: String, second: String): Int = NaturalTextOrder.compare(first, second)
 }

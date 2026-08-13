@@ -101,7 +101,7 @@ class MainMenuHierarchyTest {
     @Test fun `Music owns every library entry point`() {
         val music = AppState(screenStack = listOf(ScreenEntry(Screen.Music)), library = library)
         assertEquals(
-            listOf("shuffle_all", "songs", "albums", "artists", "playlists", "favorites", "recent", "folders"),
+            listOf("shuffle_all", "songs", "albums", "artists", "genres", "years", "playlists", "favorites", "recent", "folders"),
             keys(music)
         )
     }

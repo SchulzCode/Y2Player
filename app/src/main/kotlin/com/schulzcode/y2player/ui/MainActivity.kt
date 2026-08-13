@@ -540,6 +540,8 @@ class MainActivity : Activity() {
             AppEffect.CycleBassStrength -> applyPlaybackPreferences(preferences.cycleBassStrength())
             AppEffect.CycleLoudnessGain -> applyPlaybackPreferences(preferences.cycleLoudnessGain())
             is AppEffect.SetSortOrder -> applyPlaybackPreferences(preferences.setSortOrder(effect.order))
+            is AppEffect.SetAlbumSortOrder -> applyPlaybackPreferences(preferences.setAlbumSortOrder(effect.order))
+            is AppEffect.SetYearSortOrder -> applyPlaybackPreferences(preferences.setYearSortOrder(effect.order))
 
             AppEffect.RefreshPlaybackHistory -> refreshPlaybackHistory()
             AppEffect.RefreshAudiobooks -> libraryRepository.refreshAudiobookProgress()

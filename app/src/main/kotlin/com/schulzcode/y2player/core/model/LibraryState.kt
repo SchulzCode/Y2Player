@@ -13,6 +13,7 @@ class LibraryIndex private constructor(val tracks: List<Track>) {
     val musicTracks: List<Track>
     val favoriteMusicTracks: List<Track>
     val availableTrackIds: Set<Long>
+    val organization: LibraryOrganization by lazy { LibraryOrganization(musicTracks) }
 
     init {
         val ids = HashMap<Long, Track>(tracks.size * 4 / 3 + 1)

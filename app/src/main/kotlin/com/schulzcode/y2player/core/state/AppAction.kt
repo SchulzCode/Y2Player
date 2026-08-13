@@ -1,8 +1,10 @@
 package com.schulzcode.y2player.core.state
 
 import com.schulzcode.y2player.core.model.LibraryState
+import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 
 sealed interface AppAction {
@@ -108,6 +110,8 @@ sealed interface AppEffect {
     data object CycleBassStrength : AppEffect
     data object CycleLoudnessGain : AppEffect
     data class SetSortOrder(val order: TrackSortOrder) : AppEffect
+    data class SetAlbumSortOrder(val order: AlbumSortOrder) : AppEffect
+    data class SetYearSortOrder(val order: YearSortOrder) : AppEffect
 
     data object RefreshPlaybackHistory : AppEffect
     data object RefreshAudiobooks : AppEffect

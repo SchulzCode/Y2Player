@@ -20,6 +20,15 @@ class StableStorageIdsTest {
         assertEquals(TrackSortOrder.TITLE, TrackSortOrder.fromStorage("renamed-or-invalid"))
     }
 
+    @Test fun libraryGroupSortOrdersReadStableAndLegacyValues() {
+        assertEquals(AlbumSortOrder.YEAR_ASCENDING, AlbumSortOrder.fromStorage("year_ascending"))
+        assertEquals(AlbumSortOrder.YEAR_ASCENDING, AlbumSortOrder.fromStorage("YEAR_ASCENDING"))
+        assertEquals(AlbumSortOrder.TITLE, AlbumSortOrder.fromStorage("invalid"))
+        assertEquals(YearSortOrder.OLDEST_FIRST, YearSortOrder.fromStorage("oldest_first"))
+        assertEquals(YearSortOrder.OLDEST_FIRST, YearSortOrder.fromStorage("OLDEST_FIRST"))
+        assertEquals(YearSortOrder.NEWEST_FIRST, YearSortOrder.fromStorage("invalid"))
+    }
+
     @Test
     fun volumeModeReadsStableAndLegacyValuesAndDefaultsToSystem() {
         assertEquals(VolumeMode.PERCEPTUAL, VolumeMode.fromStorage("perceptual"))

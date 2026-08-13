@@ -3,7 +3,9 @@ package com.schulzcode.y2player.settings
 import android.content.Context
 import android.content.SharedPreferences
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
@@ -35,6 +37,8 @@ class AppPreferences(context: Context) {
         pauseOnDisconnect = boolean(KEY_PAUSE_ON_DISCONNECT, true),
         resumePosition = boolean(KEY_RESUME_POSITION, true),
         sortOrder = TrackSortOrder.fromStorage(string(KEY_SORT_ORDER, TrackSortOrder.TITLE.storageId)),
+        albumSortOrder = AlbumSortOrder.fromStorage(string(KEY_ALBUM_SORT_ORDER, AlbumSortOrder.TITLE.storageId)),
+        yearSortOrder = YearSortOrder.fromStorage(string(KEY_YEAR_SORT_ORDER, YearSortOrder.NEWEST_FIRST.storageId)),
         gaplessEnabled = boolean(KEY_GAPLESS, true),
         crossfadeMs = integer(KEY_CROSSFADE, 0).takeIf { it in CROSSFADE_LEVELS } ?: 0,
         crossfadeMode = CrossfadeMode.fromStorage(string(KEY_CROSSFADE_MODE, null)),
@@ -141,6 +145,12 @@ class AppPreferences(context: Context) {
     fun setSortOrder(order: TrackSortOrder): PlayerPreferencesState =
         commit { putString(KEY_SORT_ORDER, order.storageId) }
 
+    fun setAlbumSortOrder(order: AlbumSortOrder): PlayerPreferencesState =
+        commit { putString(KEY_ALBUM_SORT_ORDER, order.storageId) }
+
+    fun setYearSortOrder(order: YearSortOrder): PlayerPreferencesState =
+        commit { putString(KEY_YEAR_SORT_ORDER, order.storageId) }
+
     /** Replaces only Y2Player-owned settings and commits synchronously for restore transactions. */
     @Synchronized
     fun restore(value: PlayerPreferencesState): Boolean {
@@ -159,6 +169,8 @@ class AppPreferences(context: Context) {
             putBoolean(KEY_PAUSE_ON_DISCONNECT, value.pauseOnDisconnect)
             putBoolean(KEY_RESUME_POSITION, value.resumePosition)
             putString(KEY_SORT_ORDER, value.sortOrder.storageId)
+            putString(KEY_ALBUM_SORT_ORDER, value.albumSortOrder.storageId)
+            putString(KEY_YEAR_SORT_ORDER, value.yearSortOrder.storageId)
             putBoolean(KEY_GAPLESS, value.gaplessEnabled)
             putInt(KEY_CROSSFADE, value.crossfadeMs)
             putString(KEY_CROSSFADE_MODE, value.crossfadeMode.storageId)
@@ -225,6 +237,8 @@ class AppPreferences(context: Context) {
         private const val KEY_PAUSE_ON_DISCONNECT = "pause_on_disconnect"
         private const val KEY_RESUME_POSITION = "resume_position"
         private const val KEY_SORT_ORDER = "sort_order"
+        private const val KEY_ALBUM_SORT_ORDER = "album_sort_order"
+        private const val KEY_YEAR_SORT_ORDER = "year_sort_order"
         private const val KEY_GAPLESS = "gapless"
         private const val KEY_CROSSFADE = "crossfade_ms"
         private const val KEY_CROSSFADE_MODE = "crossfade_mode"

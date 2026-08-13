@@ -373,6 +373,7 @@ enum class TrackSortOrder(val storageId: String) {
     TITLE("title"),
     ARTIST("artist"),
     ALBUM("album"),
+    YEAR("year"),
     ADDED("added"),
     RECENT("recent");
 

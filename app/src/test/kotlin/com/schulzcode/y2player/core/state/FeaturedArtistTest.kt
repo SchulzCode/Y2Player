@@ -99,7 +99,7 @@ class FeaturedArtistTest {
             .filterIsInstance<ScreenRow.Group>()
             .single()
         assertEquals("Random Access Memories", row.title)
-        assertEquals("Daft Punk", row.subtitle)
+        assertEquals("Year unknown · Daft Punk", row.subtitle)
     }
 
     @Test fun `opening the guest album uses its owner and shows every track`() {
@@ -207,7 +207,7 @@ class FeaturedArtistTest {
         )
         val rows = ScreenContent.rows(onScreen(Screen.Albums, comp)).filterIsInstance<ScreenRow.Group>()
         assertEquals("Chillout", rows.single().title)
-        assertEquals("the album artist tag names the album", "Various Artists", rows.single().subtitle)
+        assertEquals("the album artist tag names the album", "Year unknown · Various Artists", rows.single().subtitle)
     }
 
     @Test fun `Various Artists does not become an artist`() {

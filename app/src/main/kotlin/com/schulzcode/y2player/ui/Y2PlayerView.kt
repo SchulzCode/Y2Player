@@ -2035,6 +2035,7 @@ class Y2PlayerView(
         row !is ScreenRow.TrackRow -> row.subtitle
         state.currentScreen is Screen.AlbumSongs -> null
         state.currentScreen is Screen.ArtistSongs -> row.track.displayAlbum
+        (state.currentScreen as? Screen.FacetTracks)?.artist != null -> row.track.displayAlbum
         else -> row.subtitle
     }
 

@@ -29,9 +29,10 @@ internal object ListNavigationPolicy {
         itemCount >= MIN_ACCELERATED_ITEMS && when (screen) {
             Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed,
             Screen.Albums, Screen.Artists, Screen.Playlists, Screen.Queue,
-            Screen.Audiobooks, is Screen.AlbumSongs, is Screen.ArtistAlbums,
+            Screen.Genres, Screen.Years, Screen.Audiobooks, is Screen.AlbumSongs, is Screen.ArtistAlbums,
             is Screen.ArtistSongs, is Screen.Folders, is Screen.PlaylistTracks,
-            is Screen.AudiobookChapters, is Screen.AddToPlaylist -> true
+            is Screen.FacetArtists, is Screen.FacetAlbums, is Screen.FacetArtistAlbums,
+            is Screen.FacetTracks, is Screen.AudiobookChapters, is Screen.AddToPlaylist -> true
             else -> false
         }
 

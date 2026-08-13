@@ -1,7 +1,9 @@
 package com.schulzcode.y2player.backup
 
 import com.schulzcode.y2player.core.model.AudioQualityMode
+import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.CrossfadeMode
@@ -27,6 +29,8 @@ class PreferenceBackupTest {
             pauseOnDisconnect = false,
             resumePosition = false,
             sortOrder = TrackSortOrder.RECENT,
+            albumSortOrder = AlbumSortOrder.YEAR_DESCENDING,
+            yearSortOrder = YearSortOrder.OLDEST_FIRST,
             gaplessEnabled = false,
             crossfadeMs = 6_000,
             crossfadeMode = CrossfadeMode.WHILE_SHUFFLING,
@@ -45,5 +49,16 @@ class PreferenceBackupTest {
         )
         val persistedBackupFields = PreferenceBackup.encode(expected).toMap()
         assertEquals(expected, PreferenceBackup.decode(persistedBackupFields))
+    }
+
+    @Test fun oldBackupsReceiveStableDefaultsForNewSortingPolicies() {
+        val oldFields = PreferenceBackup.encode(PlayerPreferencesState()).toMutableMap().apply {
+            remove("album_sort_order")
+            remove("year_sort_order")
+        }
+
+        val decoded = PreferenceBackup.decode(oldFields)
+        assertEquals(AlbumSortOrder.TITLE, decoded.albumSortOrder)
+        assertEquals(YearSortOrder.NEWEST_FIRST, decoded.yearSortOrder)
     }
 }

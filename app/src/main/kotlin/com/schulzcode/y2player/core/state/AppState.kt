@@ -4,6 +4,8 @@ import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.TrackSortOrder
+import com.schulzcode.y2player.core.model.AlbumSortOrder
+import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
@@ -86,6 +88,8 @@ data class PlayerPreferencesState(
     val pauseOnDisconnect: Boolean = true,
     val resumePosition: Boolean = true,
     val sortOrder: TrackSortOrder = TrackSortOrder.TITLE,
+    val albumSortOrder: AlbumSortOrder = AlbumSortOrder.TITLE,
+    val yearSortOrder: YearSortOrder = YearSortOrder.NEWEST_FIRST,
     val gaplessEnabled: Boolean = true,
     val crossfadeMs: Int = 0,
     val crossfadeMode: CrossfadeMode = CrossfadeMode.ALWAYS,

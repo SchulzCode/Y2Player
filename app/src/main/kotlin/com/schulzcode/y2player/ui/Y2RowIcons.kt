@@ -17,8 +17,12 @@ object Y2RowIcons {
 
     // Album and artist groups carry the name itself as the key, so the screen decides.
     fun forGroupKey(key: String, screen: Screen): Y2Icon {
-        if (screen == Screen.Albums || screen is Screen.ArtistAlbums) return Y2Icon.ALBUM
-        if (screen == Screen.Artists) return Y2Icon.ARTIST
+        if (screen == Screen.Albums || screen is Screen.ArtistAlbums ||
+            screen is Screen.FacetAlbums || screen is Screen.FacetArtistAlbums
+        ) return Y2Icon.ALBUM
+        if (screen == Screen.Artists || screen is Screen.FacetArtists) return Y2Icon.ARTIST
+        if (screen == Screen.Genres) return Y2Icon.LIBRARY
+        if (screen == Screen.Years) return Y2Icon.RECENT
         return exactGroup(key) ?: prefixedGroup(key)
     }
 
@@ -59,6 +63,12 @@ object Y2RowIcons {
         "songs", "artist_all_songs" -> Y2Icon.SONG
         "albums" -> Y2Icon.ALBUM
         "artists" -> Y2Icon.ARTIST
+        "genres" -> Y2Icon.LIBRARY
+        "years" -> Y2Icon.RECENT
+        "facet_all_tracks" -> Y2Icon.SONG
+        "facet_artists" -> Y2Icon.ARTIST
+        "facet_albums" -> Y2Icon.ALBUM
+        "facet_artist_all_tracks" -> Y2Icon.SONG
         "playlists" -> Y2Icon.PLAYLIST
         "folders" -> Y2Icon.FOLDER
         "favorites" -> Y2Icon.FAVORITE
@@ -97,7 +107,7 @@ object Y2RowIcons {
         "extra_track_info", "technical_details" -> Y2Icon.INFO
 
         "library_settings" -> Y2Icon.LIBRARY
-        "sort" -> Y2Icon.SORT
+        "sort", "sort_tracks", "sort_albums", "sort_years" -> Y2Icon.SORT
         "storage" -> Y2Icon.STORAGE
         "rescan" -> Y2Icon.REFRESH
         "playback_history", "listening_history" -> Y2Icon.HISTORY
@@ -117,6 +127,8 @@ object Y2RowIcons {
     }
 
     private fun prefixedAction(key: String): Y2Icon = when {
+        key.startsWith("sort:") || key.startsWith("track_sort:") ||
+            key.startsWith("album_sort:") || key.startsWith("year_sort:") -> Y2Icon.SORT
         key.startsWith("audiobook_chapters:") -> Y2Icon.CHAPTERS
         key.startsWith("np_audiobook_chapters:") -> Y2Icon.CHAPTERS
         key.startsWith("audiobook_restart:") -> Y2Icon.REFRESH

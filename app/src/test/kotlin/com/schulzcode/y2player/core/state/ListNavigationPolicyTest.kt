@@ -1,5 +1,6 @@
 package com.schulzcode.y2player.core.state
 
+import com.schulzcode.y2player.core.model.LibraryScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -50,6 +51,9 @@ class ListNavigationPolicyTest {
         assertFalse(ListNavigationPolicy.allowsAcceleration(Screen.Songs, 11))
         assertTrue(ListNavigationPolicy.allowsAcceleration(Screen.Songs, 12))
         assertTrue(ListNavigationPolicy.allowsAcceleration(Screen.AudiobookChapters("book"), 20))
+        assertTrue(ListNavigationPolicy.allowsAcceleration(Screen.Genres, 20))
+        assertTrue(ListNavigationPolicy.allowsAcceleration(Screen.Years, 20))
+        assertTrue(ListNavigationPolicy.allowsAcceleration(Screen.FacetAlbums(LibraryScope.Year(2000)), 20))
         assertFalse(ListNavigationPolicy.allowsAcceleration(Screen.ConfirmAction("clear"), 20))
         assertFalse(ListNavigationPolicy.allowsAcceleration(Screen.Controls, 20))
         assertFalse(ListNavigationPolicy.allowsAcceleration(Screen.Brightness, 20))
