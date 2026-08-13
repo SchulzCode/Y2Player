@@ -34,6 +34,7 @@ object ScreenCatalogue {
         put(Screen.CollectionOptions("Album", listOf(1)))
         put(Screen.MultiSelect("Songs", listOf(1), setOf(0)))
         put(Screen.QueueOptions(0))
+        put(Screen.QueueMove(0, 0))
         put(Screen.QueueManagement)
         put(Screen.NowPlaying)
         put(Screen.NowPlayingOptions)
@@ -85,6 +86,6 @@ object ScreenCatalogue {
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,
         Screen.AudiobookChapters("").code, Screen.MultiSelect("", emptyList(), emptySet()).code,
-        Screen.EqualizerBands.code
+        Screen.QueueOptions(0).code, Screen.QueueMove(0, 0).code, Screen.EqualizerBands.code
     )
 }

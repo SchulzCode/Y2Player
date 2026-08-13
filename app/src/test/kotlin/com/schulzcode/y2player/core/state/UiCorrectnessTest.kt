@@ -243,7 +243,7 @@ class UiCorrectnessTest {
         Screen.ArtistAlbums("Artist"), Screen.ArtistSongs("Artist"), Screen.Folders(),
         Screen.Playlists, Screen.PlaylistTracks(5, "Road Trip"), Screen.TrackOptions(1),
         Screen.TrackBrowse(1), Screen.TrackDetails(1), Screen.AddToPlaylist(1),
-        Screen.QueueOptions(0), Screen.QueueManagement, Screen.NowPlaying,
+        Screen.QueueOptions(0), Screen.QueueMove(0, 0), Screen.QueueManagement, Screen.NowPlaying,
         Screen.NowPlayingOptions, Screen.Queue, Screen.Audio, Screen.Settings,
         Screen.PlaybackTransitions, Screen.PlaybackSeeking,
         Screen.PlaybackVolume, Screen.PlaybackInterruptions, Screen.SoundEffects,

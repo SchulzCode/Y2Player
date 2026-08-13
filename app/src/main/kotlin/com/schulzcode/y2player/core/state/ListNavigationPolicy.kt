@@ -35,9 +35,9 @@ internal object ListNavigationPolicy {
             else -> false
         }
 
-    private fun wraps(screen: Screen, preference: Boolean): Boolean = when (screen) {
-        is Screen.ConfirmAction -> false
-        Screen.EqualizerBands, Screen.NowPlayingOptions -> true
+    private fun wraps(screen: Screen, preference: Boolean): Boolean = when {
+        screen is Screen.ConfirmAction -> false
+        screen == Screen.EqualizerBands || screen.isRadialMenu() -> true
         else -> preference
     }
 }

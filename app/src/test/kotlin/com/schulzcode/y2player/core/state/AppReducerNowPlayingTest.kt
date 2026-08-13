@@ -162,15 +162,20 @@ class AppReducerNowPlayingTest {
         assertEquals(Screen.ArtistSongs("Artist"), AppReducer.reduce(artistSelected, AppAction.Confirm).state.currentScreen)
     }
 
-    @Test fun queueOpensFocusedOnTheCurrentTrackFromPlaybackOptions() {
+    @Test fun queueOpensItsCircularMenuBeforeTheLinearQueue() {
         val base = optionsState().let {
             it.copy(playback = it.playback.copy(queue = testQueue(7L, 8L, 1L), currentQueueEntryId = 3L))
         }
         val index = ScreenContent.rows(base).indexOfFirst { (it as? ScreenRow.Action)?.key == "queue" }
         val selected = base.copy(screenStack = base.screenStack.dropLast(1) + base.currentEntry.copy(selectedIndex = index))
         val result = AppReducer.reduce(selected, AppAction.Confirm).state
-        assertEquals(Screen.Queue, result.currentScreen)
+        assertEquals(Screen.QueueManagement, result.currentScreen)
         assertEquals(0, result.selectedIndex)
+        assertEquals("queue_view", (ScreenContent.rows(result).first() as ScreenRow.Action).key)
+
+        val queue = AppReducer.reduce(result, AppAction.Confirm).state
+        assertEquals(Screen.Queue, queue.currentScreen)
+        assertEquals(Screen.QueueManagement, AppReducer.reduce(queue, AppAction.Back).state.currentScreen)
     }
 
     @Test fun shuffleAllStartsPlaybackAndOpensThePlayer() {

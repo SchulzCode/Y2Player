@@ -191,6 +191,23 @@ class QueueController(
     @Synchronized
     fun addToUpNext(trackId: Long) = addToUpNext(listOf(trackId))
 
+    /** Promotes an existing future occurrence to the front of Up Next. */
+    @Synchronized
+    fun promoteToPlayNext(entryId: Long): Boolean {
+        val index = entries.indexOfFirst { it.id == entryId }
+        val insertionIndex = (currentIndex ?: -1) + 1
+        if (index < insertionIndex || index !in entries.indices) return false
+        val entry = entries[index]
+        if (index == insertionIndex && entry.origin == QueueOrigin.UP_NEXT) return false
+        entries.removeAt(index)
+        entries.add(
+            insertionIndex.coerceIn(0, entries.size),
+            entry.copy(origin = QueueOrigin.UP_NEXT, sourceOrder = null)
+        )
+        touchEntries()
+        return true
+    }
+
     @Synchronized
     fun removeEntry(entryId: Long): Long? {
         val index = entries.indexOfFirst { it.id == entryId }

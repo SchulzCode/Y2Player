@@ -72,7 +72,8 @@ class DiagnosticCodeTest {
             Screen.Bluetooth, Screen.InterfaceSettings, Screen.LibrarySettings, Screen.Display,
             Screen.Controls, Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.Storage,
             Screen.PlaybackHistory, Screen.System, Screen.Diagnostics, Screen.About,
-            Screen.QueueManagement, Screen.Reset, Screen.BluetoothDevice("AA:BB:CC:DD:EE:FF"),
+            Screen.QueueManagement, Screen.QueueMove(1, 1), Screen.Reset,
+            Screen.BluetoothDevice("AA:BB:CC:DD:EE:FF"),
             Screen.ConfirmAction("forget_device:AA:BB:CC:DD:EE:FF")
         )
         val codes = screens.map { it.code }

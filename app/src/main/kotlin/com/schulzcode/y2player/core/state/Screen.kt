@@ -32,6 +32,7 @@ sealed interface Screen {
         val selectedIndices: Set<Int> = emptySet()
     ) : Screen
     data class QueueOptions(val entryId: Long) : Screen
+    data class QueueMove(val entryId: Long, val targetIndex: Int) : Screen
     data object QueueManagement : Screen
     data object NowPlaying : Screen
     data object NowPlayingOptions : Screen
@@ -69,6 +70,10 @@ sealed interface Screen {
 
 data class ScreenEntry(val screen: Screen, val selectedIndex: Int = 0)
 
+/** Command menus shown with the wheel-driven circular overlay. */
+fun Screen.isRadialMenu(): Boolean =
+    this == Screen.NowPlayingOptions || this == Screen.QueueManagement || this is Screen.QueueOptions
+
 // R8 renames these classes, so simpleName logs as `b0` in release builds.
 val Screen.code: String get() = when (this) {
     Screen.MainMenu -> "main_menu"
@@ -94,6 +99,7 @@ val Screen.code: String get() = when (this) {
     is Screen.CollectionOptions -> "collection_options"
     is Screen.MultiSelect -> "multi_select"
     is Screen.QueueOptions -> "queue_options"
+    is Screen.QueueMove -> "queue_move"
     Screen.QueueManagement -> "queue_management"
     Screen.NowPlaying -> "now_playing"
     Screen.NowPlayingOptions -> "now_playing_options"

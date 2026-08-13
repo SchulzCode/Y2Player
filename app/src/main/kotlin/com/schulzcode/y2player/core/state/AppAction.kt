@@ -46,6 +46,7 @@ sealed interface AppEffect {
     data class PlayQueueEntry(val entryId: Long) : AppEffect
     data class RemoveQueueEntry(val entryId: Long) : AppEffect
     data class MoveQueueEntry(val entryId: Long, val delta: Int) : AppEffect
+    data class PromoteQueueEntry(val entryId: Long) : AppEffect
     data class PlayNext(val trackIds: List<Long>) : AppEffect
     data class AddToUpNext(val trackIds: List<Long>, val shuffled: Boolean = false) : AppEffect
     data object ClearUpNext : AppEffect

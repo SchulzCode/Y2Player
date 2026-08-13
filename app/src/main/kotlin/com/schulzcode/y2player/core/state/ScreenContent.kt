@@ -83,8 +83,11 @@ object ScreenContent {
         is Screen.AddToPlaylist -> "Add to Playlist"
         is Screen.CollectionOptions -> screen.title
         is Screen.MultiSelect -> "Select Songs"
-        is Screen.QueueOptions -> "Queue Item"
-        Screen.QueueManagement -> "Queue Management"
+        is Screen.QueueOptions -> state.playback.queue.firstOrNull { it.id == screen.entryId }
+            ?.trackId?.let(state.library.byId::get)?.title ?: "Queue Item"
+        is Screen.QueueMove -> state.playback.queue.firstOrNull { it.id == screen.entryId }
+            ?.trackId?.let(state.library.byId::get)?.title?.let { "Move $it" } ?: "Move Queue Item"
+        Screen.QueueManagement -> "Queue"
         Screen.NowPlaying -> "Now Playing"
         Screen.NowPlayingOptions -> "Playback Options"
         Screen.Queue -> "Queue"
@@ -126,7 +129,9 @@ object ScreenContent {
             contentRevision = contentRevision(state),
             indexIdentity = System.identityHashCode(state.library.index),
             sortOrder = state.preferences.sortOrder,
-            queueFingerprint = if (state.currentScreen == Screen.Queue) System.identityHashCode(state.playback.queue) else 0
+            queueFingerprint = if (state.currentScreen == Screen.Queue || state.currentScreen is Screen.QueueMove) {
+                System.identityHashCode(state.playback.queue)
+            } else 0
         )
         cachedRows[key]?.let { return it }
         return buildRows(state).also { rows ->
@@ -167,6 +172,7 @@ object ScreenContent {
         is Screen.CollectionOptions -> collectionOptionRows(screen)
         is Screen.MultiSelect -> multiSelectRows(state, screen)
         is Screen.QueueOptions -> queueOptionRows(state, screen.entryId)
+        is Screen.QueueMove -> queueMoveRows(state, screen)
         Screen.QueueManagement -> queueManagementRows(state)
         Screen.Queue -> queueRows(state)
         Screen.NowPlaying -> emptyList()
@@ -512,25 +518,56 @@ object ScreenContent {
         }
 
     private fun queueOptionRows(state: AppState, entryId: Long): List<ScreenRow> {
-        val entry = state.playback.queue.firstOrNull { it.id == entryId }
-        val track = entry?.trackId?.let(state.library.byId::get)
-        val upcoming = entry != null && entry.id != state.playback.currentQueueEntryId
+        val index = state.playback.queue.indexOfFirst { it.id == entryId }
+        val entry = state.playback.queue.getOrNull(index) ?: return emptyList()
+        val upcoming = entry.id != state.playback.currentQueueEntryId
         return buildList {
-            add(ScreenRow.Group(track?.title ?: "Unknown track", track?.displayArtist, "queue_track"))
-            add(ScreenRow.Action("Play Now", null, "queue_play:$entryId"))
+            add(ScreenRow.Action("Play Now", "Start this song", "queue_play:$entryId"))
             if (upcoming) {
-                add(ScreenRow.Action("Move Earlier", null, "queue_up:$entryId"))
-                add(ScreenRow.Action("Move Later", null, "queue_down:$entryId"))
+                add(ScreenRow.Action("Play Next", "Front of Up Next", "queue_next:$entryId"))
+                if (state.playback.queue.drop(1).count { it.origin == entry.origin } > 1) {
+                    add(ScreenRow.Action("Move", "Wheel to position", "queue_move:$entryId"))
+                }
             }
-            add(ScreenRow.Action("Remove", null, "queue_remove:$entryId"))
+            add(ScreenRow.Action("Remove", "Remove this occurrence", "queue_remove:$entryId"))
         }
     }
 
-    private fun queueManagementRows(state: AppState): List<ScreenRow> = listOf(
-        ScreenRow.Action("Clear Up Next", upNextLabel(state), "queue_clear_up_next"),
-        ScreenRow.Action("Clear Remaining", remainingLabel(state), "queue_clear_remaining"),
-        ScreenRow.Action("Stop & Clear Queue", trackCountLabel(state.playback.queue.size), "queue_clear")
-    )
+    private fun queueMoveRows(state: AppState, screen: Screen.QueueMove): List<ScreenRow> {
+        val source = state.playback.queue.indexOfFirst { it.id == screen.entryId }
+        if (source < 0) return emptyList()
+        val reordered = state.playback.queue.toMutableList()
+        val entry = reordered.removeAt(source)
+        reordered.add(screen.targetIndex.coerceIn(0, reordered.size), entry)
+        return reordered.map { item ->
+            state.library.byId[item.trackId]?.let { ScreenRow.TrackRow(it, item) }
+                ?: ScreenRow.Group("Unavailable track", "Not in the current library", "queue_missing:${item.id}")
+        }
+    }
+
+    private fun queueManagementRows(state: AppState): List<ScreenRow> = buildList {
+        add(ScreenRow.Action("View Queue", queueSummaryLabel(state), "queue_view"))
+        if (state.playback.queue.any { it.origin == QueueOrigin.UP_NEXT }) {
+            add(ScreenRow.Action("Clear Up Next", upNextLabel(state), "queue_clear_up_next"))
+        }
+        if (state.playback.queue.size > 1) {
+            add(ScreenRow.Action("Clear After Current", remainingLabel(state), "queue_clear_remaining"))
+        }
+        if (state.playback.queue.isNotEmpty()) {
+            add(ScreenRow.Action("Stop & Clear", trackCountLabel(state.playback.queue.size), "queue_clear"))
+        }
+    }
+
+    private fun queueSummaryLabel(state: AppState): String {
+        if (state.playback.queue.isEmpty()) return "Queue is empty"
+        val remaining = (state.playback.queue.size - 1).coerceAtLeast(0)
+        val added = state.playback.queue.count { it.origin == QueueOrigin.UP_NEXT }
+        return when {
+            remaining == 0 -> "Current song only"
+            added == 0 -> "$remaining remaining"
+            else -> "$added Up Next · $remaining remaining"
+        }
+    }
 
     private fun nowPlayingOptionsRows(state: AppState): List<ScreenRow> {
         val track = state.playback.currentTrackId?.let(state.library.byId::get)
@@ -1306,7 +1343,8 @@ object ScreenContent {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
         Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
         is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
-        is Screen.Folders, is Screen.PlaylistTracks, is Screen.AudiobookChapters, is Screen.MultiSelect -> true
+        is Screen.Folders, is Screen.PlaylistTracks, is Screen.AudiobookChapters,
+        is Screen.MultiSelect, is Screen.QueueMove -> true
         else -> false
     }
 

@@ -46,6 +46,18 @@ class QueueControllerTest {
         assertEquals(20L, queue.next())
     }
 
+    @Test fun promoteToPlayNextMovesAnExistingOccurrenceToTheFrontOfUpNext() {
+        val queue = QueueController(listOf(10, 20, 30), initialIndex = 0)
+        queue.addToUpNext(listOf(80, 81))
+        val promoted = queue.snapshot().entries.first { it.trackId == 30L }
+
+        assertTrue(queue.promoteToPlayNext(promoted.id))
+        assertEquals(listOf(10L, 30L, 80L, 81L, 20L), queue.visibleIds())
+        assertEquals(QueueOrigin.UP_NEXT, queue.snapshot().visibleEntries[1].origin)
+        assertEquals(promoted.id, queue.snapshot().visibleEntries[1].id)
+        assertFalse(queue.promoteToPlayNext(promoted.id))
+    }
+
     @Test fun shuffleExposesTheExactPlaybackOrder() {
         val queue = QueueController()
         queue.replaceShuffled((1L..20L).toList(), repeatAll = false)

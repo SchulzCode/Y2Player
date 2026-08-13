@@ -121,6 +121,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             if (queue.moveEntry(entryId, delta)) afterQueueMutation()
         }
 
+        fun promoteQueueEntry(entryId: Long) = post {
+            if (queue.promoteToPlayNext(entryId)) afterQueueMutation()
+        }
+
         fun clearUpNext() = post {
             queue.clearUpNext()
             afterQueueMutation()

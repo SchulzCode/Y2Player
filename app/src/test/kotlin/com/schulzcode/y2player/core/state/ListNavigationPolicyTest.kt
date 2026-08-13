@@ -31,6 +31,8 @@ class ListNavigationPolicyTest {
     @Test fun intentionalValueSelectorsKeepCycling() {
         assertEquals(6, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 0, -1, 7, wrapLists = false))
         assertEquals(0, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 6, 1, 7, wrapLists = false))
+        assertEquals(3, ListNavigationPolicy.nextIndex(Screen.QueueManagement, 0, -1, 4, wrapLists = false))
+        assertEquals(0, ListNavigationPolicy.nextIndex(Screen.QueueOptions(7), 3, 1, 4, wrapLists = false))
     }
 
     @Test fun affectedSettingMenusFollowWrapListsPreference() {

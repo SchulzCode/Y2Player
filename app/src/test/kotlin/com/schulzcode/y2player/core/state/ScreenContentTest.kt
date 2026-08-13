@@ -123,7 +123,9 @@ class ScreenContentTest {
         assertEquals(2, rows.size)
         assertTrue("missing id renders as a placeholder, not dropped", rows[0] is ScreenRow.Group)
         assertTrue(rows[1] is ScreenRow.TrackRow)
-        val effect = AppReducer.reduce(state, AppAction.Confirm).effects.single()
+        val options = AppReducer.reduce(state, AppAction.Confirm).state
+        assertEquals(Screen.QueueOptions(2L), options.currentScreen)
+        val effect = AppReducer.reduce(options, AppAction.Confirm).effects.single()
         assertEquals(AppEffect.PlayQueueEntry(2L), effect)
     }
 

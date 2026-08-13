@@ -85,7 +85,9 @@ class NavigationCorrectnessTest {
         )
         val state = AppState(screenStack = stack, library = library, playback = playing)
 
-        val result = AppReducer.reduce(state, AppAction.Confirm).state
+        val options = AppReducer.reduce(state, AppAction.Confirm).state
+        assertTrue(options.currentScreen is Screen.QueueOptions)
+        val result = AppReducer.reduce(options, AppAction.Confirm).state
 
         assertEquals(Screen.NowPlaying, result.currentScreen)
         assertEquals("must unwind, not push", 2, result.screenStack.size)
@@ -100,7 +102,8 @@ class NavigationCorrectnessTest {
             ScreenEntry(Screen.Queue)
         )
         val state = AppState(screenStack = stack, library = library, playback = playing)
-        val nowPlaying = AppReducer.reduce(state, AppAction.Confirm).state
+        val options = AppReducer.reduce(state, AppAction.Confirm).state
+        val nowPlaying = AppReducer.reduce(options, AppAction.Confirm).state
 
         val back = AppReducer.reduce(nowPlaying, AppAction.Back).state
 

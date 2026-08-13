@@ -411,6 +411,7 @@ class MainActivity : Activity() {
             is AppEffect.PlayQueueEntry -> requirePlayback { it.playQueueEntry(effect.entryId) }
             is AppEffect.RemoveQueueEntry -> requirePlayback { it.removeQueueEntry(effect.entryId) }
             is AppEffect.MoveQueueEntry -> requirePlayback { it.moveQueueEntry(effect.entryId, effect.delta) }
+            is AppEffect.PromoteQueueEntry -> requirePlayback { it.promoteQueueEntry(effect.entryId) }
             is AppEffect.PlayNext -> { requirePlayback { it.playNext(effect.trackIds) }; showMessage("Added to Play Next") }
             is AppEffect.AddToUpNext -> {
                 requirePlayback { it.addToUpNext(effect.trackIds, effect.shuffled) }

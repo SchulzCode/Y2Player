@@ -23,6 +23,7 @@ import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.core.state.ScreenRow
+import com.schulzcode.y2player.core.state.isRadialMenu
 import com.schulzcode.y2player.core.state.isProgressOnlyUpdate
 import com.schulzcode.y2player.util.TimeFormat
 import kotlin.math.PI
@@ -219,10 +220,10 @@ class Y2PlayerView(
 
     fun render(newState: AppState) {
         val oldState = state
-        val openingRadial = oldState.currentScreen != Screen.NowPlayingOptions &&
-            newState.currentScreen == Screen.NowPlayingOptions
-        val closingRadial = oldState.currentScreen == Screen.NowPlayingOptions &&
-            newState.currentScreen != Screen.NowPlayingOptions
+        val openingRadial = !oldState.currentScreen.isRadialMenu() &&
+            newState.currentScreen.isRadialMenu()
+        val closingRadial = oldState.currentScreen.isRadialMenu() &&
+            !newState.currentScreen.isRadialMenu()
         if (closingRadial) {
             closingRadialState = oldState
             closingRadialRows = ScreenContent.rows(oldState)
@@ -257,7 +258,7 @@ class Y2PlayerView(
                 } else if (newState.playback.currentTrackId != null) {
                     invalidate(0, (height - footerHeight).toInt(), width, height)
                 }
-                Screen.NowPlayingOptions -> {
+                Screen.NowPlayingOptions, Screen.QueueManagement, is Screen.QueueOptions -> {
                     if (oldState.playback.sleepTimerRemainingMs != newState.playback.sleepTimerRemainingMs) {
                         rows = ScreenContent.rows(newState)
                         invalidateRowCache()
@@ -395,7 +396,7 @@ class Y2PlayerView(
         if (isSplitHome()) drawHomePane(canvas)
         drawFooter(canvas)
         drawStatusMessage(canvas)
-        if (state.currentScreen == Screen.NowPlayingOptions) {
+        if (state.currentScreen.isRadialMenu()) {
             drawRadialOptionsOverlay(canvas, state, rows, radialAnimationProgress())
         } else {
             val closingState = closingRadialState
@@ -406,7 +407,7 @@ class Y2PlayerView(
     }
 
     private fun isNowPlayingSurface(): Boolean =
-        state.currentScreen == Screen.NowPlaying || state.currentScreen == Screen.NowPlayingOptions
+        state.currentScreen == Screen.NowPlaying || state.currentScreen.isRadialMenu()
 
     private fun isSplitHome(): Boolean = state.currentScreen == Screen.MainMenu && width > height
 
@@ -433,7 +434,7 @@ class Y2PlayerView(
             MotionEvent.ACTION_UP -> {
                 if (!pendingTouchActive) true else {
                     pendingTouchActive = false
-                    if (state.currentScreen == Screen.NowPlayingOptions) {
+                    if (state.currentScreen.isRadialMenu()) {
                         pendingTouchIndex = null
                         performClick()
                         return true
@@ -456,7 +457,7 @@ class Y2PlayerView(
 
     override fun performClick(): Boolean {
         super.performClick()
-        if (state.currentScreen == Screen.NowPlaying || state.currentScreen == Screen.NowPlayingOptions) {
+        if (state.currentScreen == Screen.NowPlaying || state.currentScreen.isRadialMenu()) {
             dispatch(AppAction.Confirm)
             pendingTouchActive = false
             pendingTouchIndex = null
@@ -1003,7 +1004,7 @@ class Y2PlayerView(
 
     private fun radialAnimationProgress(): Float {
         if (!radialAnimationActive) {
-            return if (state.currentScreen == Screen.NowPlayingOptions) 1f else 0f
+            return if (state.currentScreen.isRadialMenu()) 1f else 0f
         }
         val duration = if (radialAnimationOpening) RADIAL_OPEN_MS else RADIAL_CLOSE_MS
         val raw = ((SystemClock.uptimeMillis() - radialAnimationStartedAt).toFloat() / duration)
@@ -1097,7 +1098,7 @@ class Y2PlayerView(
             canvas.drawCircle(nodeX, nodeY, nodeRadius, paint)
             val icon = Y2RowIcons.forRow(
                 row,
-                Screen.NowPlayingOptions,
+                renderState.currentScreen,
                 renderState.playback.currentTrackId,
                 active
             )
@@ -1120,7 +1121,7 @@ class Y2PlayerView(
         val selectedActive = Y2RowState.isActive(selectedRow, renderState)
         val centerIcon = Y2RowIcons.forRow(
             selectedRow,
-            Screen.NowPlayingOptions,
+            renderState.currentScreen,
             renderState.playback.currentTrackId,
             selectedActive
         )
@@ -1767,7 +1768,10 @@ class Y2PlayerView(
         cachedDuration = TimeFormat.duration(state.playback.durationMs)
         val availableWidth = fallbackWidth() - 130f * density
         boldPaint.textSize = Y2UiTheme.SCREEN_TITLE_SP * density
-        val headerTitle = if (state.currentScreen == Screen.NowPlayingOptions) "Now Playing" else ScreenContent.title(state)
+        val headerTitle = when (state.currentScreen) {
+            Screen.NowPlayingOptions -> "Now Playing"
+            else -> ScreenContent.title(state)
+        }
         cachedHeaderTitle = ellipsize(headerTitle, availableWidth, boldPaint)
         updateDetailCache()
         updateFooterHint()
@@ -1860,6 +1864,7 @@ class Y2PlayerView(
     private fun updateFooterHint() {
         val hint = when {
             isNowPlayingSurface() -> ""
+            state.currentScreen is Screen.QueueMove -> "WHEEL MOVE · CENTER CONFIRM · BACK CANCEL"
             state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER + · HOLD CENTER - · L/R TRACK"
             state.currentScreen == Screen.Brightness || state.currentScreen == Screen.ScreenTimeout ||
                 state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY · L/R TRACK"

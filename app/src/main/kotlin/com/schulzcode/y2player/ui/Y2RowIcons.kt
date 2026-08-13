@@ -68,7 +68,7 @@ object Y2RowIcons {
         "collection_next" -> Y2Icon.NEXT
         "collection_up_next" -> Y2Icon.QUEUE
         "repeat" -> Y2Icon.REPEAT
-        "queue", "queue_management" -> Y2Icon.QUEUE
+        "queue", "queue_view", "queue_management" -> Y2Icon.QUEUE
         "queue_clear_up_next", "queue_clear_remaining", "queue_clear" -> Y2Icon.REMOVE
         "sleep_timer" -> Y2Icon.TIMER
         "playlist_create", "playlist_create_and_add" -> Y2Icon.ADD
@@ -137,7 +137,8 @@ object Y2RowIcons {
         key.startsWith("np_track_options:") -> Y2Icon.CHEVRON
         key.startsWith("np_track_details:") -> Y2Icon.INFO
         key.startsWith("queue_play:") -> Y2Icon.PLAYING
-        key.startsWith("queue_up:") || key.startsWith("queue_down:") -> Y2Icon.SORT
+        key.startsWith("queue_next:") -> Y2Icon.NEXT
+        key.startsWith("queue_move:") -> Y2Icon.SORT
         key.startsWith("queue_remove:") -> Y2Icon.REMOVE
         key.startsWith("bt_device_activate:") -> Y2Icon.BLUETOOTH
         key.startsWith("bt_device_forget:") -> Y2Icon.REMOVE
