@@ -109,18 +109,14 @@ enum class SleepTimerMode(val label: String, val durationMs: Long? = null) {
 
 data class AudioEffectsState(
     val available: Boolean = false,
-    val enabled: Boolean = false,
     val equalizerSupported: Boolean = false,
     val presetNames: List<String> = emptyList(),
-    val selectedPreset: Int = 0,
     val bandFrequenciesHz: List<Int> = emptyList(),
     val bandLevelsMb: List<Int> = emptyList(),
     val bandMinMb: Int = -1_500,
     val bandMaxMb: Int = 1_500,
     val bassBoostSupported: Boolean = false,
-    val bassStrength: Int = 0,
     val loudnessSupported: Boolean = false,
-    val loudnessGainMb: Int = 0,
     val errorMessage: String? = null
 )
 

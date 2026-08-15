@@ -132,26 +132,26 @@ class AudiobookListTest {
 
     @Test fun `a started book shows chapter position and percent`() {
         val tracks = (1..24).map { chapter("AUDIOBOOKS/Dune/%02d.mp3".format(it)) }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[7].id, 300_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[7].id, 300_000, 99))
         assertEquals("Chapter 8 of 24 · 31%", rows(state(tracks, progress)).single().subtitle)
     }
 
     @Test fun `chapter one at zero reads as zero percent`() {
         val tracks = (1..10).map { chapter("AUDIOBOOKS/Dune/%02d.mp3".format(it)) }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[0].id, 0, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[0].id, 0, 99))
         assertEquals("Chapter 1 of 10 · 0%", rows(state(tracks, progress)).single().subtitle)
     }
 
     @Test fun `the final chapter near its end never exceeds one hundred percent`() {
         val tracks = (1..3).map { chapter("AUDIOBOOKS/Dune/0$it.mp3") }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[2].id, 599_999, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[2].id, 599_999, 99))
         val subtitle = rows(state(tracks, progress)).single().subtitle!!
         assertTrue(subtitle.endsWith("99%") || subtitle.endsWith("100%"))
     }
 
     @Test fun `a position past the total is clamped, never negative or over one hundred`() {
         val tracks = listOf(chapter("AUDIOBOOKS/Dune/01.mp3", durationMs = 1_000))
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[0].id, 9_999_999, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[0].id, 9_999_999, 99))
         assertEquals("Chapter 1 of 1 · 100%", rows(state(tracks, progress)).single().subtitle)
     }
 
@@ -159,7 +159,7 @@ class AudiobookListTest {
         val tracks = (1..4).map { chapter("AUDIOBOOKS/Dune/0$it.mp3", durationMs = 0) }
         assertEquals("4 chapters", rows(state(tracks)).single().subtitle)
 
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[1].id, 5_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[1].id, 5_000, 99))
         assertEquals("Chapter 2 of 4", rows(state(tracks, progress)).single().subtitle)
     }
 
@@ -173,7 +173,7 @@ class AudiobookListTest {
 
     @Test fun `progress naming a deleted chapter falls back to unstarted`() {
         val tracks = (1..5).map { chapter("AUDIOBOOKS/Dune/0$it.mp3") }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), 9_999L, 300_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(9_999L, 300_000, 99))
         val row = rows(state(tracks, progress)).single()
         assertEquals("5 chapters · 50 min", row.subtitle)
         assertFalse(row.subtitle!!.contains("Chapter"))
@@ -186,8 +186,8 @@ class AudiobookListTest {
             (1..2).map { chapter("AUDIOBOOKS/$book/0$it.mp3") }
         }
         val progress = mapOf(
-            key("Gamma") to AudiobookProgress(key("Gamma"), tracks[4].id, 1_000, 500),
-            key("Alpha") to AudiobookProgress(key("Alpha"), tracks[0].id, 1_000, 100)
+            key("Gamma") to AudiobookProgress(tracks[4].id, 1_000, 500),
+            key("Alpha") to AudiobookProgress(tracks[0].id, 1_000, 100)
         )
         assertEquals(listOf("Gamma", "Alpha", "Beta"), rows(state(tracks, progress)).map { it.title })
     }
@@ -207,7 +207,7 @@ class AudiobookListTest {
 
     @Test fun `Confirm resumes at the saved chapter`() {
         val tracks = (1..10).map { chapter("AUDIOBOOKS/Dune/%02d.mp3".format(it)) }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[6].id, 120_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[6].id, 120_000, 99))
         val result = AppReducer.reduce(state(tracks, progress), AppAction.Confirm)
         val effect = result.effects.single() as AppEffect.PlayCollection
         assertEquals(10, effect.trackIds.size)
@@ -252,7 +252,7 @@ class AudiobookListTest {
 
     @Test fun `a rescan does not wipe saved progress`() {
         val tracks = (1..10).map { chapter("AUDIOBOOKS/Dune/%02d.mp3".format(it)) }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[4].id, 60_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[4].id, 60_000, 99))
         val before = state(tracks, progress)
         assertTrue(rows(before).single().subtitle!!.contains("Chapter 5 of 10"))
 
@@ -272,7 +272,7 @@ class AudiobookListTest {
 
     @Test fun `progress surviving a rescan keeps Confirm resuming`() {
         val tracks = (1..10).map { chapter("AUDIOBOOKS/Dune/%02d.mp3".format(it)) }
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[4].id, 60_000, 99))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[4].id, 60_000, 99))
         val rescanned = state(tracks, progress).let {
             it.copy(library = it.library.copy(
                 revision = it.library.revision + 1,
@@ -328,7 +328,7 @@ class AudiobookListTest {
             (ScreenContent.rows(before).single() as ScreenRow.Action).subtitle!!.contains("Chapter")
         )
 
-        val progress = mapOf(key("Dune") to AudiobookProgress(key("Dune"), tracks[2].id, 0, 5))
+        val progress = mapOf(key("Dune") to AudiobookProgress(tracks[2].id, 0, 5))
         val after = before.copy(library = before.library.copy(revision = 1, audiobookProgress = progress))
         val row = ScreenContent.rows(after).single() as ScreenRow.Action
         assertNotNull(row.subtitle)

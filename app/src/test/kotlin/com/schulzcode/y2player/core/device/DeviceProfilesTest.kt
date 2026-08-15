@@ -78,19 +78,21 @@ class DeviceProfilesTest {
             DeviceFamily.UNKNOWN to DeviceConfidence.NONE,
             DeviceProfiles.classify("qcom", "SM-G900F", panel(1080, 1920))
         )
-        assertEquals(DeviceFamily.UNKNOWN, DeviceProfile.UNRESOLVED.family)
-        assertEquals(DeviceConfidence.NONE, DeviceProfile.UNRESOLVED.confidence)
     }
 
     @Test fun summaryIsSingleLineAndCarriesTheKeyFacts() {
-        val profile = DeviceProfile.UNRESOLVED.copy(
+        val profile = DeviceProfile(
             panel = panel(480, 360),
+            sysfsVirtualSize = "480,720",
             displayWidth = 480,
             displayHeight = 360,
+            densityDpi = 160,
+            apiLevel = 19,
             hardware = "mt6582",
             model = "Y2",
             family = DeviceFamily.Y2,
-            confidence = DeviceConfidence.HIGH
+            confidence = DeviceConfidence.HIGH,
+            hasVibrator = true
         )
         val summary = profile.summary()
         assertEquals(false, summary.contains("\n"))

@@ -307,8 +307,7 @@ class QueueController(
         visibleEntries = immutableVisibleEntries(),
         currentEntryId = currentEntryId(),
         repeatMode = repeatMode,
-        shuffleEnabled = shuffleEnabled,
-        shuffleSeed = shuffleSeed
+        shuffleEnabled = shuffleEnabled
     )
 
     @Synchronized

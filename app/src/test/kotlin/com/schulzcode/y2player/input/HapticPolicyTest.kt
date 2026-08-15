@@ -55,15 +55,16 @@ class HapticPolicyTest {
         val limiter = HapticRateLimiter(55L)
         var now = 0L
         repeat(100) { limiter.allow(now); now += 20L }
-        assertTrue("fired ${limiter.pulseCount()}", limiter.pulseCount() <= 100 * 20 / 55 + 1)
-        assertEquals(100, limiter.pulseCount() + limiter.suppressedCount())
+        val (pulses, suppressed) = limiter.drainCounters()
+        assertTrue("fired $pulses", pulses <= 100 * 20 / 55 + 1)
+        assertEquals(100, pulses + suppressed)
     }
 
     @Test fun slowScrollIsNeverThinned() {
         val limiter = HapticRateLimiter(55L)
         var now = 0L
         repeat(20) { assertTrue(limiter.allow(now)); now += 120L }
-        assertEquals(0, limiter.suppressedCount())
+        assertEquals(0, limiter.drainCounters()[1])
     }
 
     @Test fun resetMakesTheNextActionImmediate() {

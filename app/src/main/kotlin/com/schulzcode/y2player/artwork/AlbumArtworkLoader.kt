@@ -20,7 +20,7 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
         1,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(1),
+        LinkedBlockingQueue(MAX_PENDING_TASKS),
         { runnable -> Thread(runnable, "y2-artwork").apply { isDaemon = true } },
         RejectedExecutionHandler { runnable, pool ->
             (pool.queue.poll() as? ArtworkTask)?.discard()
@@ -135,6 +135,7 @@ class AlbumArtworkLoader(cacheBytes: Int = DEFAULT_CACHE_BYTES) {
         private const val DEFAULT_CACHE_BYTES = 2 * 1024 * 1024
         private const val MIN_CACHE_BYTES = 256 * 1024
         private const val MAX_ARTWORK_BYTES = 8 * 1024 * 1024
+        private const val MAX_PENDING_TASKS = 4
         private const val MIN_TARGET_SIZE = 32
         private const val MAX_TARGET_SIZE = 1024
         private const val MAX_IMAGE_DIMENSION = 16_384

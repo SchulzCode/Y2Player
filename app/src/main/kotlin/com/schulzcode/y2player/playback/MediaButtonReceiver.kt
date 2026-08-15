@@ -11,6 +11,7 @@ import com.schulzcode.y2player.Y2Application
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.input.HardwareKeyGate
 import com.schulzcode.y2player.input.InputProbe
+import com.schulzcode.y2player.input.isMediaTransportKey
 import kotlin.math.abs
 
 class MediaButtonReceiver : BroadcastReceiver() {
@@ -167,19 +168,10 @@ internal object MediaButtonPolicy {
             (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
         ) return KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
 
-        val mediaKey = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_RIGHT -> source == HardwareKeyGate.Source.Y2_BROADCAST
-            KeyEvent.KEYCODE_MEDIA_PLAY,
-            KeyEvent.KEYCODE_MEDIA_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_STOP,
-            KeyEvent.KEYCODE_MEDIA_REWIND,
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
-            KeyEvent.KEYCODE_HEADSETHOOK -> true
-            else -> false
+        val mediaKey = if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            source == HardwareKeyGate.Source.Y2_BROADCAST
+        } else {
+            isMediaTransportKey(keyCode)
         }
         return if (mediaKey) keyCode else null
     }
@@ -269,27 +261,6 @@ internal object MediaButtonPressGate {
             else -> Decision.REJECT
         }
     }
-
-    @Synchronized
-    fun shouldDispatch(
-        keyCode: Int,
-        action: Int,
-        eventTime: Long,
-        downTime: Long,
-        deviceId: Int,
-        repeatCount: Int,
-        source: HardwareKeyGate.Source,
-        allowRepeats: Boolean = false
-    ): Boolean = dispatchDecision(
-        keyCode,
-        action,
-        eventTime,
-        downTime,
-        deviceId,
-        repeatCount,
-        source,
-        allowRepeats
-    ) != Decision.REJECT
 
     private fun isRepeatedDown(edge: Edge): Boolean {
         val previous = pendingDown ?: return false

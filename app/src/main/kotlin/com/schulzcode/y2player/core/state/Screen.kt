@@ -42,7 +42,6 @@ sealed interface Screen {
     data class AddToPlaylist(val trackId: Long) : Screen
     data class CollectionOptions(val title: String, val trackIds: List<Long>) : Screen
     data class MultiSelect(
-        val title: String,
         val trackIds: List<Long>,
         val selectedIndices: Set<Int> = emptySet()
     ) : Screen

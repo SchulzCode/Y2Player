@@ -17,14 +17,6 @@ internal object PcmFormat {
     const val PCM16_BYTES_PER_SAMPLE = 2
     const val PCM16_BYTES_PER_FRAME = CHANNELS * PCM16_BYTES_PER_SAMPLE
     const val PCM16_BLOCK_BYTES = BLOCK_FRAMES * PCM16_BYTES_PER_FRAME
-
-    fun floatBytesForFrames(frameCount: Int): Int {
-        require(frameCount >= 0) { "frameCount must not be negative" }
-        require(frameCount <= Int.MAX_VALUE / FLOAT_BYTES_PER_FRAME) {
-            "float PCM byte count overflows Int"
-        }
-        return frameCount * FLOAT_BYTES_PER_FRAME
-    }
 }
 
 internal interface AudioOutput {
@@ -94,10 +86,6 @@ internal object PcmWriteLoop {
 
 internal class Pcm16StagingBuffer(sampleCapacity: Int) {
     val samples = ShortArray(sampleCapacity)
-    var clippedSampleCount = 0L
-        private set
-    var invalidSampleCount = 0L
-        private set
 
     fun stage(source: FloatArray, offsetSamples: Int, sampleCount: Int): ShortArray {
         require(offsetSamples >= 0) { "offsetSamples must not be negative" }
@@ -110,30 +98,17 @@ internal class Pcm16StagingBuffer(sampleCapacity: Int) {
         }
 
         val end = offsetSamples + sampleCount
-        var clippedThisWrite = 0
-        var invalidThisWrite = 0
         var index = offsetSamples
         while (index < end) {
             val sample = source[index]
             samples[index] = when {
-                !sample.isFinite() -> {
-                    invalidThisWrite += 1
-                    0
-                }
-                sample > 1f -> {
-                    clippedThisWrite += 1
-                    Short.MAX_VALUE
-                }
-                sample < -1f -> {
-                    clippedThisWrite += 1
-                    Short.MIN_VALUE
-                }
+                !sample.isFinite() -> 0
+                sample > 1f -> Short.MAX_VALUE
+                sample < -1f -> Short.MIN_VALUE
                 else -> quantizeFinite(sample)
             }
             index += 1
         }
-        clippedSampleCount += clippedThisWrite
-        invalidSampleCount += invalidThisWrite
         return samples
     }
 

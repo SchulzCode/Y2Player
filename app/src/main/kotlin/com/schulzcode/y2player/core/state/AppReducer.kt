@@ -650,14 +650,14 @@ object AppReducer {
 
     private fun openMultiSelect(state: AppState, selectedTrackId: Long): Reduction {
         val parentStack = state.screenStack.dropLast(1)
-        val parentEntry = parentStack.lastOrNull() ?: return Reduction(state)
+        if (parentStack.isEmpty()) return Reduction(state)
         val parent = state.copy(screenStack = parentStack)
         val ids = ScreenContent.playableTrackIds(parent)
         val selectedIndex = ids.indexOf(selectedTrackId)
         if (selectedIndex < 0) return Reduction(state)
         return Reduction(state.copy(
             screenStack = parentStack + ScreenEntry(
-                Screen.MultiSelect(ScreenContent.title(parent), ids, setOf(selectedIndex)),
+                Screen.MultiSelect(ids, setOf(selectedIndex)),
                 selectedIndex
             )
         ))

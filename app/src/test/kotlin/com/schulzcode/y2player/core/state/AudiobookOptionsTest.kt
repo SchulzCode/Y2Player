@@ -48,7 +48,7 @@ class AudiobookOptionsTest {
     )
 
     private fun startedAtChapter(number: Int, positionMs: Long = 60_000) =
-        mapOf(dune to AudiobookProgress(dune, chapters[number - 1].id, positionMs, 99))
+        mapOf(dune to AudiobookProgress(chapters[number - 1].id, positionMs, 99))
 
     private fun keys(state: AppState) = ScreenContent.rows(state).map { (it as ScreenRow.Action).key }
 
@@ -114,7 +114,7 @@ class AudiobookOptionsTest {
     }
 
     @Test fun `progress on a deleted chapter does not offer Clear Progress`() {
-        val stale = mapOf(dune to AudiobookProgress(dune, 9_999L, 1_000, 99))
+        val stale = mapOf(dune to AudiobookProgress(9_999L, 1_000, 99))
         assertFalse("audiobook_clear:$dune" in keys(onOptions(stale)))
     }
 

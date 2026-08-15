@@ -290,9 +290,6 @@ class MainActivity : Activity() {
         registerVisibleStateListeners()
         bindPlaybackServiceIfNeeded()
         evaluateBluetoothUi()
-        backgroundExecutor.execute {
-            diagnosticsRepository.refresh()
-        }
     }
 
     override fun onResume() {
@@ -458,14 +455,14 @@ class MainActivity : Activity() {
             is AppEffect.ForgetBluetoothDevice -> showOperation(bluetoothController.forgetDevice(effect.address))
 
             is AppEffect.SetBrightness -> {
-                val result = displayController.setBrightness(effect.percent)
+                val message = displayController.setBrightness(effect.percent)
                 store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
-                showMessage(result.message)
+                showMessage(message)
             }
             is AppEffect.SetScreenTimeout -> {
-                val result = displayController.setTimeout(effect.timeoutMs)
+                val message = displayController.setTimeout(effect.timeoutMs)
                 store.dispatch(AppAction.DisplayChanged(displayController.snapshot()))
-                showMessage(result.message)
+                showMessage(message)
             }
             AppEffect.ToggleUiSoundEffects -> {
                 val value = preferences.toggleUiSoundEffects()
@@ -785,8 +782,8 @@ class MainActivity : Activity() {
         if (binder == null) showMessage("Playback is starting") else block(binder)
     }
 
-    private fun showOperation(result: BluetoothController.OperationResult) {
-        showMessage(result.message)
+    private fun showOperation(message: String) {
+        showMessage(message)
         store.dispatch(AppAction.BluetoothChanged(bluetoothController.snapshot()))
     }
 

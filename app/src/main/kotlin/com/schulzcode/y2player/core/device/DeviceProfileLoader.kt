@@ -5,7 +5,6 @@ import android.os.Build
 import android.os.Vibrator
 import android.util.DisplayMetrics
 import android.view.WindowManager
-import com.schulzcode.y2player.storage.Y2StoragePaths
 import java.io.File
 
 object DeviceProfileLoader {
@@ -28,13 +27,10 @@ object DeviceProfileLoader {
             densityDpi = metrics?.densityDpi ?: 0,
             apiLevel = Build.VERSION.SDK_INT,
             model = model,
-            manufacturer = Build.MANUFACTURER.orEmpty(),
             hardware = hardware,
             family = family,
             confidence = confidence,
-            hasVibrator = hasVibrator(appContext),
-            internalStorageAvailable = volumeAvailable("internal"),
-            removableStorageAvailable = volumeAvailable("sdcard")
+            hasVibrator = hasVibrator(appContext)
         )
     }
 
@@ -75,9 +71,5 @@ object DeviceProfileLoader {
     private fun hasVibrator(context: Context): Boolean = runCatching {
         val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return@runCatching false
         vibrator.hasVibrator()
-    }.getOrDefault(false)
-
-    private fun volumeAvailable(id: String): Boolean = runCatching {
-        Y2StoragePaths.roots.firstOrNull { it.id == id }?.let(Y2StoragePaths::isAvailable) ?: false
     }.getOrDefault(false)
 }

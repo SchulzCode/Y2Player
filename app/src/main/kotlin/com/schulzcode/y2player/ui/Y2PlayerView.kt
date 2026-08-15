@@ -122,6 +122,8 @@ class Y2PlayerView(
     private val cachedTitleAvailableWidths = FloatArray(MAX_VISIBLE_ROWS)
     private val cachedActive = BooleanArray(MAX_VISIBLE_ROWS)
     private val cachedUnavailable = BooleanArray(MAX_VISIBLE_ROWS)
+    private val visibleRowArtworks = HashMap<Int, VisibleRowArtworkSlot>(MAX_VISIBLE_ROWS)
+    private var visibleRowArtworkGeneration = 0L
     private var cachedRowStart = -1
     private var cachedRowEnd = -1
     private var cachedHeaderTitle = "Y2 Player"
@@ -199,10 +201,12 @@ class Y2PlayerView(
         super.onAttachedToWindow()
         attached = true
         updateTextScrollActivity()
+        requestVisibleRowArtworks()
     }
 
     override fun onDetachedFromWindow() {
         attached = false
+        cancelVisibleRowArtworkRequests()
         stopTextScrollCallbacks()
         setTextScrollersActive(false, SystemClock.uptimeMillis())
         super.onDetachedFromWindow()
@@ -211,11 +215,13 @@ class Y2PlayerView(
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         updateTextScrollActivity()
+        if (visibility == VISIBLE) requestVisibleRowArtworks() else cancelVisibleRowArtworkRequests()
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         updateTextScrollActivity()
+        if (visibility == VISIBLE) requestVisibleRowArtworks() else cancelVisibleRowArtworkRequests()
     }
 
     fun render(newState: AppState) {
@@ -242,7 +248,7 @@ class Y2PlayerView(
 
         state = newState
         if (selectionOnly) {
-            ensureSelectionVisible()
+            if (ensureSelectionVisible()) requestVisibleRowArtworks()
             updateFooterPosition()
             updateContentDescription(newState)
             invalidate(0, headerHeight.toInt(), width, height)
@@ -277,6 +283,7 @@ class Y2PlayerView(
         updatePresentationCache()
         invalidateRowCache()
         ensureSelectionVisible()
+        requestVisibleRowArtworks()
         updateContentDescription(newState)
         invalidate()
     }
@@ -287,6 +294,7 @@ class Y2PlayerView(
         artworkIdentity = null
         detailArtwork = null
         detailArtworkPath = null
+        cancelVisibleRowArtworkRequests()
         artworkLoader.trimMemory()
         invalidate()
     }
@@ -301,6 +309,7 @@ class Y2PlayerView(
         artworkIdentity = null
         detailArtwork = null
         detailArtworkPath = null
+        cancelVisibleRowArtworkRequests()
         radialAnimationActive = false
         closingRadialState = null
         closingRadialRows = emptyList()
@@ -311,6 +320,7 @@ class Y2PlayerView(
         invalidateRowCache()
         updatePresentationCache()
         ensureSelectionVisible()
+        requestVisibleRowArtworks()
     }
 
     private fun updateTextScrollActivity() {
@@ -629,8 +639,17 @@ class Y2PlayerView(
                 RowVisualState.UNAVAILABLE -> palette.mutedText
                 RowVisualState.NORMAL -> palette.secondaryText
             }
+            val rowArtwork = visibleRowArtworks[index]?.bitmap
             val trackNumber = cachedTrackNumbers[slot]
-            if (trackNumber != null && !cachedActive[slot]) {
+            if (rowArtwork != null) {
+                drawArtwork(
+                    canvas,
+                    ROW_ARTWORK_LEFT_DP * density,
+                    top + (rowHeight - ROW_ARTWORK_SIZE_DP * density) * .5f,
+                    ROW_ARTWORK_SIZE_DP * density,
+                    rowArtwork
+                )
+            } else if (trackNumber != null && !cachedActive[slot]) {
                 boldPaint.textAlign = Paint.Align.CENTER
                 boldPaint.textSize = Y2UiTheme.META_SP * density
                 boldPaint.color = iconColor
@@ -1958,17 +1977,91 @@ class Y2PlayerView(
         }
     }
 
-    private fun ensureSelectionVisible() {
+    private fun ensureSelectionVisible(): Boolean {
         if (rows.isEmpty()) {
-            if (visibleStart != 0) invalidateRowCache()
+            val changed = visibleStart != 0
+            if (changed) invalidateRowCache()
             visibleStart = 0
-            return
+            return changed
         }
         val nextStart = Y2UiLogic.firstVisibleRow(rows.size, state.selectedIndex, visibleStart, visibleRowCount())
         if (nextStart != visibleStart) {
             visibleStart = nextStart
             invalidateRowCache()
+            return true
         }
+        return false
+    }
+
+    private fun requestVisibleRowArtworks() {
+        if (!attached || visibility != VISIBLE || windowVisibility != VISIBLE || width <= 0 || height <= 0) return
+        val requests = VisibleRowArtworkPlanner.requests(state, rows, visibleStart, visibleRowCount())
+        val generation = ++visibleRowArtworkGeneration
+        val retained = HashMap<Int, VisibleRowArtworkSlot>(requests.size)
+        val pending = ArrayList<VisibleRowArtworkLoad>(requests.size)
+        requests.forEach { request ->
+            val track = request.track
+            val key = VisibleRowArtworkKey(
+                trackId = track.id,
+                path = track.absolutePath,
+                modifiedAt = track.modifiedAt,
+                libraryRevision = state.library.tracksRevision
+            )
+            val existing = visibleRowArtworks[request.rowIndex]
+            if (existing?.key == key) {
+                retained[request.rowIndex] = existing
+                if (!existing.resolved) pending += VisibleRowArtworkLoad(request.rowIndex, key)
+            } else {
+                retained[request.rowIndex] = VisibleRowArtworkSlot(key)
+                pending += VisibleRowArtworkLoad(request.rowIndex, key)
+            }
+        }
+        visibleRowArtworks.clear()
+        visibleRowArtworks.putAll(retained)
+        loadNextVisibleRowArtwork(pending, 0, generation)
+    }
+
+    private fun loadNextVisibleRowArtwork(
+        pending: List<VisibleRowArtworkLoad>,
+        position: Int,
+        generation: Long
+    ) {
+        if (generation != visibleRowArtworkGeneration || position >= pending.size) return
+        val request = pending[position]
+        if (visibleRowArtworks[request.rowIndex]?.key != request.key || !isRowVisible(request.rowIndex)) {
+            loadNextVisibleRowArtwork(pending, position + 1, generation)
+            return
+        }
+        artworkLoader.load(
+            request.key.path,
+            request.key.modifiedAt,
+            request.key.libraryRevision,
+            ROW_ARTWORK_SIZE_PX
+        ) { loadedPath, bitmap ->
+            val slot = visibleRowArtworks[request.rowIndex]
+            if (generation == visibleRowArtworkGeneration && loadedPath == request.key.path &&
+                slot?.key == request.key && isRowVisible(request.rowIndex)
+            ) {
+                slot.bitmap = bitmap
+                slot.resolved = true
+                invalidateRowArtwork(request.rowIndex)
+            }
+            loadNextVisibleRowArtwork(pending, position + 1, generation)
+        }
+    }
+
+    private fun isRowVisible(index: Int): Boolean =
+        index >= visibleStart && index < (visibleStart + visibleRowCount()).coerceAtMost(rows.size)
+
+    private fun invalidateRowArtwork(index: Int) {
+        if (!isRowVisible(index)) return
+        val top = rowAreaTop() + (index - visibleStart) * rowHeight
+        invalidate(0, top.toInt(), (50f * density).toInt(), (top + rowHeight).toInt())
+    }
+
+    private fun cancelVisibleRowArtworkRequests() {
+        visibleRowArtworkGeneration += 1
+        visibleRowArtworks.clear()
     }
 
     private fun visibleRowCount(): Int {
@@ -2117,6 +2210,9 @@ class Y2PlayerView(
         private const val SCAN_PROGRESS_PHASE_STEPS = 200
         private const val MARQUEE_SPEED_DP_PER_SECOND = 28f
         private const val MARQUEE_FRAME_MS = 100L
+        private const val ROW_ARTWORK_LEFT_DP = 8f
+        private const val ROW_ARTWORK_SIZE_DP = 40f
+        private const val ROW_ARTWORK_SIZE_PX = 64
         private const val RADIAL_OPEN_MS = 160f
         private const val RADIAL_CLOSE_MS = 120f
 
@@ -2132,4 +2228,22 @@ class Y2PlayerView(
             "playback_interruptions", "equalizer", "sound_dynamics", "output_information", "artist_all_songs"
         )
     }
+
+    private data class VisibleRowArtworkKey(
+        val trackId: Long,
+        val path: String,
+        val modifiedAt: Long,
+        val libraryRevision: Long
+    )
+
+    private data class VisibleRowArtworkSlot(
+        val key: VisibleRowArtworkKey,
+        var bitmap: Bitmap? = null,
+        var resolved: Boolean = false
+    )
+
+    private data class VisibleRowArtworkLoad(
+        val rowIndex: Int,
+        val key: VisibleRowArtworkKey
+    )
 }

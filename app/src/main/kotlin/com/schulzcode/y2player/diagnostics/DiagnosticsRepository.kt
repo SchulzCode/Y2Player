@@ -34,8 +34,6 @@ class DiagnosticsRepository(
 
     fun setError(message: String) = publish { it.copy(lastError = message) }
 
-    fun refresh() = publish { it }
-
     fun setPlaybackHistory(sessions: Int, bytes: Long) {
         if (state.historySessions == sessions && state.historyBytes == bytes) return
         publish { it.copy(historySessions = sessions, historyBytes = bytes) }
@@ -78,7 +76,7 @@ class DiagnosticsRepository(
         if (!textCleared || !eventsCleared) error("Some diagnostic files could not be cleared")
         logger.warn("Diagnostics", "diagnostic log cleared; logging resumed")
         eventLog?.info(Sub.DIAG, Ev.ACTION, "operation" to "diagnostics_cleared")
-        publish { it.copy(exportedPath = null, lastError = null, recentLines = emptyList()) }
+        publish { it.copy(exportedPath = null, lastError = null) }
     }.onFailure { error ->
         logger.error("Diagnostics", "diagnostic log clear failed", error)
         setError(error.message ?: error.javaClass.simpleName)
@@ -86,7 +84,7 @@ class DiagnosticsRepository(
 
     private fun publish(transform: (DiagnosticsState) -> DiagnosticsState) {
         stateExecutor.execute {
-            val value = transform(state).copy(recentLines = logger.recentLines())
+            val value = transform(state)
             state = value
             mainHandler.post { listeners.forEach { it.onChanged(value) } }
         }

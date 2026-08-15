@@ -11,7 +11,6 @@ data class PanelGeometry(
     val height: Int,
     val source: PanelSource
 ) {
-    val isLandscape: Boolean get() = width > height
     val isValid: Boolean get() = width > 0 && height > 0
     override fun toString(): String = "${width}x$height/${source.name.lowercase()}"
 }
@@ -24,36 +23,14 @@ data class DeviceProfile(
     val densityDpi: Int,
     val apiLevel: Int,
     val model: String,
-    val manufacturer: String,
     val hardware: String,
     val family: DeviceFamily,
     val confidence: DeviceConfidence,
-    val hasVibrator: Boolean,
-    val internalStorageAvailable: Boolean,
-    val removableStorageAvailable: Boolean
+    val hasVibrator: Boolean
 ) {
     fun summary(): String =
         "$family/${confidence.name.lowercase()} panel=$panel display=${displayWidth}x$displayHeight " +
             "dpi=$densityDpi api=$apiLevel hw=$hardware model=$model vib=$hasVibrator"
-
-    companion object {
-        val UNRESOLVED = DeviceProfile(
-            panel = PanelGeometry(0, 0, PanelSource.UNKNOWN),
-            sysfsVirtualSize = null,
-            displayWidth = 0,
-            displayHeight = 0,
-            densityDpi = 0,
-            apiLevel = 0,
-            model = "",
-            manufacturer = "",
-            hardware = "",
-            family = DeviceFamily.UNKNOWN,
-            confidence = DeviceConfidence.NONE,
-            hasVibrator = false,
-            internalStorageAvailable = false,
-            removableStorageAvailable = false
-        )
-    }
 }
 
 object DeviceProfiles {

@@ -201,8 +201,6 @@ internal class FfmpegPlaybackEngine(
 
         val consumedSampleOffset: Int get() = consumedFrameCount * PcmFormat.CHANNELS
 
-        val atEndOfStream: Boolean get() = decodedFrameCount == 0
-
         fun stage(frameCount: Int) {
             require(frameCount in 0..PcmFormat.BLOCK_FRAMES) {
                 "decoded frame count out of range: $frameCount"

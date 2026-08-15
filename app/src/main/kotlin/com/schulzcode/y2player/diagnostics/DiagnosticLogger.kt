@@ -5,7 +5,6 @@ import android.os.Build
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
-import java.io.RandomAccessFile
 import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -119,28 +118,6 @@ class DiagnosticLogger internal constructor(
         writer.wake()
         return runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) && result.get() }
             .getOrDefault(false)
-    }
-
-    fun recentLines(limit: Int = RECENT_LINE_COUNT): List<String> {
-        awaitFlush(SHORT_FLUSH_TIMEOUT_MS)
-        return synchronized(fileLock) {
-            if (!activeFile.exists()) return@synchronized emptyList()
-            runCatching { tailLines(activeFile, limit) }.getOrDefault(emptyList())
-        }
-    }
-
-    private fun tailLines(file: File, limit: Int): List<String> {
-        val length = file.length()
-        if (length <= 0L) return emptyList()
-        val from = (length - TAIL_BYTES).coerceAtLeast(0L)
-        val buffer = ByteArray((length - from).toInt())
-        RandomAccessFile(file, "r").use { input ->
-            input.seek(from)
-            input.readFully(buffer)
-        }
-        val lines = String(buffer, Charsets.UTF_8).split('\n').map { it.trimEnd('\r') }
-        val whole = if (from > 0L && lines.size > 1) lines.drop(1) else lines
-        return whole.filter { it.isNotBlank() }.takeLast(limit)
     }
 
     fun exportTo(destinationDirectory: File): File {
@@ -311,15 +288,11 @@ class DiagnosticLogger internal constructor(
     }
 
     companion object {
-        const val RECENT_LINE_COUNT = 30
-
-        private const val TAIL_BYTES = 64L * 1024L
         private const val MAX_BYTES = 512L * 1024L
         private const val BACKUP_COUNT = 3
         private const val MAX_STACK_CHARS = 12_000
         private const val QUEUE_CAPACITY = 256
         private const val DRAIN_BATCH = 64
-        private const val SHORT_FLUSH_TIMEOUT_MS = 100L
         private const val EXPORT_FLUSH_TIMEOUT_MS = 1_000L
         private const val CLEAR_TIMEOUT_MS = 2_000L
         private const val MAX_WRITE_FAILURES = 3

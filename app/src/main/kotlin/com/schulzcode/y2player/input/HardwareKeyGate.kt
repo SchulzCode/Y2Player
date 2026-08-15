@@ -8,6 +8,19 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import kotlin.math.abs
 
+internal fun isMediaTransportKey(keyCode: Int): Boolean = when (keyCode) {
+    KeyEvent.KEYCODE_MEDIA_PLAY,
+    KeyEvent.KEYCODE_MEDIA_PAUSE,
+    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+    KeyEvent.KEYCODE_MEDIA_NEXT,
+    KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+    KeyEvent.KEYCODE_MEDIA_STOP,
+    KeyEvent.KEYCODE_MEDIA_REWIND,
+    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+    KeyEvent.KEYCODE_HEADSETHOOK -> true
+    else -> false
+}
+
 object HardwareKeyGate {
     enum class Source { ACTIVITY, MEDIA_BROADCAST, Y2_BROADCAST }
 
@@ -108,18 +121,7 @@ object HardwareKeyGate {
         if (source == Source.MEDIA_BROADCAST &&
             (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
         ) return true
-        return when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY,
-            KeyEvent.KEYCODE_MEDIA_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-            KeyEvent.KEYCODE_MEDIA_NEXT,
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_STOP,
-            KeyEvent.KEYCODE_MEDIA_REWIND,
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
-            KeyEvent.KEYCODE_HEADSETHOOK -> true
-            else -> false
-        }
+        return isMediaTransportKey(keyCode)
     }
 
     @Synchronized

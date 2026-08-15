@@ -34,8 +34,8 @@ class UserDataBackupManager(
         }
     }
 
-    data class ExportResult(val file: File, val references: Int, val historyRecords: Int)
-    data class ImportResult(val restoredReferences: Int, val unresolvedReferences: Int, val historyRecords: Int)
+    data class ExportResult(val file: File, val references: Int)
+    data class ImportResult(val restoredReferences: Int, val unresolvedReferences: Int)
 
     fun export(nowUtcMs: Long = System.currentTimeMillis()): Result<ExportResult> = runCatching {
         val file = backupFile()
@@ -49,7 +49,7 @@ class UserDataBackupManager(
             listeningHistory = historyRecords
         )
         BackupFormat.writeAtomic(file, document)
-        ExportResult(file, referenceCount(userData), historyRecords.size)
+        ExportResult(file, referenceCount(userData))
     }
 
     fun preview(): Result<Preview> = runCatching {
@@ -75,7 +75,7 @@ class UserDataBackupManager(
             rollbackHistory = { history.replace(oldHistory) },
             rollbackSettings = { preferences.restore(oldSettings) }
         )
-        ImportResult(resolved.restoredReferences, resolved.unresolvedReferences, current.listeningHistory.size)
+        ImportResult(resolved.restoredReferences, resolved.unresolvedReferences)
     }
 
     private fun backupFile(requireExisting: Boolean = false): File {

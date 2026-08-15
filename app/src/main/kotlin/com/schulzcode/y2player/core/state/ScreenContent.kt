@@ -28,8 +28,14 @@ import java.util.Locale
 sealed interface ScreenRow {
     val title: String
     val subtitle: String?
+    val artworkTrackId: Long? get() = null
 
-    data class Action(override val title: String, override val subtitle: String? = null, val key: String) : ScreenRow
+    data class Action(
+        override val title: String,
+        override val subtitle: String? = null,
+        val key: String,
+        override val artworkTrackId: Long? = null
+    ) : ScreenRow
     data class TrackRow(
         val track: Track,
         val queueEntry: QueueEntry? = null,
@@ -37,6 +43,7 @@ sealed interface ScreenRow {
         val selected: Boolean = false
     ) : ScreenRow {
         override val title: String = track.title
+        override val artworkTrackId: Long = track.id
         override val subtitle: String = buildString {
             selectionIndex?.let {
                 append(if (selected) "Selected" else "Not selected")
@@ -63,7 +70,8 @@ sealed interface ScreenRow {
         override val title: String,
         override val subtitle: String? = null,
         val key: String,
-        val target: ScreenGroupTarget? = null
+        val target: ScreenGroupTarget? = null,
+        override val artworkTrackId: Long? = null
     ) : ScreenRow
     data class Folder(override val title: String, val volumeId: String, val relativePath: String) : ScreenRow {
         override val subtitle: String? = null
@@ -365,7 +373,12 @@ object ScreenContent {
 
     private fun audiobookRows(state: AppState): List<ScreenRow> =
         audiobookEntries(state).map {
-            ScreenRow.Action(it.name, audiobookSubtitle(it), AUDIOBOOK_KEY_PREFIX + it.folderKey)
+            ScreenRow.Action(
+                it.name,
+                audiobookSubtitle(it),
+                AUDIOBOOK_KEY_PREFIX + it.folderKey,
+                it.chapterIds.firstOrNull()
+            )
         }
 
     private fun audiobookName(state: AppState, folderKey: String): String? =
@@ -483,10 +496,21 @@ object ScreenContent {
 
     private fun playlistRows(state: AppState): List<ScreenRow> = buildList {
         state.library.playlists.forEach { playlist ->
-            val visibleCount = state.library.playlistTrackIds[playlist.id]?.count { id ->
-                state.library.byId[id]?.isAudiobookChapter != true
-            } ?: playlist.trackCount
-            add(ScreenRow.Action(playlist.name, trackCountLabel(visibleCount), "playlist:${playlist.id}"))
+            val storedIds = state.library.playlistTrackIds[playlist.id]
+            var visibleCount = 0
+            var artworkTrackId: Long? = null
+            storedIds.orEmpty().forEach { id ->
+                if (state.library.byId[id]?.isAudiobookChapter != true) {
+                    visibleCount += 1
+                    if (artworkTrackId == null) artworkTrackId = id
+                }
+            }
+            add(ScreenRow.Action(
+                playlist.name,
+                trackCountLabel(if (storedIds == null) playlist.trackCount else visibleCount),
+                "playlist:${playlist.id}",
+                artworkTrackId
+            ))
         }
         add(ScreenRow.Action("New Playlist", null, "playlist_create"))
     }
@@ -559,7 +583,17 @@ object ScreenContent {
 
     private fun addToPlaylistRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("New Playlist", null, "playlist_create_and_add"))
-        state.library.playlists.forEach { add(ScreenRow.Action(it.name, trackCountLabel(it.trackCount), "playlist_add:${it.id}")) }
+        state.library.playlists.forEach { playlist ->
+            val artworkTrackId = state.library.playlistTrackIds[playlist.id].orEmpty().firstOrNull { id ->
+                state.library.byId[id]?.isAudiobookChapter != true
+            }
+            add(ScreenRow.Action(
+                playlist.name,
+                trackCountLabel(playlist.trackCount),
+                "playlist_add:${playlist.id}",
+                artworkTrackId
+            ))
+        }
     }
 
     private fun queueRows(state: AppState): List<ScreenRow> = buildList {
@@ -1155,7 +1189,8 @@ object ScreenContent {
             album.title,
             albumSubtitle(album.year, album.albumArtist),
             if (album.key.title in duplicateTitles) "${album.title}\u0000${album.albumArtist}" else album.title,
-            ScreenGroupTarget.Album(album.key)
+            ScreenGroupTarget.Album(album.key),
+            album.tracks.firstOrNull()?.id
         )
         }
     }
@@ -1178,7 +1213,12 @@ object ScreenContent {
         val byArtist = organization.tracks(LibraryScope.All).filter { it.isCreditedTo(artist) }
         val albums = organization.artistAlbums(LibraryScope.All, artist, state.preferences.albumSortOrder)
         return buildList {
-            add(ScreenRow.Action("All Songs", trackCountLabel(byArtist.size), "artist_all_songs"))
+            add(ScreenRow.Action(
+                "All Songs",
+                trackCountLabel(byArtist.size),
+                "artist_all_songs",
+                byArtist.firstOrNull()?.id
+            ))
             albums.forEach { album ->
                 val detail = if (!album.albumArtist.equals(artist, ignoreCase = true)) {
                     album.albumArtist
@@ -1187,7 +1227,8 @@ object ScreenContent {
                     album.title,
                     albumSubtitle(album.year, detail),
                     album.title,
-                    ScreenGroupTarget.Album(album.key)
+                    ScreenGroupTarget.Album(album.key),
+                    album.tracks.firstOrNull()?.id
                 ))
             }
         }
@@ -1199,7 +1240,8 @@ object ScreenContent {
                 artist.name,
                 trackCountLabel(artist.tracks.size),
                 artist.name,
-                ScreenGroupTarget.Artist(artist.name)
+                ScreenGroupTarget.Artist(artist.name),
+                artist.tracks.firstOrNull()?.id
             )
         }
 
@@ -1212,13 +1254,25 @@ object ScreenContent {
 
     private fun genreRows(state: AppState): List<ScreenRow> = state.library.index.organization.genres().map { genre ->
         val scope = LibraryScope.Genre(genre.key, genre.label)
-        ScreenRow.Group(genre.label, trackCountLabel(genre.tracks.size), genre.key, ScreenGroupTarget.Scope(scope))
+        ScreenRow.Group(
+            genre.label,
+            trackCountLabel(genre.tracks.size),
+            genre.key,
+            ScreenGroupTarget.Scope(scope),
+            genre.tracks.firstOrNull()?.id
+        )
     }
 
     private fun yearRows(state: AppState): List<ScreenRow> = state.library.index.organization
         .years(state.preferences.yearSortOrder).map { year ->
             val scope = LibraryScope.Year(year.year)
-            ScreenRow.Group(scope.label, trackCountLabel(year.tracks.size), scope.label, ScreenGroupTarget.Scope(scope))
+            ScreenRow.Group(
+                scope.label,
+                trackCountLabel(year.tracks.size),
+                scope.label,
+                ScreenGroupTarget.Scope(scope),
+                year.tracks.firstOrNull()?.id
+            )
         }
 
     private fun facetMenuRows(scope: LibraryScope): List<ScreenRow> = listOf(
@@ -1233,7 +1287,8 @@ object ScreenContent {
                 artist.name,
                 trackCountLabel(artist.tracks.size),
                 artist.name,
-                ScreenGroupTarget.Artist(artist.name)
+                ScreenGroupTarget.Artist(artist.name),
+                artist.tracks.firstOrNull()?.id
             )
         }
 
@@ -1246,7 +1301,12 @@ object ScreenContent {
         val tracks = organization.tracks(scope).filter { it.isCreditedTo(artist) }
         val albums = organization.artistAlbums(scope, artist, state.preferences.albumSortOrder)
         return buildList {
-            add(ScreenRow.Action("All Tracks", trackCountLabel(tracks.size), "facet_artist_all_tracks"))
+            add(ScreenRow.Action(
+                "All Tracks",
+                trackCountLabel(tracks.size),
+                "facet_artist_all_tracks",
+                tracks.firstOrNull()?.id
+            ))
             albums.forEach { album ->
                 val detail = if (!album.albumArtist.equals(artist, ignoreCase = true)) {
                     album.albumArtist
@@ -1255,7 +1315,8 @@ object ScreenContent {
                     album.title,
                     albumSubtitle(album.year, detail),
                     album.title,
-                    ScreenGroupTarget.Album(album.key)
+                    ScreenGroupTarget.Album(album.key),
+                    album.tracks.firstOrNull()?.id
                 ))
             }
         }

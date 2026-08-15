@@ -50,9 +50,9 @@ object VolumeModeTransfer {
     }
 }
 
-enum class VolumeMode(val storageId: String, val label: String) {
-    SYSTEM("system", "System volume"),
-    PERCEPTUAL("perceptual", "Perceptual (in-app)");
+enum class VolumeMode(val storageId: String) {
+    SYSTEM("system"),
+    PERCEPTUAL("perceptual");
 
     fun next(): VolumeMode = if (this == SYSTEM) PERCEPTUAL else SYSTEM
 

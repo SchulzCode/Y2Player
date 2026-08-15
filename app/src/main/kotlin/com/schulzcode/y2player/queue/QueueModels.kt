@@ -8,8 +8,7 @@ data class QueueSnapshot(
     val visibleEntries: List<QueueEntry>,
     val currentEntryId: Long?,
     val repeatMode: RepeatMode,
-    val shuffleEnabled: Boolean,
-    val shuffleSeed: Long
+    val shuffleEnabled: Boolean
 )
 
 data class PersistedPlaybackSession(

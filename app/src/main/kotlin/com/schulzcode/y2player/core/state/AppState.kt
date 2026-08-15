@@ -64,8 +64,7 @@ data class DeviceState(
 
 data class DisplayState(
     val brightnessPercent: Int = 50,
-    val screenTimeoutMs: Int = 60_000,
-    val canWriteSystemSettings: Boolean = false
+    val screenTimeoutMs: Int = 60_000
 )
 
 data class BackupUiState(

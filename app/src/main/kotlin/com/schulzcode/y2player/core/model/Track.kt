@@ -43,8 +43,6 @@ data class Track(
 
     val primaryArtist: String get() = ArtistCredit.primary(displayArtist)
 
-    val featuredArtist: String? get() = ArtistCredit.featured(displayArtist)
-
     val creditedArtists: List<String> get() = ArtistCredit.names(displayArtist)
 
     val albumArtistName: String get() = albumArtist?.trim()?.takeIf { it.isNotEmpty() }
@@ -82,16 +80,6 @@ object ArtistCredit {
         if (at < 0) return firstCommaSeparated(cleaned)
         val head = cleaned.substring(0, at).trimEnd(' ', '(', '[', '-', '\u2013', ',')
         return firstCommaSeparated(head.ifEmpty { cleaned })
-    }
-
-    fun featured(credit: String): String? {
-        val cleaned = credit.substringBefore(REPEATED_VALUE_SEPARATOR).trim()
-        val at = markerStart(cleaned)
-        if (at < 0) return null
-        val length = markerLengthAt(cleaned, at)
-        if (length <= 0) return null
-        val tail = cleaned.substring(at + length).trim().trim(')', ']').trim()
-        return tail.ifEmpty { null }
     }
 
     fun names(credit: String): List<String> {
@@ -266,7 +254,6 @@ data class TrackDraft(
 )
 
 data class AudiobookProgress(
-    val folderKey: String,
     val trackId: Long,
     val positionMs: Long,
     val updatedAt: Long

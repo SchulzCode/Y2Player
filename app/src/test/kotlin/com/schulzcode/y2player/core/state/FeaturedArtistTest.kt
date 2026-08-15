@@ -5,7 +5,6 @@ import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -141,20 +140,20 @@ class FeaturedArtistTest {
             "Hall & Oates"
         ).forEach { name ->
             assertEquals(name, ArtistCredit.primary(name))
-            assertNull("$name must not be treated as a feature", ArtistCredit.featured(name))
+            assertEquals(listOf(name), ArtistCredit.names(name))
         }
     }
 
     @Test fun `a bare with never splits a band name`() {
         listOf("Sleeping with Sirens", "Girls with Guitars", "The Boy with the Arab Strap").forEach { name ->
             assertEquals(name, ArtistCredit.primary(name))
-            assertNull(ArtistCredit.featured(name))
+            assertEquals(listOf(name), ArtistCredit.names(name))
         }
     }
 
     @Test fun `a bracketed with is a feature`() {
         assertEquals("Elton John", ArtistCredit.primary("Elton John (with Dua Lipa)"))
-        assertEquals("Dua Lipa", ArtistCredit.featured("Elton John (with Dua Lipa)"))
+        assertEquals(listOf("Elton John", "Dua Lipa"), ArtistCredit.names("Elton John (with Dua Lipa)"))
     }
 
     @Test fun `every spelling of the feature marker is recognised`() {
@@ -169,20 +168,20 @@ class FeaturedArtistTest {
             "Daft Punk [feat. Pharrell Williams]"
         ).forEach { credit ->
             assertEquals(credit, "Daft Punk", ArtistCredit.primary(credit))
-            assertEquals(credit, "Pharrell Williams", ArtistCredit.featured(credit))
+            assertEquals(credit, listOf("Daft Punk", "Pharrell Williams"), ArtistCredit.names(credit))
         }
     }
 
     @Test fun `a marker inside a word is not a marker`() {
         listOf("Ftown Boys", "Feather", "Featherweight Kings", "Withered Hand").forEach { name ->
             assertEquals(name, ArtistCredit.primary(name))
-            assertNull(ArtistCredit.featured(name))
+            assertEquals(listOf(name), ArtistCredit.names(name))
         }
     }
 
     @Test fun `a trailing marker with nobody after it is ignored`() {
         assertEquals("Daft Punk feat.", ArtistCredit.primary("Daft Punk feat."))
-        assertNull(ArtistCredit.featured("Daft Punk feat."))
+        assertEquals(listOf("Daft Punk feat."), ArtistCredit.names("Daft Punk feat."))
     }
 
     @Test fun `artist identity ignores surrounding whitespace and case`() {

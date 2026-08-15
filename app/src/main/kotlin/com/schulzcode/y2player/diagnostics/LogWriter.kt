@@ -14,11 +14,12 @@ class LogWriter(threadName: String = "y2-log") {
     private val signal = Object()
     private var pending = false
 
-    @Suppress("unused")
-    private val worker = Thread(::loop, threadName).apply {
-        isDaemon = true
-        priority = Thread.MIN_PRIORITY
-        start()
+    init {
+        Thread(::loop, threadName).apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+            start()
+        }
     }
 
     fun register(sink: Sink) {

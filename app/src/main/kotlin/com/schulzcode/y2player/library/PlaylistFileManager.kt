@@ -7,13 +7,12 @@ import com.schulzcode.y2player.storage.preferredWritableRoot
 import java.io.File
 
 class PlaylistFileManager(private val database: LibraryDatabase) {
-    data class ImportResult(val imported: Int, val matchedTracks: Int, val ignoredEntries: Int)
+    data class ImportResult(val imported: Int, val matchedTracks: Int)
     data class ExportResult(val exported: Int, val directory: File?)
 
     fun importFiles(files: List<File>): ImportResult {
         var imported = 0
         var matched = 0
-        var ignored = 0
         files.asSequence()
             .filter { it.isFile && it.canRead() && it.length() <= MAX_PLAYLIST_BYTES }
             .mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
@@ -21,16 +20,13 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
             .take(MAX_PLAYLIST_FILES)
             .forEach { file ->
                 val trackIds = LinkedHashSet<Long>()
-                val resolvedCount = runCatching {
+                val resolved = runCatching {
                     forEachResolvedBatch(file) { batch ->
                         val idsByPath = database.findTrackIdsByAbsolutePaths(batch)
                         batch.forEach { path -> idsByPath[path]?.let(trackIds::add) }
                     }
-                }.getOrElse {
-                    ignored += 1
-                    return@forEach
-                }
-                ignored += (resolvedCount - trackIds.size).coerceAtLeast(0)
+                }.isSuccess
+                if (!resolved) return@forEach
                 database.upsertImportedPlaylist(
                     sourcePath = file.absolutePath,
                     preferredName = "M3U · ${file.nameWithoutExtension.ifBlank { "Playlist" }}",
@@ -39,7 +35,7 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
                 imported += 1
                 matched += trackIds.size
             }
-        return ImportResult(imported, matched, ignored)
+        return ImportResult(imported, matched)
     }
 
     fun discover(root: File): List<File> {
@@ -88,12 +84,11 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
         return ExportResult(exported, directory)
     }
 
-    private fun forEachResolvedBatch(file: File, consume: (List<String>) -> Unit): Int {
+    private fun forEachResolvedBatch(file: File, consume: (List<String>) -> Unit) {
         val charset = PlaylistTextReader.charsetFor(file, forceUtf8 = file.extension.equals("m3u8", true))
         val base = file.parentFile ?: File("/")
         val pathResolver = PlaylistPathResolver(base)
         val batch = ArrayList<String>(PATH_LOOKUP_BATCH)
-        var resolvedCount = 0
 
         fun flush() {
             if (batch.isEmpty()) return
@@ -104,12 +99,10 @@ class PlaylistFileManager(private val database: LibraryDatabase) {
         PlaylistTextReader.forEachLine(file, charset, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_LINE_CHARS) { raw ->
             pathResolver.resolve(raw)?.let { path ->
                 batch += path
-                resolvedCount += 1
                 if (batch.size >= PATH_LOOKUP_BATCH) flush()
             }
         }
         flush()
-        return resolvedCount
     }
 
     private fun exportPath(track: Track, root: StorageRoot): String {

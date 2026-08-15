@@ -38,11 +38,6 @@ class HapticRateLimiter(private val minIntervalMs: Long = MIN_INTERVAL_MS) {
     fun reset() { lastPulseAt = Long.MIN_VALUE }
 
     @Synchronized
-    fun pulseCount(): Int = pulses
-    @Synchronized
-    fun suppressedCount(): Int = suppressed
-
-    @Synchronized
     fun drainCounters(): IntArray {
         val values = intArrayOf(pulses, suppressed)
         pulses = 0

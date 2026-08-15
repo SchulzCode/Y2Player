@@ -31,8 +31,6 @@ class BluetoothController(
     private val eventLog: EventLog? = null
 ) {
     fun interface Listener { fun onBluetoothChanged(state: BluetoothUiState) }
-    data class OperationResult(val accepted: Boolean, val message: String)
-
     enum class Operation(val label: String) {
         PAIRING("Pairing"),
         CONNECTION("Connection"),
@@ -165,28 +163,25 @@ class BluetoothController(
 
     fun snapshot(): BluetoothUiState = buildSnapshot()
 
-    fun setEnabled(enabled: Boolean): OperationResult {
-        val local = adapter ?: return OperationResult(false, "Bluetooth hardware is unavailable")
+    fun setEnabled(enabled: Boolean): String {
+        val local = adapter ?: return "Bluetooth hardware is unavailable"
         lastError = null
         val accepted = runCatching { if (enabled) local.enable() else local.disable() }.getOrDefault(false)
         logger.info("Bluetooth", "set enabled=$enabled accepted=$accepted")
         publish()
-        return OperationResult(
-            accepted,
-            if (accepted) {
-                if (enabled) "Turning Bluetooth on" else "Turning Bluetooth off"
-            } else {
-                if (enabled) "Bluetooth could not be enabled" else "Bluetooth could not be disabled"
-            }
-        )
+        return if (accepted) {
+            if (enabled) "Turning Bluetooth on" else "Turning Bluetooth off"
+        } else {
+            if (enabled) "Bluetooth could not be enabled" else "Bluetooth could not be disabled"
+        }
     }
 
-    fun startScan(): OperationResult {
-        val local = adapter ?: return OperationResult(false, "Bluetooth hardware is unavailable")
-        if (!local.isEnabled) return OperationResult(false, "Turn Bluetooth on first")
+    fun startScan(): String {
+        val local = adapter ?: return "Bluetooth hardware is unavailable"
+        if (!local.isEnabled) return "Turn Bluetooth on first"
         if (hasActiveA2dpConnection()) {
             logger.info("Bluetooth", "scan blocked: active A2DP audio present")
-            return OperationResult(false, SCAN_BLOCKED_MESSAGE)
+            return SCAN_BLOCKED_MESSAGE
         }
         lastError = null
         runCatching { if (local.isDiscovering) local.cancelDiscovery() }
@@ -194,48 +189,48 @@ class BluetoothController(
         val accepted = runCatching { local.startDiscovery() }.getOrDefault(false)
         logger.info("Bluetooth", "scan accepted=$accepted")
         publish()
-        return OperationResult(accepted, if (accepted) "Scanning for audio devices" else "Bluetooth scan could not start")
+        return if (accepted) "Scanning for audio devices" else "Bluetooth scan could not start"
     }
 
-    fun stopScan(): OperationResult {
+    fun stopScan(): String {
         val accepted = runCatching { adapter?.cancelDiscovery() == true }.getOrDefault(false)
         publish()
-        return OperationResult(accepted, if (accepted) "Bluetooth scan stopped" else "No Bluetooth scan was active")
+        return if (accepted) "Bluetooth scan stopped" else "No Bluetooth scan was active"
     }
 
-    fun refreshA2dpProxy(): OperationResult {
-        if (adapter == null) return OperationResult(false, "Bluetooth hardware is unavailable")
-        if (!started) return OperationResult(false, "Bluetooth is disabled in Safe Mode")
+    fun refreshA2dpProxy(): String {
+        if (adapter == null) return "Bluetooth hardware is unavailable"
+        if (!started) return "Bluetooth is disabled in Safe Mode"
         mainHandler.removeCallbacks(proxyReconnectRunnable)
         proxyRetryCount = 0
         closeProxy()
         requestA2dpProxy()
         logger.info("Bluetooth", "A2DP service refresh requested")
-        return OperationResult(true, "Restarting Bluetooth audio service")
+        return "Restarting Bluetooth audio service"
     }
 
-    fun activateDevice(address: String): OperationResult {
-        val local = adapter ?: return OperationResult(false, "Bluetooth hardware is unavailable")
-        if (!local.isEnabled) return OperationResult(false, "Turn Bluetooth on first")
+    fun activateDevice(address: String): String {
+        val local = adapter ?: return "Bluetooth hardware is unavailable"
+        if (!local.isEnabled) return "Turn Bluetooth on first"
         val device = runCatching { local.getRemoteDevice(address) }.getOrNull()
-            ?: return OperationResult(false, "Bluetooth device is unavailable")
+            ?: return "Bluetooth device is unavailable"
         return when {
             a2dpState(device) == BluetoothProfile.STATE_CONNECTED -> disconnectA2dp(device)
-            device.bondState == BluetoothDevice.BOND_BONDING -> OperationResult(false, "Pairing is already in progress")
+            device.bondState == BluetoothDevice.BOND_BONDING -> "Pairing is already in progress"
             device.bondState == BluetoothDevice.BOND_BONDED -> connectA2dp(device)
             else -> pair(device)
         }
     }
 
-    fun forgetDevice(address: String): OperationResult {
+    fun forgetDevice(address: String): String {
         val device = runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
-            ?: return OperationResult(false, "Bluetooth device is unavailable")
-        if (device.bondState == BluetoothDevice.BOND_NONE) return OperationResult(true, "Device is already forgotten")
+            ?: return "Bluetooth device is unavailable"
+        if (device.bondState == BluetoothDevice.BOND_NONE) return "Device is already forgotten"
         if (findHiddenMethod(device.javaClass, "removeBond") == null) {
             lastError = "Automatic forget is unavailable; remove the bond in Android Bluetooth settings"
             logger.warn("Bluetooth", lastError.orEmpty())
             publish()
-            return OperationResult(false, lastError.orEmpty())
+            return lastError.orEmpty()
         }
         setPending(device.address, Operation.FORGETTING, CONNECT_TIMEOUT_MS)
         val accepted = invokeHiddenBoolean(device, "removeBond") == true
@@ -243,10 +238,10 @@ class BluetoothController(
         logger.info("Bluetooth", "forget ${device.displayName()} accepted=$accepted")
         if (!accepted) lastError = "Could not forget ${device.displayName()}"
         publish()
-        return OperationResult(accepted, if (accepted) "Forgetting ${device.displayName()}" else lastError.orEmpty())
+        return if (accepted) "Forgetting ${device.displayName()}" else lastError.orEmpty()
     }
 
-    private fun pair(device: BluetoothDevice): OperationResult {
+    private fun pair(device: BluetoothDevice): String {
         runCatching { adapter?.cancelDiscovery() }
         setPending(device.address, Operation.PAIRING, PAIR_TIMEOUT_MS)
         val accepted = runCatching { device.createBond() }.getOrDefault(false)
@@ -256,19 +251,19 @@ class BluetoothController(
         }
         logger.info("Bluetooth", "pair ${device.displayName()} accepted=$accepted")
         publish()
-        return OperationResult(accepted, if (accepted) "Pairing with ${device.displayName()}" else lastError.orEmpty())
+        return if (accepted) "Pairing with ${device.displayName()}" else lastError.orEmpty()
     }
 
-    private fun connectA2dp(device: BluetoothDevice): OperationResult {
+    private fun connectA2dp(device: BluetoothDevice): String {
         val proxy = a2dp ?: run {
             lastError = "A2DP service is still starting; try Refresh Audio Service or Android Bluetooth settings"
             scheduleProxyReconnect()
-            return OperationResult(false, lastError.orEmpty())
+            return lastError.orEmpty()
         }
         if (findHiddenMethod(proxy.javaClass, "connect", BluetoothDevice::class.java) == null) {
             lastError = "Automatic A2DP connection is unavailable; connect in Android Bluetooth settings"
             logger.warn("Bluetooth", lastError.orEmpty())
-            return OperationResult(false, lastError.orEmpty())
+            return lastError.orEmpty()
         }
         runCatching { adapter?.cancelDiscovery() }
         lastError = null
@@ -285,15 +280,15 @@ class BluetoothController(
         }
         logger.info("Bluetooth", "connect ${device.displayName()} accepted=$accepted")
         publish()
-        return OperationResult(accepted, if (accepted) "Connecting to ${device.displayName()}" else lastError.orEmpty())
+        return if (accepted) "Connecting to ${device.displayName()}" else lastError.orEmpty()
     }
 
-    private fun disconnectA2dp(device: BluetoothDevice): OperationResult {
-        val proxy = a2dp ?: return OperationResult(false, "A2DP service is unavailable")
+    private fun disconnectA2dp(device: BluetoothDevice): String {
+        val proxy = a2dp ?: return "A2DP service is unavailable"
         if (findHiddenMethod(proxy.javaClass, "disconnect", BluetoothDevice::class.java) == null) {
             lastError = "Automatic A2DP disconnection is unavailable; disconnect in Android Bluetooth settings"
             logger.warn("Bluetooth", lastError.orEmpty())
-            return OperationResult(false, lastError.orEmpty())
+            return lastError.orEmpty()
         }
         setPending(device.address, Operation.DISCONNECTION, CONNECT_TIMEOUT_MS)
         val accepted = invokeBoolean(proxy, "disconnect", device) == true
@@ -303,7 +298,7 @@ class BluetoothController(
         }
         logger.info("Bluetooth", "disconnect ${device.displayName()} accepted=$accepted")
         publish()
-        return OperationResult(accepted, if (accepted) "Disconnecting ${device.displayName()}" else lastError.orEmpty())
+        return if (accepted) "Disconnecting ${device.displayName()}" else lastError.orEmpty()
     }
 
     private fun handleBondState(device: BluetoothDevice, intent: Intent) {

@@ -62,7 +62,7 @@ class AudioEffectsController(
                 lastError = null
             }
         }
-        return snapshot(preferences)
+        return snapshot()
     }
 
     private fun applyOnce(preferences: PlayerPreferencesState): Boolean {
@@ -101,7 +101,7 @@ class AudioEffectsController(
         return succeeded
     }
 
-    fun snapshot(preferences: PlayerPreferencesState): AudioEffectsState {
+    private fun snapshot(): AudioEffectsState {
         val eq = equalizer.takeIf { equalizerUsable }
         val range = runCatching { eq?.bandLevelRange }.getOrNull()
         val presetNames = if (eq == null) emptyList() else buildList {
@@ -121,18 +121,14 @@ class AudioEffectsController(
         }
         return AudioEffectsState(
             available = equalizerUsable || bassBoostUsable || loudnessEnhancerUsable,
-            enabled = preferences.audioEffectsEnabled,
             equalizerSupported = eq != null,
             presetNames = presetNames,
-            selectedPreset = preferences.equalizerPreset,
             bandFrequenciesHz = frequencies,
             bandLevelsMb = levels,
             bandMinMb = range?.getOrNull(0)?.toInt() ?: -1_500,
             bandMaxMb = range?.getOrNull(1)?.toInt() ?: 1_500,
             bassBoostSupported = bassBoostUsable && runCatching { bassBoost?.strengthSupported == true }.getOrDefault(false),
-            bassStrength = preferences.bassStrength,
             loudnessSupported = loudnessEnhancerUsable,
-            loudnessGainMb = preferences.loudnessGainMb,
             errorMessage = lastError
         )
     }

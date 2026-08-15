@@ -54,7 +54,7 @@ class IrreversibleActionReachabilityTest {
         library = LibraryState(
             tracks = listOf(track, song),
             playlists = listOf(PlaylistSummary(5, "Road Trip", 1))
-        ).copy(audiobookProgress = mapOf(dune to AudiobookProgress(dune, track.id, 60_000, 99))),
+        ).copy(audiobookProgress = mapOf(dune to AudiobookProgress(track.id, 60_000, 99))),
         bluetooth = BluetoothUiState(
             adapterMode = BluetoothAdapterMode.ON,
             devices = listOf(BluetoothDeviceEntry(address, "Headset", bonded = true, bonding = false))

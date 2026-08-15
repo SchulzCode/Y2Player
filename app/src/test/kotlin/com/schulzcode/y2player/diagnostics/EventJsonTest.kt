@@ -1,7 +1,6 @@
 package com.schulzcode.y2player.diagnostics
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,20 +41,5 @@ class EventJsonTest {
         assertEquals("null", valued(Double.NaN))
         assertEquals("null", valued(Double.POSITIVE_INFINITY))
         assertEquals("null", valued(Float.NEGATIVE_INFINITY))
-    }
-
-    @Test fun sanitizesPathsToVolumeAndFilename() {
-        assertEquals("sdcard1:song.flac", EventJson.sanitizePath("/storage/sdcard1/Music/Artist/Album/song.flac"))
-        assertEquals("sdcard0:track.mp3", EventJson.sanitizePath("/storage/sdcard0/track.mp3"))
-        assertEquals("other:file.ogg", EventJson.sanitizePath("/weird/place/file.ogg"))
-        assertNull(EventJson.sanitizePath(null))
-        assertNull(EventJson.sanitizePath("   "))
-    }
-
-    @Test fun sanitizedPathsDoNotLeakDirectoryStructure() {
-        val sanitized = EventJson.sanitizePath("/storage/sdcard1/Music/Private Folder/Secret Artist/x.flac")!!
-        assertTrue(sanitized == "sdcard1:x.flac")
-        assertTrue(!sanitized.contains("Private"))
-        assertTrue(!sanitized.contains("Secret"))
     }
 }

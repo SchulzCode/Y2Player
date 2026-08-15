@@ -41,7 +41,7 @@ object ScreenCatalogue {
         put(Screen.TrackDetails(1))
         put(Screen.AddToPlaylist(1))
         put(Screen.CollectionOptions("Album", listOf(1)))
-        put(Screen.MultiSelect("Songs", listOf(1), setOf(0)))
+        put(Screen.MultiSelect(listOf(1), setOf(0)))
         put(Screen.QueueOptions(0))
         put(Screen.QueueMove(0, 0))
         put(Screen.QueueManagement)
@@ -97,7 +97,7 @@ object ScreenCatalogue {
         Screen.Albums.code, Screen.Artists.code, Screen.Genres.code, Screen.Years.code, Screen.Audiobooks.code,
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,
-        Screen.AudiobookChapters("").code, Screen.MultiSelect("", emptyList(), emptySet()).code,
+        Screen.AudiobookChapters("").code, Screen.MultiSelect(emptyList(), emptySet()).code,
         Screen.QueueOptions(0).code, Screen.QueueMove(0, 0).code, Screen.QueueManagement.code,
         Screen.FacetArtists(LibraryScope.Year(2000)).code,
         Screen.FacetAlbums(LibraryScope.Year(2000)).code,

@@ -39,7 +39,6 @@ class LibraryIndexTest {
         assertEquals(3, index.byId.size)
         assertSame(unavailable, index.byId[2L])
         assertEquals(listOf(available, plain), index.availableTracks)
-        assertEquals(listOf(available), index.favoriteTracks)
         assertEquals(setOf(1L, 3L), index.availableTrackIds)
     }
 
@@ -69,7 +68,6 @@ class LibraryIndexTest {
         val state = LibraryState(tracks = listOf(song, chapter)).copy(recentlyPlayedIds = listOf(2L, 1L))
 
         assertEquals(listOf(song, chapter), state.availableTracks)
-        assertEquals(listOf(song, chapter), state.favoriteTracks)
         assertEquals(listOf(song), state.musicTracks)
         assertEquals(listOf(song), state.favoriteMusicTracks)
         assertEquals(listOf(song), state.recentlyPlayedMusic)

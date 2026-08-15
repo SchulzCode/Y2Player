@@ -193,7 +193,7 @@ class MediaButtonPolicyTest {
         downTime: Long,
         repeatCount: Int = 0,
         allowRepeats: Boolean = false
-    ): Boolean = MediaButtonPressGate.shouldDispatch(
+    ): Boolean = MediaButtonPressGate.dispatchDecision(
         keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
         action = action,
         eventTime = eventTime,
@@ -202,7 +202,7 @@ class MediaButtonPolicyTest {
         repeatCount = repeatCount,
         source = HardwareKeyGate.Source.MEDIA_BROADCAST,
         allowRepeats = allowRepeats
-    )
+    ) != MediaButtonPressGate.Decision.REJECT
 
     private fun decision(action: Int, eventTime: Long, downTime: Long, repeatCount: Int = 0) =
         MediaButtonPressGate.dispatchDecision(

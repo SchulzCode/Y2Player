@@ -36,18 +36,4 @@ object EventJson {
             else -> escape(value.toString(), builder)
         }
     }
-
-    fun sanitizePath(path: String?): String? {
-        if (path.isNullOrBlank()) return null
-        val normalized = path.replace('\\', '/').trimEnd('/')
-        val name = normalized.substringAfterLast('/', normalized)
-        val volume = when {
-            normalized.startsWith("/storage/sdcard1") -> "sdcard1"
-            normalized.startsWith("/storage/sdcard0") -> "sdcard0"
-            normalized.startsWith("/mnt/") -> "mnt"
-            normalized.startsWith("/data") -> "data"
-            else -> "other"
-        }
-        return "$volume:$name"
-    }
 }

@@ -16,14 +16,13 @@ class DiagnosticLoggerClearTest {
         directory.resolve("y2-native-crash.log").writeText("old crash")
         val logger = DiagnosticLogger(directory)
         logger.warn("Test", "before clear")
-        assertTrue(logger.recentLines().any { it.contains("before clear") })
 
         assertTrue(logger.clear())
         logger.warn("Test", "after clear")
-        val current = logger.recentLines()
+        val current = logger.exportTo(temporaryFolder.newFolder("current")).readText()
 
-        assertFalse(current.any { it.contains("before clear") })
-        assertTrue(current.any { it.contains("after clear") })
+        assertFalse(current.contains("before clear"))
+        assertTrue(current.contains("after clear"))
         assertFalse(directory.resolve("y2player.1.log").exists())
         assertFalse(directory.resolve("y2-native-crash.log").exists())
         assertTrue("an already exported file is outside reset ownership", exported.exists())

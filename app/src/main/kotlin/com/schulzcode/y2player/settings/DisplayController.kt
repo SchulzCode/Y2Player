@@ -1,8 +1,6 @@
 package com.schulzcode.y2player.settings
 
-import android.Manifest
 import android.app.Activity
-import android.content.pm.PackageManager
 import android.provider.Settings
 import com.schulzcode.y2player.core.state.DisplayState
 import com.schulzcode.y2player.core.state.ScreenContent
@@ -24,14 +22,11 @@ class DisplayController(private val activity: Activity) {
         )
         return DisplayState(
             brightnessPercent = sessionBrightnessPercent ?: BrightnessConversion.toPercent(brightness),
-            screenTimeoutMs = timeout,
-            canWriteSystemSettings = activity.checkCallingOrSelfPermission(
-                Manifest.permission.WRITE_SETTINGS
-            ) == PackageManager.PERMISSION_GRANTED
+            screenTimeoutMs = timeout
         )
     }
 
-    fun setBrightness(percent: Int): Result {
+    fun setBrightness(percent: Int): String {
         val safePercent = percent.coerceIn(5, 100)
         val raw = BrightnessConversion.toRaw(safePercent)
         val windowApplied = runCatching {
@@ -55,15 +50,12 @@ class DisplayController(private val activity: Activity) {
             windowApplied -> safePercent
             else -> sessionBrightnessPercent
         }
-        return Result(
-            success = persisted || windowApplied,
-            message = if (persisted) "Brightness set to $safePercent%" else {
-                "Brightness changed for this session; firmware permission is still required for persistence"
-            }
-        )
+        return if (persisted) "Brightness set to $safePercent%" else {
+            "Brightness changed for this session; firmware permission is still required for persistence"
+        }
     }
 
-    fun setTimeout(timeoutMs: Int): Result {
+    fun setTimeout(timeoutMs: Int): String {
         val persisted = runCatching {
             Settings.System.putInt(
                 activity.contentResolver,
@@ -72,13 +64,11 @@ class DisplayController(private val activity: Activity) {
             )
         }.getOrDefault(false)
         return if (persisted) {
-            Result(true, "Screen timeout set to ${ScreenContent.timeoutLabel(timeoutMs)}")
+            "Screen timeout set to ${ScreenContent.timeoutLabel(timeoutMs)}"
         } else {
-            Result(false, "Unable to change timeout; install Y2Player as a system app with WRITE_SETTINGS")
+            "Unable to change timeout; install Y2Player as a system app with WRITE_SETTINGS"
         }
     }
-
-    data class Result(val success: Boolean, val message: String)
 }
 
 internal object BrightnessConversion {

@@ -1465,7 +1465,6 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         val folderKey = track.audiobookFolderKey ?: return
         val storedPosition = PlaybackPositionPolicy.audiobookSavePosition(positionMs, durationMs)
         recentAudiobookProgress[folderKey] = AudiobookProgress(
-            folderKey = folderKey,
             trackId = track.id,
             positionMs = storedPosition,
             updatedAt = System.currentTimeMillis()

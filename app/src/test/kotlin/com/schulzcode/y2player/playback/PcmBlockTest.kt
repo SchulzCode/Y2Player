@@ -64,7 +64,7 @@ class PcmBlockTest {
 
         block.stage(0)
         assertTrue(block.hasStagedBlock)
-        assertTrue(block.atEndOfStream)
+        assertEquals(0, block.decodedFrameCount)
         assertEquals(0, block.remainingFrameCount)
         block.consume(0)
         assertTrue(block.hasStagedBlock)

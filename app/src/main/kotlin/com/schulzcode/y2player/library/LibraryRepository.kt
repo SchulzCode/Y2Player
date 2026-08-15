@@ -141,7 +141,6 @@ class LibraryRepository(
                             onBatch = { files -> database.applyScanBatch(root.id, scanId, files, profiler) },
                             onProgress = { path, count ->
                                 publishProgress(
-                                    root.id,
                                     path,
                                     (totalProcessed + count).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                                 )
@@ -639,7 +638,7 @@ class LibraryRepository(
         return parts.joinToString(", ").ifEmpty { null }
     }
 
-    private fun publishProgress(volumeId: String, path: String, count: Int) {
+    private fun publishProgress(path: String, count: Int) {
         val now = SystemClock.uptimeMillis()
         if (now - lastProgressPublishAt < PROGRESS_INTERVAL_MS && count % 100 != 0) return
         lastProgressPublishAt = now
@@ -647,7 +646,7 @@ class LibraryRepository(
             if (!scanning.get()) return@execute
             publish(current.copy(
                 isScanning = true,
-                scanProgress = LibraryScanProgress(volumeId, path, count),
+                scanProgress = LibraryScanProgress(path, count),
                 errorMessage = null
             ))
         }

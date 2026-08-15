@@ -560,15 +560,14 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     fun loadAudiobookProgress(folderKey: String): AudiobookProgress? = readableDatabase.query(
         AudiobookProgressTable.NAME,
-        arrayOf("folder_key", "track_id", "position_ms", "updated_at"),
+        arrayOf("track_id", "position_ms", "updated_at"),
         "folder_key = ?", arrayOf(folderKey), null, null, null, "1"
     ).use { cursor ->
         if (!cursor.moveToFirst()) return@use null
         AudiobookProgress(
-            folderKey = cursor.getString(0),
-            trackId = cursor.getLong(1),
-            positionMs = cursor.getLong(2).coerceAtLeast(0),
-            updatedAt = cursor.getLong(3)
+            trackId = cursor.getLong(0),
+            positionMs = cursor.getLong(1).coerceAtLeast(0),
+            updatedAt = cursor.getLong(2)
         )
     }
 
@@ -581,7 +580,6 @@ class LibraryDatabase(private val appContext: Context) : SQLiteOpenHelper(
         while (cursor.moveToNext()) {
             val key = cursor.getString(0) ?: continue
             progress[key] = AudiobookProgress(
-                folderKey = key,
                 trackId = cursor.getLong(1),
                 positionMs = cursor.getLong(2).coerceAtLeast(0),
                 updatedAt = cursor.getLong(3)

@@ -24,16 +24,6 @@ class AudioOutputTest {
         assertEquals(4, PcmFormat.PCM16_BYTES_PER_FRAME)
         assertEquals(PcmFormat.BLOCK_SAMPLES * 4, PcmFormat.FLOAT_BLOCK_BYTES)
         assertEquals(PcmFormat.BLOCK_SAMPLES * 2, PcmFormat.PCM16_BLOCK_BYTES)
-        assertEquals(8_000, PcmFormat.floatBytesForFrames(1_000))
-    }
-
-    @Test fun invalidFloatCapacityCalculationsAreRejected() {
-        assertThrows(IllegalArgumentException::class.java) {
-            PcmFormat.floatBytesForFrames(-1)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PcmFormat.floatBytesForFrames(Int.MAX_VALUE)
-        }
     }
 
     @Test fun normalizedValuesAndFullScaleQuantizeDeterministically() {
@@ -59,8 +49,6 @@ class AudioOutputTest {
         )
 
         assertArrayEquals(shortArrayOf(0, 0, 0, 32_767, -32_768), result)
-        assertEquals(3L, staging.invalidSampleCount)
-        assertEquals(2L, staging.clippedSampleCount)
     }
 
     @Test fun stagingConvertsOnlyTheRequestedSubrangeAndKeepsChannelOrder() {
