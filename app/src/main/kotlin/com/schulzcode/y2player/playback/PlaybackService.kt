@@ -309,11 +309,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             source = "fallback"
         )
     }
-    private var sleepTimerMode = SleepTimerMode.OFF
+    private val sleepTimer = SleepTimerController()
     private var backupImportInProgress = false
-    private var sleepTimerDeadlineElapsed: Long? = null
     private var sleepTimerCallback: Runnable? = null
-    private val sleepTimerGeneration = GenerationGuard()
     private val safetyPolicy = PlaybackSafetyPolicy()
 
     private val storageListener = StorageMonitor.Listener { device ->
@@ -658,7 +656,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         cancelNextWatchdog(promotedRequestId)
         releaseCurrentTrack(PlaybackExitReason.COMPLETED)
 
-        val advanced = when (sleepTimerMode) {
+        val advanced = when (sleepTimer.mode) {
             SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.nextInCurrentPass()
             else -> queue.next()
         }
@@ -1170,9 +1168,9 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         ) {
             return true
         }
-        val currentPassOnly = !userInitiated && sleepTimerMode in PASS_BOUNDED_SLEEP_MODES
+        val currentPassOnly = !userInitiated && sleepTimer.mode in PASS_BOUNDED_SLEEP_MODES
         if (!moveToNextAvailable(ignoreRepeatOne = userInitiated, currentPassOnly = currentPassOnly)) {
-            finishQueue(endedBySleepTimer = sleepTimerMode in PASS_BOUNDED_SLEEP_MODES)
+            finishQueue(endedBySleepTimer = sleepTimer.mode in PASS_BOUNDED_SLEEP_MODES)
             return snapshot != before
         }
         currentRetryCount = 0
@@ -1253,7 +1251,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         queue.clear()
         currentTrack = null
         pendingPositionMs = 0
-        snapshot = PlaybackSnapshot(audioEffects = audioEffectsState, sleepTimerMode = sleepTimerMode)
+        snapshot = PlaybackSnapshot(audioEffects = audioEffectsState, sleepTimerMode = sleepTimer.mode)
         playbackHandler.removeCallbacks(queuePersistRunnable)
         queuePersistScheduled = false
         flushQueuePersist()
@@ -1335,7 +1333,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         scheduleCurrentWatchdog(activeRequestId)
     }
 
-    private fun expectedNextTrackId(): Long? = when (sleepTimerMode) {
+    private fun expectedNextTrackId(): Long? = when (sleepTimer.mode) {
         SleepTimerMode.END_TRACK -> null
         SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE -> queue.peekNextInCurrentPass()
         else -> queue.peekNext()
@@ -1677,7 +1675,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             status = PlaybackStatus.PAUSED,
             pauseReason = PauseReason.SAFE_MODE,
             audioEffects = audioEffectsState,
-            sleepTimerMode = sleepTimerMode
+            sleepTimerMode = sleepTimer.mode
         )
         publishSnapshot()
     }
@@ -1749,21 +1747,24 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun cycleSleepTimerInternal() {
-        sleepTimerMode = sleepTimerMode.next()
-        sleepTimerDeadlineElapsed = sleepTimerMode.durationMs?.let { SystemClock.elapsedRealtime() + it }
         sleepTimerCallback?.let(playbackHandler::removeCallbacks)
-        val generation = sleepTimerGeneration.advance()
-        sleepTimerDeadlineElapsed?.let { deadline ->
-            val callback = Runnable {
-                if (sleepTimerGeneration.isCurrent(generation) && sleepTimerDeadlineElapsed != null &&
-                    SystemClock.elapsedRealtime() >= sleepTimerDeadlineElapsed!!
-                ) {
-                    clearSleepTimer()
-                    pauseInternal(PauseReason.SLEEP_TIMER)
+        sleepTimerCallback = null
+        sleepTimer.cycle(SystemClock.elapsedRealtime())?.let { scheduled ->
+            val callback = object : Runnable {
+                override fun run() {
+                    when (val tick = sleepTimer.onTimer(scheduled.generation, SystemClock.elapsedRealtime())) {
+                        SleepTimerTick.Expired -> {
+                            sleepTimerCallback = null
+                            syncSleepTimerSnapshot()
+                            pauseInternal(PauseReason.SLEEP_TIMER)
+                        }
+                        is SleepTimerTick.Waiting -> playbackHandler.postDelayed(this, tick.delayMs)
+                        SleepTimerTick.Stale -> Unit
+                    }
                 }
             }
             sleepTimerCallback = callback
-            playbackHandler.postDelayed(callback, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1))
+            playbackHandler.postDelayed(callback, scheduled.delayMs)
         }
         revalidatePreload()
         refreshSnapshot()
@@ -1771,14 +1772,17 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     }
 
     private fun clearSleepTimer() {
-        sleepTimerGeneration.advance()
-        sleepTimerMode = SleepTimerMode.OFF
-        sleepTimerDeadlineElapsed = null
+        sleepTimer.clear()
         sleepTimerCallback?.let { if (::playbackHandler.isInitialized) playbackHandler.removeCallbacks(it) }
         sleepTimerCallback = null
+        syncSleepTimerSnapshot()
     }
 
-    private fun shouldStopAfterCurrentTrack(): Boolean = when (sleepTimerMode) {
+    private fun syncSleepTimerSnapshot() {
+        snapshot = sleepTimer.applyTo(snapshot, SystemClock.elapsedRealtime())
+    }
+
+    private fun shouldStopAfterCurrentTrack(): Boolean = when (sleepTimer.mode) {
         SleepTimerMode.END_TRACK -> true
         SleepTimerMode.END_ALBUM -> queue.peekNextInCurrentPass()
             ?.let(libraryRepository::findTrack)
@@ -1787,7 +1791,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         else -> false
     }
 
-    private fun shouldStopBefore(nextTrack: Track): Boolean = when (sleepTimerMode) {
+    private fun shouldStopBefore(nextTrack: Track): Boolean = when (sleepTimer.mode) {
         SleepTimerMode.END_TRACK -> true
         SleepTimerMode.END_ALBUM -> albumKey(currentTrack) != albumKey(nextTrack)
         else -> false
@@ -2114,7 +2118,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         errorMessage: String? = null
     ): PlaybackSnapshot {
         val queueState = queue.snapshot()
-        val remaining = sleepTimerDeadlineElapsed?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
+        val remaining = sleepTimer.deadlineElapsedMs?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
         val routes = if (::routeMonitor.isInitialized) routeMonitor.snapshot() else PrivateRouteSnapshot()
         return PlaybackSnapshot(
             status = status,
@@ -2128,7 +2132,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             shuffleEnabled = queueState.shuffleEnabled,
             pauseReason = pauseReason,
             errorMessage = errorMessage,
-            sleepTimerMode = sleepTimerMode,
+            sleepTimerMode = sleepTimer.mode,
             sleepTimerRemainingMs = remaining,
             outputRoute = AudioOutputRouteResolver.resolve(
                 wired = routes.wired,
@@ -2203,7 +2207,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             durationMs = duration.coerceAtLeast(0),
             pauseReason = PauseReason.NONE,
             errorMessage = null,
-            sleepTimerRemainingMs = sleepTimerDeadlineElapsed
+            sleepTimerRemainingMs = sleepTimer.deadlineElapsedMs
                 ?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
         )
     }
