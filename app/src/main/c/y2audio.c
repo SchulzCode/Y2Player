@@ -2097,7 +2097,8 @@ static jbyteArray native_read_artwork(
     if (metadata_probe_open(&probe, native_path, maximum_bytes) == 0) {
         y2_crash_stage = Y2_CRASH_STAGE_READ_ARTWORK;
         artwork = metadata_artwork_stream(probe.format, 1);
-        if (artwork != NULL && artwork->attached_pic.size <= maximum_bytes) {
+        if (artwork != NULL && artwork->attached_pic.size > 0 &&
+            artwork->attached_pic.size <= maximum_bytes) {
             result = (*env)->NewByteArray(env, artwork->attached_pic.size);
             if (result != NULL) {
                 (*env)->SetByteArrayRegion(
@@ -2107,6 +2108,13 @@ static jbyteArray native_read_artwork(
                     artwork->attached_pic.size,
                     (const jbyte *) artwork->attached_pic.data
                 );
+            }
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                if (result != NULL) {
+                    (*env)->DeleteLocalRef(env, result);
+                    result = NULL;
+                }
             }
         }
     }

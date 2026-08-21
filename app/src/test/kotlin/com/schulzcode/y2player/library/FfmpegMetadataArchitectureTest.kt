@@ -42,6 +42,22 @@ class FfmpegMetadataArchitectureTest {
         assertTrue(ffmpegPatch.contains("av_buffer_unref(buf)"))
         assertTrue(ffmpegPatch.contains("METADATA_BLOCK_PICTURE"))
         assertTrue(ffmpegPatch.contains("s->skip_attached_picture_payloads"))
+        assertTrue(ffmpegPatch.contains("(!buf && !pb)"))
+        assertTrue(ffmpegPatch.contains("Do not pass it to av_get_packet()"))
+    }
+
+    @Test fun artworkJniRejectsInvalidSizesAndClearsAllocationFailures() {
+        val source = File(repositoryRoot(), "app/src/main/c/y2audio.c").readText()
+        val artworkReader = source.substring(
+            source.indexOf("static jbyteArray native_read_artwork"),
+            source.indexOf("static jint native_error_category")
+        )
+
+        assertTrue(artworkReader.contains("artwork->attached_pic.size > 0"))
+        assertTrue(artworkReader.contains("artwork->attached_pic.size <= maximum_bytes"))
+        assertTrue(artworkReader.contains("ExceptionCheck"))
+        assertTrue(artworkReader.contains("ExceptionClear"))
+        assertTrue(artworkReader.contains("result = NULL"))
     }
 
     @Test fun id3ArtworkProbeCarriesAFormatContextAndGuardsItsUse() {
