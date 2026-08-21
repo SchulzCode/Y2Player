@@ -47,6 +47,39 @@ class ArtworkSourceResolverTest {
         assertNull(resolverWithEmbedded(null).resolve(key(corruptTrack), 256, ::decodeImage))
     }
 
+    @Test fun embeddedArtworkHonorsMaximumByteBoundary() {
+        val track = temporaryFolder.newFile("boundary.mp3")
+        var decodeCount = 0
+        fun resolve(bytes: ByteArray): String? = ArtworkSourceResolver(
+            maximumBytes = 4,
+            readEmbedded = { _, _ -> bytes }
+        ).resolve(key(track), 256) { value, _ ->
+            decodeCount += 1
+            value.toString(Charsets.UTF_8)
+        }
+
+        assertEquals("1234", resolve("1234".toByteArray()))
+        assertNull(resolve("12345".toByteArray()))
+        assertEquals(1, decodeCount)
+    }
+
+    @Test fun embeddedArtworkAllocationAndDecodeFailuresFailSafely() {
+        val track = temporaryFolder.newFile("failure.mp3")
+        val allocationFailure = ArtworkSourceResolver(
+            maximumBytes = 4,
+            readEmbedded = { _, _ -> throw OutOfMemoryError("test") }
+        )
+        val decodeFailure = ArtworkSourceResolver(
+            maximumBytes = 4,
+            readEmbedded = { _, _ -> byteArrayOf(1) }
+        )
+
+        assertNull(allocationFailure.resolve(key(track), 256, ::decodeText))
+        assertNull(decodeFailure.resolve<String>(key(track), 256) { _, _ ->
+            throw OutOfMemoryError("test")
+        })
+    }
+
     @Test fun sourceAndBitmapCacheKeysInvalidateOnlyForRelevantChanges() {
         val folder = temporaryFolder.newFolder("cache")
         val track = File(folder, "song.flac").apply { writeText("audio") }

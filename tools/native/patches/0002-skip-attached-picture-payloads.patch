@@ -48,16 +48,18 @@ Applies to: ffmpeg-8.1.2
       */
 --- a/libavformat/demux_utils.c
 +++ b/libavformat/demux_utils.c
-@@ -114,6 +114,28 @@ int ff_add_attached_pic(AVFormatContext *s, AVStream *st0, AVIOContext *pb,
+@@ -114,6 +114,30 @@ int ff_add_attached_pic(AVFormatContext *s, AVStream *st0, AVIOContext *pb,
      if (!st && !(st = avformat_new_stream(s, NULL)))
          return AVERROR(ENOMEM);
      pkt = &st->attached_pic;
-+    if (s->skip_attached_picture_payloads ||
++    if (s->skip_attached_picture_payloads || (!buf && !pb) ||
 +        (s->max_attached_picture_payload_size > 0 &&
 +         ((buf && *buf && (*buf)->size > AV_INPUT_BUFFER_PADDING_SIZE &&
 +                         (*buf)->size - AV_INPUT_BUFFER_PADDING_SIZE >
 +                         s->max_attached_picture_payload_size) ||
 +          (!buf && size > s->max_attached_picture_payload_size)))) {
++        /* A NULL buffer and input is the sentinel for an already-skipped
++         * ID3/Vorbis payload. Do not pass it to av_get_packet(). */
 +        av_packet_unref(pkt);
 +        if (buf) {
 +            av_buffer_unref(buf);
