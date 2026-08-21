@@ -130,10 +130,9 @@ object AppReducer {
             Screen.QueueManagement -> confirmQueueManagement(state, row)
             Screen.Queue -> when (row) {
                 is Action -> if (row.key == "queue_actions") push(state, Screen.QueueManagement) else Reduction(state)
-                is TrackRow -> row.queueEntry?.let { push(state, Screen.QueueOptions(it.id)) } ?: Reduction(state)
-                is Group -> row.key.takeIf { it.startsWith("queue_missing:") }
-                    ?.substringAfter(':')?.toLongOrNull()?.let { push(state, Screen.QueueOptions(it)) }
+                is TrackRow -> row.queueEntry?.let { playQueueEntryNow(state, it.id, it.trackId) }
                     ?: Reduction(state)
+                is Group -> openQueueEntryOptions(state, row)
                 else -> Reduction(state)
             }
             Screen.NowPlayingOptions -> confirmNowPlayingOptions(state, row)
@@ -745,11 +744,6 @@ object AppReducer {
     private fun confirmLong(state: AppState): Reduction = when {
         state.currentScreen == Screen.NowPlaying -> push(state, Screen.NowPlayingOptions)
         state.currentScreen.isRadialMenu() -> back(state)
-        state.currentScreen == Screen.Queue -> {
-            val entry = (ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow)?.queueEntry
-                ?: return Reduction(state)
-            playQueueEntryNow(state, entry.id, entry.trackId)
-        }
         state.currentScreen == Screen.EqualizerBands ->
             Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
         state.currentScreen is Screen.MultiSelect -> {
@@ -882,6 +876,16 @@ object AppReducer {
             val row = ScreenContent.rows(state).getOrNull(state.selectedIndex) as? TrackRow
             if (row == null) Reduction(state) else push(state, Screen.TrackOptions(row.track.id, screen.playlistId))
         }
+        Screen.Queue -> ScreenContent.rows(state).getOrNull(state.selectedIndex)
+            ?.let { openQueueEntryOptions(state, it) } ?: Reduction(state)
+        else -> Reduction(state)
+    }
+
+    private fun openQueueEntryOptions(state: AppState, row: ScreenRow): Reduction = when (row) {
+        is TrackRow -> row.queueEntry?.let { push(state, Screen.QueueOptions(it.id)) } ?: Reduction(state)
+        is Group -> row.key.takeIf { it.startsWith("queue_missing:") }
+            ?.substringAfter(':')?.toLongOrNull()?.let { push(state, Screen.QueueOptions(it)) }
+            ?: Reduction(state)
         else -> Reduction(state)
     }
 

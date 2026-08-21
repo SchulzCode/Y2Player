@@ -145,22 +145,22 @@ class AppReducerTest {
         assertEquals(2L, effect.trackIds[effect.startIndex])
     }
 
-    @Test fun confirmingAQueueRowOpensItsCircularActions() {
+    @Test fun shortCenterOnQueueTrackPlaysTheSelectedEntry() {
         val second = track.copy(id = 2, title = "Second")
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 2)),
             library = LibraryState(tracks = listOf(track, second)),
             playback = PlaybackSnapshot(
                 status = PlaybackStatus.PLAYING,
-                currentTrackId = 2L,
+                currentTrackId = 1L,
                 queue = testQueue(1L, 2L),
-                currentQueueEntryId = 2L
+                currentQueueEntryId = 1L
             )
         )
         val result = AppReducer.reduce(state, AppAction.Confirm)
 
-        assertEquals(Screen.QueueOptions(2L), result.state.currentScreen)
-        assertTrue(result.effects.isEmpty())
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
+        assertEquals(AppEffect.PlayQueueEntry(2L), result.effects.single())
     }
 
     @Test fun confirmingADuplicateQueueRowPlaysThatPosition() {
@@ -174,10 +174,9 @@ class AppReducerTest {
                 currentQueueEntryId = 1L
             )
         )
-        val options = AppReducer.reduce(state, AppAction.Confirm).state
-        assertEquals(Screen.QueueOptions(2L), options.currentScreen)
-        val effect = AppReducer.reduce(selectKey(options, "queue_play:2"), AppAction.Confirm)
-            .effects.single() as AppEffect.PlayQueueEntry
+        val result = AppReducer.reduce(state, AppAction.Confirm)
+        val effect = result.effects.single() as AppEffect.PlayQueueEntry
+        assertEquals(Screen.NowPlaying, result.state.currentScreen)
         assertEquals(2L, effect.entryId)
     }
 
@@ -513,20 +512,21 @@ class AppReducerTest {
         )
     }
 
-    @Test fun longCenterOnQueueIsTheQuickPlayShortcut() {
+    @Test fun longCenterOnQueueOpensOptionsWithoutPlaying() {
+        val second = track.copy(id = 2, title = "Second")
         val state = AppState(
-            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 1)),
-            library = LibraryState(tracks = listOf(track)),
+            screenStack = listOf(ScreenEntry(Screen.Queue, selectedIndex = 2)),
+            library = LibraryState(tracks = listOf(track, second)),
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(
                 status = PlaybackStatus.PLAYING,
                 currentTrackId = 1L,
-                queue = testQueue(1L),
+                queue = testQueue(1L, 2L),
                 currentQueueEntryId = 1L
             )
         )
         val result = AppReducer.reduce(state, AppAction.ConfirmLong)
-        assertEquals(Screen.NowPlaying, result.state.currentScreen)
-        assertTrue(result.effects.isEmpty())
+        assertEquals(Screen.QueueOptions(2L), result.state.currentScreen)
+        assertTrue("long center must not also play the queue entry", result.effects.isEmpty())
     }
 
     @Test fun destructiveQueueActionsLiveUnderQueueManagement() {
@@ -548,6 +548,9 @@ class AppReducerTest {
         )
         val optionKeys = ScreenContent.rows(queueItem).filterIsInstance<ScreenRow.Action>().map { it.key }
         assertEquals(listOf("queue_play:1", "queue_remove:1"), optionKeys)
+        val removed = AppReducer.reduce(selectKey(queueItem, "queue_remove:1"), AppAction.Confirm)
+        assertEquals(Screen.Queue, removed.state.currentScreen)
+        assertEquals(AppEffect.RemoveQueueEntry(1L), removed.effects.single())
 
         val queue = AppReducer.reduce(selectKey(options, "queue"), AppAction.Confirm).state
         assertEquals(Screen.Queue, queue.currentScreen)
@@ -656,7 +659,7 @@ class AppReducerTest {
             playback = com.schulzcode.y2player.core.model.PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
 
-        val result = AppReducer.reduce(state, AppAction.Confirm).state
+        val result = AppReducer.reduce(state, AppAction.ConfirmLong).state
 
         assertEquals(Screen.QueueOptions(1), result.currentScreen)
         assertEquals(0, result.selectedIndex)
@@ -671,7 +674,7 @@ class AppReducerTest {
             playback = PlaybackSnapshot(queue = testQueue(1L, 2L, 3L), currentQueueEntryId = 1L)
         )
 
-        val options = AppReducer.reduce(state, AppAction.Confirm).state
+        val options = AppReducer.reduce(state, AppAction.ConfirmLong).state
         assertEquals(Screen.QueueOptions(3L), options.currentScreen)
         assertEquals(
             listOf("queue_play:3", "queue_next:3", "queue_move:3", "queue_remove:3"),
