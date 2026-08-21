@@ -23,6 +23,7 @@ import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.core.state.ScreenRow
+import com.schulzcode.y2player.core.state.SleepTimerPresentation
 import com.schulzcode.y2player.core.state.isRadialMenu
 import com.schulzcode.y2player.core.state.isProgressOnlyUpdate
 import com.schulzcode.y2player.util.TimeFormat
@@ -70,6 +71,15 @@ class Y2PlayerView(
             scheduleTextScroll(delay)
         }
     }
+    private var sleepTimerCountdownCallbackScheduled = false
+    private val sleepTimerCountdownRunnable = object : Runnable {
+        override fun run() {
+            sleepTimerCountdownCallbackScheduled = false
+            if (!shouldRefreshSleepTimerCountdown()) return
+            refreshSleepTimerCountdownRows()
+            updateSleepTimerCountdownActivity(refreshRows = false)
+        }
+    }
 
     private var state: AppState = AppState()
 
@@ -81,7 +91,7 @@ class Y2PlayerView(
         palette = next
         return true
     }
-    private var rows = ScreenContent.rows(state)
+    private var rows = rowsForState(state)
     private var artwork: Bitmap? = null
     private var artworkPath: String? = null
     private var artworkIdentity: Triple<Long, Long, Long>? = null
@@ -177,6 +187,7 @@ class Y2PlayerView(
         if (textAnimationsVisible == visible) return
         textAnimationsVisible = visible
         updateTextScrollActivity()
+        updateSleepTimerCountdownActivity()
     }
 
     fun onNavigationInput() {
@@ -201,6 +212,7 @@ class Y2PlayerView(
         super.onAttachedToWindow()
         attached = true
         updateTextScrollActivity()
+        updateSleepTimerCountdownActivity()
         requestVisibleRowArtworks()
     }
 
@@ -208,6 +220,7 @@ class Y2PlayerView(
         attached = false
         cancelVisibleRowArtworkRequests()
         stopTextScrollCallbacks()
+        stopSleepTimerCountdownCallback()
         setTextScrollersActive(false, SystemClock.uptimeMillis())
         super.onDetachedFromWindow()
     }
@@ -215,12 +228,14 @@ class Y2PlayerView(
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         updateTextScrollActivity()
+        updateSleepTimerCountdownActivity()
         if (visibility == VISIBLE) requestVisibleRowArtworks() else cancelVisibleRowArtworkRequests()
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         updateTextScrollActivity()
+        updateSleepTimerCountdownActivity()
         if (visibility == VISIBLE) requestVisibleRowArtworks() else cancelVisibleRowArtworkRequests()
     }
 
@@ -232,7 +247,7 @@ class Y2PlayerView(
             !newState.currentScreen.isRadialMenu()
         if (closingRadial) {
             closingRadialState = oldState
-            closingRadialRows = ScreenContent.rows(oldState)
+            closingRadialRows = rowsForState(oldState)
         }
         when {
             openingRadial -> startRadialAnimation(opening = true)
@@ -247,6 +262,7 @@ class Y2PlayerView(
             oldState.copy(screenStack = newState.screenStack) == newState
 
         state = newState
+        updateSleepTimerCountdownActivity(refreshRows = false)
         if (selectionOnly) {
             if (ensureSelectionVisible()) requestVisibleRowArtworks()
             updateFooterPosition()
@@ -266,7 +282,7 @@ class Y2PlayerView(
                 }
                 Screen.NowPlayingOptions, Screen.QueueManagement, is Screen.QueueOptions -> {
                     if (oldState.playback.sleepTimerRemainingMs != newState.playback.sleepTimerRemainingMs) {
-                        rows = ScreenContent.rows(newState)
+                        rows = rowsForState(newState)
                         invalidateRowCache()
                     }
                     invalidate()
@@ -278,7 +294,7 @@ class Y2PlayerView(
             return
         }
 
-        rows = ScreenContent.rows(newState)
+        rows = rowsForState(newState)
         requestArtwork()
         updatePresentationCache()
         invalidateRowCache()
@@ -310,6 +326,7 @@ class Y2PlayerView(
         detailArtwork = null
         detailArtworkPath = null
         cancelVisibleRowArtworkRequests()
+        stopSleepTimerCountdownCallback()
         radialAnimationActive = false
         closingRadialState = null
         closingRadialRows = emptyList()
@@ -330,6 +347,52 @@ class Y2PlayerView(
         stopTextScrollCallbacks()
         if (active) rescheduleTextScroll()
         if (changed) invalidateTextScrollTarget()
+    }
+
+    private fun rowsForState(value: AppState): List<ScreenRow> {
+        if (value.currentScreen != Screen.NowPlayingOptions) return ScreenContent.rows(value)
+        val remaining = SleepTimerPresentation.remainingMs(value.playback, SystemClock.elapsedRealtime())
+            ?: return ScreenContent.rows(value)
+        return ScreenContent.rows(value.copy(
+            playback = value.playback.copy(sleepTimerRemainingMs = remaining)
+        ))
+    }
+
+    private fun shouldRefreshSleepTimerCountdown(): Boolean {
+        val uiVisible = attached && textAnimationsVisible &&
+            windowVisibility == VISIBLE && visibility == VISIBLE
+        return SleepTimerPresentation.shouldRefresh(
+            state.currentScreen,
+            state.playback.sleepTimerMode,
+            state.playback.sleepTimerDeadlineElapsedMs,
+            uiVisible
+        )
+    }
+
+    private fun updateSleepTimerCountdownActivity(refreshRows: Boolean = true) {
+        if (!shouldRefreshSleepTimerCountdown()) {
+            stopSleepTimerCountdownCallback()
+            return
+        }
+        if (refreshRows) refreshSleepTimerCountdownRows()
+        if (sleepTimerCountdownCallbackScheduled) return
+        sleepTimerCountdownCallbackScheduled = true
+        postDelayed(sleepTimerCountdownRunnable, SLEEP_TIMER_REFRESH_MS)
+    }
+
+    private fun refreshSleepTimerCountdownRows() {
+        val updated = rowsForState(state)
+        if (updated == rows) return
+        rows = updated
+        invalidateRowCache()
+        updateContentDescription(state)
+        invalidate()
+    }
+
+    private fun stopSleepTimerCountdownCallback() {
+        if (!sleepTimerCountdownCallbackScheduled) return
+        removeCallbacks(sleepTimerCountdownRunnable)
+        sleepTimerCountdownCallbackScheduled = false
     }
 
     private fun rescheduleTextScroll() {
@@ -2210,6 +2273,7 @@ class Y2PlayerView(
         private const val SCAN_PROGRESS_PHASE_STEPS = 200
         private const val MARQUEE_SPEED_DP_PER_SECOND = 28f
         private const val MARQUEE_FRAME_MS = 100L
+        private const val SLEEP_TIMER_REFRESH_MS = 1_000L
         private const val ROW_ARTWORK_LEFT_DP = 8f
         private const val ROW_ARTWORK_SIZE_DP = 40f
         private const val ROW_ARTWORK_SIZE_PX = 64
