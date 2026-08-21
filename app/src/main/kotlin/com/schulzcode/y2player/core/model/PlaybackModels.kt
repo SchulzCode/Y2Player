@@ -142,6 +142,7 @@ data class PlaybackSnapshot(
     val pauseReason: PauseReason = PauseReason.NONE,
     val errorMessage: String? = null,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
+    val sleepTimerDeadlineElapsedMs: Long? = null,
     val sleepTimerRemainingMs: Long? = null,
     val outputRoute: AudioOutputRoute = AudioOutputRoute.UNKNOWN,
     val audioEffects: AudioEffectsState = AudioEffectsState(),

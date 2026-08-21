@@ -2133,6 +2133,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             pauseReason = pauseReason,
             errorMessage = errorMessage,
             sleepTimerMode = sleepTimer.mode,
+            sleepTimerDeadlineElapsedMs = sleepTimer.deadlineElapsedMs,
             sleepTimerRemainingMs = remaining,
             outputRoute = AudioOutputRouteResolver.resolve(
                 wired = routes.wired,
@@ -2206,9 +2207,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             positionMs = position.coerceAtLeast(0),
             durationMs = duration.coerceAtLeast(0),
             pauseReason = PauseReason.NONE,
-            errorMessage = null,
-            sleepTimerRemainingMs = sleepTimer.deadlineElapsedMs
-                ?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
+            errorMessage = null
         )
     }
 

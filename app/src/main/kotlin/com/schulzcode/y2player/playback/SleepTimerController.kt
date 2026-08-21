@@ -48,6 +48,7 @@ internal class SleepTimerController {
 
     fun applyTo(snapshot: PlaybackSnapshot, nowElapsedMs: Long): PlaybackSnapshot = snapshot.copy(
         sleepTimerMode = mode,
+        sleepTimerDeadlineElapsedMs = deadlineElapsedMs,
         sleepTimerRemainingMs = deadlineElapsedMs?.let { (it - nowElapsedMs).coerceAtLeast(0L) }
     )
 }

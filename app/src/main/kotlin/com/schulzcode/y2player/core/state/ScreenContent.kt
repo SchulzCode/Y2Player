@@ -1454,13 +1454,8 @@ object ScreenContent {
     private fun millisecondsLabel(value: Int): String = if (value <= 0) "Off" else if (value < 1_000) "${value} ms" else "${value / 1_000} seconds"
     private fun secondsLabel(value: Int): String = "${value / 1_000} seconds"
     private fun thresholdLabel(value: Int): String = if (value <= 0) "Always previous" else "After ${value / 1_000} seconds"
-    private fun sleepTimerLabel(state: AppState): String {
-        val mode = state.playback.sleepTimerMode
-        val remaining = state.playback.sleepTimerRemainingMs
-        return if (remaining != null && remaining > 0) "${mode.label} · ${duration(remaining)} left" else mode.label
-    }
     private fun sleepTimerSubtitle(state: AppState): String =
-        "${sleepTimerLabel(state)} · Stops playback after the selected time"
+        SleepTimerPresentation.label(state.playback.sleepTimerMode, state.playback.sleepTimerRemainingMs)
     private fun volumeModeLabel(state: AppState): String = when (state.preferences.volumeMode) {
         VolumeMode.SYSTEM -> "System · hardware keys"
         VolumeMode.PERCEPTUAL -> "In-app · ${VolumeCurve.percentForLevel(state.preferences.volumeLevel)}%"
