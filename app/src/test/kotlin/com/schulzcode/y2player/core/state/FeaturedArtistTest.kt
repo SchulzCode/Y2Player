@@ -253,7 +253,7 @@ class FeaturedArtistTest {
             library = LibraryState(tracks = ram)
         )
         val result = AppReducer.reduce(browse, AppAction.Confirm).state
-        assertEquals(Screen.ArtistSongs("Daft Punk"), result.currentScreen)
+        assertEquals(Screen.ArtistAlbums("Daft Punk"), result.currentScreen)
         assertTrue("the artist screen must not be empty", ScreenContent.rows(result).isNotEmpty())
     }
 

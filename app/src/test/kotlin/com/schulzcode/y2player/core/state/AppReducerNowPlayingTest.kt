@@ -5,6 +5,7 @@ import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,7 +137,7 @@ class AppReducerNowPlayingTest {
         assertEquals(Screen.AddToPlaylist(1), optionsReductionFor("np_playlist:1").state.currentScreen)
     }
 
-    @Test fun optionsMenuGroupsTrackNavigationUnderTrackOptions() {
+    @Test fun trackBrowsePreservesAlbumNavigationAndOpensTheArtistsAlbums() {
         val trackOptions = optionsReductionFor("np_track_options:1").state
         assertEquals(Screen.TrackOptions(1, fromNowPlaying = true), trackOptions.currentScreen)
         assertEquals(
@@ -159,7 +160,9 @@ class AppReducerNowPlayingTest {
         val artistSelected = browse.copy(
             screenStack = browse.screenStack.dropLast(1) + browse.currentEntry.copy(selectedIndex = 1)
         )
-        assertEquals(Screen.ArtistSongs("Artist"), AppReducer.reduce(artistSelected, AppAction.Confirm).state.currentScreen)
+        val artistDestination = AppReducer.reduce(artistSelected, AppAction.Confirm).state.currentScreen
+        assertEquals(Screen.ArtistAlbums("Artist"), artistDestination)
+        assertFalse(artistDestination is Screen.ArtistSongs)
     }
 
     @Test fun queueOpensTheLinearQueueDirectlyWithActionsVisible() {

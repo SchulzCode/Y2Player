@@ -245,7 +245,7 @@ object AppReducer {
         val track = state.library.byId[screen.trackId] ?: return Reduction(state)
         return when {
             key.startsWith("track_album:") -> push(state, Screen.AlbumSongs(track.displayAlbum, track.albumArtistName))
-            key.startsWith("track_artist:") -> push(state, Screen.ArtistSongs(track.primaryArtist))
+            key.startsWith("track_artist:") -> push(state, Screen.ArtistAlbums(track.primaryArtist))
             else -> Reduction(state)
         }
     }
