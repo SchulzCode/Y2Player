@@ -1652,7 +1652,7 @@ class Y2PlayerView(
         paint.style = Paint.Style.FILL
         paint.color = palette.divider
         canvas.drawRect(x + 8f * density, top + 7f * density, x + 9f * density, top + 23f * density, paint)
-        x = drawFooterStatus(
+        drawFooterStatus(
             canvas,
             x + 18f * density,
             top,
@@ -1660,24 +1660,6 @@ class Y2PlayerView(
             "Repeat",
             Y2UiLogic.repeatStatusLabel(state.playback.repeatMode),
             state.playback.repeatMode != RepeatMode.OFF
-        )
-        paint.style = Paint.Style.FILL
-        paint.color = palette.divider
-        canvas.drawRect(x + 8f * density, top + 7f * density, x + 9f * density, top + 23f * density, paint)
-        val transition = Y2UiLogic.transitionPresentation(
-            state.preferences.gaplessEnabled,
-            state.preferences.crossfadeMs,
-            state.preferences.crossfadeMode,
-            state.playback.shuffleEnabled
-        )
-        drawFooterStatus(
-            canvas,
-            x + 18f * density,
-            top,
-            Y2Icon.CROSSFADE,
-            if (width / density < 420f) "Mode" else "Transition",
-            transition.label,
-            transition.active
         )
     }
 
@@ -2256,13 +2238,6 @@ class Y2PlayerView(
             if (value.currentScreen == Screen.NowPlaying) {
                 append(", shuffle ${Y2UiLogic.shuffleStatusLabel(value.playback.shuffleEnabled)}")
                 append(", repeat ${Y2UiLogic.repeatStatusLabel(value.playback.repeatMode)}")
-                val transition = Y2UiLogic.transitionPresentation(
-                    value.preferences.gaplessEnabled,
-                    value.preferences.crossfadeMs,
-                    value.preferences.crossfadeMode,
-                    value.playback.shuffleEnabled
-                )
-                append(", transition ${transition.label}")
             }
             append(", output ${cachedRoute.label}")
         }
