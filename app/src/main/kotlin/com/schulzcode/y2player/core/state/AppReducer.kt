@@ -14,18 +14,20 @@ import com.schulzcode.y2player.playback.AudioBalance
 
 object AppReducer {
     fun reduce(state: AppState, action: AppAction): Reduction = when (action) {
-        is AppAction.WheelMoved -> moveSelection(state, action.delta)
-        AppAction.Confirm -> confirm(state)
-        AppAction.ConfirmLong -> confirmLong(state)
-        AppAction.ShowNowPlaying -> showNowPlaying(state)
+        is AppAction.WheelMoved -> moveSelection(clearAlphabetScrub(state), action.delta)
+        is AppAction.AlphabetMoved -> moveAlphabet(state, action.direction)
+        AppAction.EndAlphabetScrub -> Reduction(clearAlphabetScrub(state))
+        AppAction.Confirm -> confirm(clearAlphabetScrub(state))
+        AppAction.ConfirmLong -> confirmLong(clearAlphabetScrub(state))
+        AppAction.ShowNowPlaying -> showNowPlaying(clearAlphabetScrub(state))
         AppAction.Back -> if (state.transientMessage != null) {
-            Reduction(state.copy(transientMessage = null))
+            Reduction(clearAlphabetScrub(state).copy(transientMessage = null))
         } else {
-            back(state)
+            back(clearAlphabetScrub(state))
         }
         AppAction.NavigateHome -> Reduction(
-            if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) state
-            else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
+            if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) clearAlphabetScrub(state)
+            else clearAlphabetScrub(state).copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
         )
         AppAction.Left -> Reduction(state, listOf(PreviousTrack))
         AppAction.Right -> Reduction(state, listOf(NextTrack))
@@ -37,12 +39,12 @@ object AppReducer {
         AppAction.SeekForward -> Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong())))
         AppAction.SeekBackwardLong -> Reduction(state, listOf(SeekBy(-state.preferences.longSeekStepMs.toLong())))
         AppAction.SeekForwardLong -> Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong())))
-        is AppAction.LibraryChanged -> Reduction(preserveSelection(state, state.copy(library = action.library)))
+        is AppAction.LibraryChanged -> Reduction(preserveSelection(state, state.copy(library = action.library, alphabetScrub = null)))
         is AppAction.PlaybackChanged -> Reduction(playbackChanged(state, action.playback))
         is AppAction.DeviceChanged -> Reduction(preserveSelection(state, state.copy(device = action.device)))
         is AppAction.BluetoothChanged -> Reduction(preserveSelection(state, state.copy(bluetooth = action.bluetooth)))
         is AppAction.DisplayChanged -> Reduction(state.copy(display = action.display))
-        is AppAction.PreferencesChanged -> Reduction(preserveSelection(state, state.copy(preferences = action.preferences)))
+        is AppAction.PreferencesChanged -> Reduction(preserveSelection(state, state.copy(preferences = action.preferences, alphabetScrub = null)))
         is AppAction.DiagnosticsChanged -> Reduction(preserveSelection(state, state.copy(diagnostics = action.diagnostics)))
         is AppAction.BackupChanged -> Reduction(preserveSelection(state, state.copy(backup = action.backup)))
         is AppAction.BackupImportReady -> Reduction(
@@ -54,8 +56,17 @@ object AppReducer {
         )
         is AppAction.SafeModeChanged -> Reduction(state.copy(safeMode = action.enabled))
         is AppAction.ShowMessage -> Reduction(state.copy(transientMessage = action.message))
-        is AppAction.SelectIndex -> Reduction(normalizeSelection(setSelected(state, action.index.coerceAtLeast(0))))
+        is AppAction.SelectIndex -> Reduction(normalizeSelection(setSelected(clearAlphabetScrub(state), action.index.coerceAtLeast(0))))
     }
+
+    private fun moveAlphabet(state: AppState, direction: Int): Reduction {
+        if (direction == 0) return Reduction(state)
+        return AlphabetNavigation.move(state, direction)?.let(::Reduction)
+            ?: Reduction(clearAlphabetScrub(state))
+    }
+
+    private fun clearAlphabetScrub(state: AppState): AppState =
+        if (state.alphabetScrub == null) state else state.copy(alphabetScrub = null)
 
     private fun playbackChanged(state: AppState, playback: com.schulzcode.y2player.core.model.PlaybackSnapshot): AppState {
         val progressOnly = isProgressOnlyUpdate(state.playback, playback)

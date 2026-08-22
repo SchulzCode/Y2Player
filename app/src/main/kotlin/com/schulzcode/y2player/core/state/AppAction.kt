@@ -9,6 +9,8 @@ import com.schulzcode.y2player.diagnostics.DiagnosticsState
 
 sealed interface AppAction {
     data class WheelMoved(val delta: Int) : AppAction
+    data class AlphabetMoved(val direction: Int) : AppAction
+    data object EndAlphabetScrub : AppAction
     data object Confirm : AppAction
     data object ConfirmLong : AppAction
     data object ShowNowPlaying : AppAction
@@ -134,6 +136,8 @@ data class Reduction(val state: AppState, val effects: List<AppEffect> = emptyLi
 // R8 renames these classes, so simpleName logs as `b0` in release builds.
 val AppAction.code: String get() = when (this) {
     is AppAction.WheelMoved -> if (delta >= 0) "wheel_clockwise" else "wheel_counter_clockwise"
+    is AppAction.AlphabetMoved -> if (direction >= 0) "alphabet_clockwise" else "alphabet_counter_clockwise"
+    AppAction.EndAlphabetScrub -> "alphabet_end"
     AppAction.Confirm -> "confirm"
     AppAction.ConfirmLong -> "confirm_long"
     AppAction.ShowNowPlaying -> "show_now_playing"

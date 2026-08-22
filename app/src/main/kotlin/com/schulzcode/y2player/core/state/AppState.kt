@@ -124,9 +124,14 @@ data class AppState(
     val diagnostics: DiagnosticsState = DiagnosticsState(),
     val backup: BackupUiState = BackupUiState(),
     val safeMode: Boolean = false,
-    val transientMessage: String? = null
+    val transientMessage: String? = null,
+    val alphabetScrub: AlphabetScrubState? = null
 ) {
     val currentEntry: ScreenEntry get() = screenStack.last()
     val currentScreen: Screen get() = currentEntry.screen
     val selectedIndex: Int get() = currentEntry.selectedIndex
+}
+
+data class AlphabetScrubState(val bucket: Int) {
+    val label: String get() = AlphabetNavigation.label(bucket)
 }
