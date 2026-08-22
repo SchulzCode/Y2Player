@@ -18,7 +18,11 @@ object AppReducer {
         AppAction.Confirm -> confirm(state)
         AppAction.ConfirmLong -> confirmLong(state)
         AppAction.ShowNowPlaying -> showNowPlaying(state)
-        AppAction.Back -> back(state)
+        AppAction.Back -> if (state.transientMessage != null) {
+            Reduction(state.copy(transientMessage = null))
+        } else {
+            back(state)
+        }
         AppAction.NavigateHome -> Reduction(
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) state
             else state.copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
