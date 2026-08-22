@@ -5,7 +5,8 @@ import com.schulzcode.y2player.core.state.AppAction
 
 class Y2InputController(
     private val dispatch: (AppAction) -> Unit,
-    private val wheelAccelerationAllowed: () -> Boolean = { false }
+    private val wheelAccelerationAllowed: () -> Boolean = { false },
+    private val alphabetScrubAllowed: () -> Boolean = { false }
 ) {
     private val longPressedKeys = HashSet<Int>()
     private val pressedKeys = HashSet<Int>()
@@ -60,12 +61,8 @@ class Y2InputController(
         }
 
         val action = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> AppAction.WheelMoved(
-                wheelAcceleration.delta(-1, event.eventTime, wheelAccelerationAllowed())
-            )
-            KeyEvent.KEYCODE_DPAD_DOWN -> AppAction.WheelMoved(
-                wheelAcceleration.delta(1, event.eventTime, wheelAccelerationAllowed())
-            )
+            KeyEvent.KEYCODE_DPAD_UP -> wheelAction(-1, event.eventTime)
+            KeyEvent.KEYCODE_DPAD_DOWN -> wheelAction(1, event.eventTime)
             KeyEvent.KEYCODE_DPAD_LEFT -> AppAction.Left
             KeyEvent.KEYCODE_DPAD_RIGHT -> AppAction.Right
             KeyEvent.KEYCODE_BACK -> AppAction.Back
@@ -82,6 +79,17 @@ class Y2InputController(
         dispatch(action)
         return true
     }
+
+    private fun wheelAction(direction: Int, eventTimeMs: Long): AppAction =
+        when (val movement = wheelAcceleration.movement(
+            direction,
+            eventTimeMs,
+            enabled = wheelAccelerationAllowed(),
+            alphabetEnabled = alphabetScrubAllowed()
+        )) {
+            is WheelMovement.Rows -> AppAction.WheelMoved(movement.delta)
+            is WheelMovement.Alphabet -> AppAction.AlphabetMoved(movement.direction)
+        }
 
     fun resetHeldKeys() {
         longPressedKeys.clear()

@@ -26,6 +26,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppEffect
 import com.schulzcode.y2player.core.state.AppStore
+import com.schulzcode.y2player.core.state.AlphabetNavigation
 import com.schulzcode.y2player.core.state.ListNavigationPolicy
 import com.schulzcode.y2player.core.state.code
 import com.schulzcode.y2player.core.state.Screen
@@ -125,11 +126,12 @@ class MainActivity : Activity() {
     }
 
     private val clearMessageRunnable = Runnable { store.dispatch(AppAction.ShowMessage(null)) }
+    private val endAlphabetScrubRunnable = Runnable { store.dispatch(AppAction.EndAlphabetScrub) }
     private val markStableRunnable = Runnable { safeModeManager.markStartupStable() }
     private val effectListener = AppStore.EffectListener(::handleEffect)
 
     private val actionLogger = AppStore.ActionListener { action, state ->
-        val wheel = action is AppAction.WheelMoved
+        val wheel = action is AppAction.WheelMoved || action is AppAction.AlphabetMoved
         if (wheel) {
             eventLog.logRateLimited(
                 "wheel_action", WHEEL_LOG_WINDOW_MS,
@@ -226,10 +228,14 @@ class MainActivity : Activity() {
         if (startupSafeMode) bluetoothController.stop()
         hapticController = container.hapticController
         hapticController.setLevel(preferences.snapshot().hapticLevel)
-        inputController = Y2InputController(::dispatchInput) {
-            val current = store.state
-            ListNavigationPolicy.allowsAcceleration(current.currentScreen, ScreenContent.rows(current).size)
-        }
+        inputController = Y2InputController(
+            dispatch = ::dispatchInput,
+            wheelAccelerationAllowed = {
+                val current = store.state
+                ListNavigationPolicy.allowsAcceleration(current.currentScreen, ScreenContent.rows(current).size)
+            },
+            alphabetScrubAllowed = { AlphabetNavigation.allowsScrubbing(store.state) }
+        )
         playerView = Y2PlayerView(this, { action -> store.dispatch(action) }, container.artworkLoader)
         playerView.isSoundEffectsEnabled = preferences.snapshot().uiSoundEffectsEnabled
         setContentView(playerView)
@@ -323,6 +329,8 @@ class MainActivity : Activity() {
         unbindPlaybackServiceIfNeeded()
         unregisterVisibleStateListeners()
         inputController.resetHeldKeys()
+        mainHandler.removeCallbacks(endAlphabetScrubRunnable)
+        store.dispatch(AppAction.EndAlphabetScrub)
         HardwareKeyGate.invalidateScreenState()
         super.onStop()
     }
@@ -344,6 +352,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         destroyed = true
         mainHandler.removeCallbacks(clearMessageRunnable)
+        mainHandler.removeCallbacks(endAlphabetScrubRunnable)
         mainHandler.removeCallbacks(markStableRunnable)
         unbindPlaybackServiceIfNeeded()
         libraryRepository.removeListener(libraryListener)
@@ -657,10 +666,19 @@ class MainActivity : Activity() {
     }
 
     private fun dispatchInput(action: AppAction) {
-        val wheel = action is AppAction.WheelMoved
-        val adjustsNowPlayingVolume = wheel && store.state.currentScreen == Screen.NowPlaying
+        val wheel = action is AppAction.WheelMoved || action is AppAction.AlphabetMoved
+        val adjustsNowPlayingVolume = action is AppAction.WheelMoved &&
+            store.state.currentScreen == Screen.NowPlaying
         if (wheel) playerView.onNavigationInput()
         val accepted = store.dispatch(action)
+        if (action is AppAction.AlphabetMoved) {
+            mainHandler.removeCallbacks(endAlphabetScrubRunnable)
+            if (store.state.alphabetScrub != null) {
+                mainHandler.postDelayed(endAlphabetScrubRunnable, ALPHABET_SCRUB_TIMEOUT_MS)
+            }
+        } else if (action is AppAction.WheelMoved) {
+            mainHandler.removeCallbacks(endAlphabetScrubRunnable)
+        }
         if (accepted && !adjustsNowPlayingVolume) pulseAcceptedAction()
     }
 
@@ -835,6 +853,7 @@ class MainActivity : Activity() {
         private const val SAFE_MODE_KEY_WINDOW_MS = 5_000L
         private const val VOLUME_LOG_WINDOW_MS = 5_000L
         private const val WHEEL_LOG_WINDOW_MS = 1_000L
+        private const val ALPHABET_SCRUB_TIMEOUT_MS = 420L
         private const val STARTUP_STABLE_DELAY_MS = 10_000L
     }
 }

@@ -259,7 +259,10 @@ class Y2PlayerView(
         val sameScreenPath = oldState.screenStack.size == newState.screenStack.size &&
             oldState.screenStack.indices.all { oldState.screenStack[it].screen == newState.screenStack[it].screen }
         val selectionOnly = !themeChanged && sameScreenPath &&
-            oldState.copy(screenStack = newState.screenStack) == newState
+            oldState.copy(
+                screenStack = newState.screenStack,
+                alphabetScrub = newState.alphabetScrub
+            ) == newState
 
         state = newState
         updateSleepTimerCountdownActivity(refreshRows = false)
@@ -469,6 +472,7 @@ class Y2PlayerView(
         if (isSplitHome()) drawHomePane(canvas)
         drawFooter(canvas)
         drawStatusMessage(canvas)
+        drawAlphabetScrubOverlay(canvas)
         if (state.currentScreen.isRadialMenu()) {
             drawRadialOptionsOverlay(canvas, state, rows, radialAnimationProgress())
         } else {
@@ -1717,6 +1721,34 @@ class Y2PlayerView(
         paint.textSize = Y2UiTheme.META_SP * density
         paint.color = palette.secondaryText
         canvas.drawText(cachedMessageBody, 46f * density, top + 42f * density, paint)
+    }
+
+    private fun drawAlphabetScrubOverlay(canvas: Canvas) {
+        val label = state.alphabetScrub?.label ?: return
+        val centerX = rowAreaRight() * .5f
+        val centerY = (rowAreaTop() + rowAreaBottom()) * .5f
+        val halfSize = 49f * density
+        reusableRectF.set(
+            centerX - halfSize,
+            centerY - halfSize,
+            centerX + halfSize,
+            centerY + halfSize
+        )
+        paint.style = Paint.Style.FILL
+        paint.color = palette.surfaceRaised
+        canvas.drawRoundRect(reusableRectF, 16f * density, 16f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = palette.accent
+        canvas.drawRoundRect(reusableRectF, 16f * density, 16f * density, paint)
+        paint.style = Paint.Style.FILL
+
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 54f * density
+        boldPaint.color = palette.primaryText
+        val baseline = centerY - (boldPaint.ascent() + boldPaint.descent()) * .5f
+        canvas.drawText(label, centerX, baseline, boldPaint)
+        boldPaint.textAlign = Paint.Align.LEFT
     }
 
     private fun updatePresentationCache() {

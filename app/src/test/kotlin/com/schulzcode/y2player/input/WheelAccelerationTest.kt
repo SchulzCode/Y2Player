@@ -56,4 +56,52 @@ class WheelAccelerationTest {
 
         assertEquals(1, acceleration.delta(1, 300, enabled = true))
     }
+
+    @Test fun veryFastSustainedMovementEntersAlphabetTier() {
+        val acceleration = WheelAcceleration()
+        var movement: WheelMovement = WheelMovement.Rows(0)
+
+        repeat(9) { index ->
+            movement = acceleration.movement(1, index * 50L, enabled = true, alphabetEnabled = true)
+        }
+
+        assertEquals(WheelMovement.Alphabet(1), movement)
+    }
+
+    @Test fun alphabetTierFollowsDirectionChangesWithoutAlsoMovingRows() {
+        val acceleration = WheelAcceleration()
+        repeat(9) { index ->
+            acceleration.movement(1, index * 50L, enabled = true, alphabetEnabled = true)
+        }
+
+        assertEquals(
+            WheelMovement.Alphabet(-1),
+            acceleration.movement(-1, 440L, enabled = true, alphabetEnabled = true)
+        )
+    }
+
+    @Test fun slowingDownLeavesAlphabetTierForExistingRowAcceleration() {
+        val acceleration = WheelAcceleration()
+        repeat(9) { index ->
+            acceleration.movement(1, index * 50L, enabled = true, alphabetEnabled = true)
+        }
+
+        assertEquals(
+            WheelMovement.Rows(3),
+            acceleration.movement(1, 540L, enabled = true, alphabetEnabled = true)
+        )
+    }
+
+    @Test fun alphabetTierIsNeverUsedWhenTheVisibleOrderIsIneligible() {
+        val acceleration = WheelAcceleration()
+        repeat(12) { index ->
+            val movement = acceleration.movement(
+                1,
+                index * 40L,
+                enabled = true,
+                alphabetEnabled = false
+            )
+            assertEquals(WheelMovement.Rows(if (index < 2) 1 else if (index < 4) 3 else 5), movement)
+        }
+    }
 }
