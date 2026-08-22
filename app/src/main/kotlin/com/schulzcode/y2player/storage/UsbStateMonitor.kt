@@ -17,7 +17,7 @@ class UsbStateMonitor(
     context: Context,
     private val eventLog: EventLog? = null
 ) {
-    fun interface Listener { fun onUsbStateChanged(state: UsbState) }
+    fun interface Listener { fun onUsbStateChanged(state: UsbState, becameConnected: Boolean) }
 
     private val appContext = context.applicationContext
     private val listeners = CopyOnWriteArraySet<Listener>()
@@ -26,6 +26,7 @@ class UsbStateMonitor(
         Thread(runnable, "y2-usb").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private var registered = false
+    private var snapshotSeen = false
 
     @Volatile private var latest = UsbState()
     @Volatile private var broadcastConnected = false
@@ -55,7 +56,7 @@ class UsbStateMonitor(
 
     fun addListener(listener: Listener, emitImmediately: Boolean = true) {
         listeners += listener
-        if (emitImmediately) listener.onUsbStateChanged(latest)
+        if (emitImmediately) listener.onUsbStateChanged(latest, becameConnected = false)
     }
 
     fun removeListener(listener: Listener) { listeners -= listener }
@@ -92,7 +93,14 @@ class UsbStateMonitor(
                 rawState = readNode(UsbSysfs.STATE_PATH)
             )
             val previous = latest
+            val initialSnapshot = !snapshotSeen
+            snapshotSeen = true
             if (state == previous) return@execute
+            val becameConnected = UsbConnectionTransitionPolicy.becameConnected(
+                previous.connected,
+                state.connected,
+                initialSnapshot
+            )
             latest = state
             eventLog?.info(
                 Sub.USB, Ev.USB_STATE,
@@ -108,7 +116,7 @@ class UsbStateMonitor(
             if (state.functions != previous.functions) {
                 eventLog?.info(Sub.USB, Ev.USB_FUNCTIONS, "functions" to state.functions)
             }
-            handler.post { listeners.forEach { it.onUsbStateChanged(state) } }
+            handler.post { listeners.forEach { it.onUsbStateChanged(state, becameConnected) } }
         }
     }
 
@@ -126,6 +134,11 @@ class UsbStateMonitor(
         const val EXTRA_CONNECTED = "connected"
         const val EXTRA_CONFIGURED = "configured"
     }
+}
+
+internal object UsbConnectionTransitionPolicy {
+    fun becameConnected(previousConnected: Boolean, currentConnected: Boolean, initialSnapshot: Boolean): Boolean =
+        !initialSnapshot && !previousConnected && currentConnected
 }
 
 internal object UsbRefreshPolicy {
