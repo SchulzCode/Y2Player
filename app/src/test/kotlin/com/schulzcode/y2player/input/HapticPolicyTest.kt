@@ -1,5 +1,6 @@
 package com.schulzcode.y2player.input
 
+import com.schulzcode.y2player.storage.UsbConnectionTransitionPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -96,6 +97,30 @@ class HapticPolicyTest {
     @Test fun noPulseWhenTurnedOff() {
         assertFalse(
             HapticPolicy.shouldPulse(HapticLevel.OFF, available = true, accepted = true)
+        )
+    }
+
+    @Test fun usbConnectionDoesNotPulseWhenHapticsAreTurnedOff() {
+        val becameConnected = UsbConnectionTransitionPolicy.becameConnected(
+            previousConnected = false,
+            currentConnected = true,
+            initialSnapshot = false
+        )
+
+        assertFalse(
+            HapticPolicy.shouldPulse(HapticLevel.OFF, available = true, accepted = becameConnected)
+        )
+    }
+
+    @Test fun usbConnectionPulsesWhenHapticsAreEnabled() {
+        val becameConnected = UsbConnectionTransitionPolicy.becameConnected(
+            previousConnected = false,
+            currentConnected = true,
+            initialSnapshot = false
+        )
+
+        assertTrue(
+            HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, accepted = becameConnected)
         )
     }
 

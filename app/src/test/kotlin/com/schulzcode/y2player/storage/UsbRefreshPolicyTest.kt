@@ -6,6 +6,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UsbRefreshPolicyTest {
+    @Test fun oneHapticCandidateIsProducedPerDisconnectedToConnectedTransition() {
+        var previousConnected = false
+        var initialSnapshot = true
+        val candidates = listOf(false, true, true, false, true).map { currentConnected ->
+            UsbConnectionTransitionPolicy.becameConnected(
+                previousConnected,
+                currentConnected,
+                initialSnapshot
+            ).also {
+                previousConnected = currentConnected
+                initialSnapshot = false
+            }
+        }
+
+        assertEquals(listOf(false, true, false, false, true), candidates)
+    }
+
+    @Test fun anInitiallyConnectedDeviceDoesNotLookLikeANewConnection() {
+        assertFalse(
+            UsbConnectionTransitionPolicy.becameConnected(
+                previousConnected = false,
+                currentConnected = true,
+                initialSnapshot = true
+            )
+        )
+    }
+
     @Test fun unchangedChargingDoesNotRefresh() {
         assertFalse(UsbRefreshPolicy.onChargingSignal(currentCharging = true, reportedCharging = true).refresh)
         assertFalse(UsbRefreshPolicy.onChargingSignal(currentCharging = false, reportedCharging = false).refresh)
