@@ -4,8 +4,6 @@ import com.schulzcode.y2player.core.model.AudioOutputRoute
 import com.schulzcode.y2player.core.model.AudioQualityMode
 import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
-import com.schulzcode.y2player.playback.CrossfadeMode
-import java.util.Locale
 
 enum class RowVisualState { FOCUSED, FOCUSED_ACTIVE, ACTIVE, NORMAL, UNAVAILABLE }
 enum class ArtworkVisual { EMBEDDED, FALLBACK }
@@ -15,7 +13,6 @@ enum class RouteIcon { HEADPHONES, BLUETOOTH, SPEAKER, DISCONNECTED, UNKNOWN }
 enum class PlayerLayout { WIDE, TALL }
 
 data class RoutePresentation(val label: String, val icon: RouteIcon, val warning: Boolean = false)
-data class TransitionPresentation(val label: String, val active: Boolean)
 
 object Y2UiLogic {
     private val wiredRoute = RoutePresentation("Wired", RouteIcon.HEADPHONES)
@@ -138,29 +135,6 @@ object Y2UiLogic {
         RepeatMode.OFF -> "Off"
         RepeatMode.ALL -> "All"
         RepeatMode.ONE -> "One"
-    }
-
-    fun transitionPresentation(
-        gaplessEnabled: Boolean,
-        crossfadeMs: Int,
-        crossfadeMode: CrossfadeMode,
-        shuffleEnabled: Boolean
-    ): TransitionPresentation {
-        val effectiveCrossfadeMs = crossfadeMode.effectiveMs(crossfadeMs, shuffleEnabled)
-        return when {
-            effectiveCrossfadeMs > 0 -> TransitionPresentation(
-                "Fade ${secondsLabel(effectiveCrossfadeMs)}",
-                active = true
-            )
-            gaplessEnabled -> TransitionPresentation("Gapless", active = true)
-            else -> TransitionPresentation("Standard", active = false)
-        }
-    }
-
-    private fun secondsLabel(milliseconds: Long): String = if (milliseconds % 1000L == 0L) {
-        "${milliseconds / 1000L}s"
-    } else {
-        String.format(Locale.US, "%.1fs", milliseconds / 1000.0)
     }
 
     fun artworkVisual(hasArtwork: Boolean): ArtworkVisual = if (hasArtwork) ArtworkVisual.EMBEDDED else ArtworkVisual.FALLBACK

@@ -8,8 +8,9 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.state.AppState
 import com.schulzcode.y2player.core.state.ScreenContent
-import com.schulzcode.y2player.playback.CrossfadeMode
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,27 +24,18 @@ class Y2UiLogicTest {
         assertEquals("One", Y2UiLogic.repeatStatusLabel(RepeatMode.ONE))
     }
 
-    @Test fun transitionFooterReportsTheEffectiveMode() {
-        assertEquals(
-            TransitionPresentation("Gapless", active = true),
-            Y2UiLogic.transitionPresentation(true, 0, CrossfadeMode.ALWAYS, shuffleEnabled = false)
-        )
-        assertEquals(
-            TransitionPresentation("Fade 3s", active = true),
-            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.ALWAYS, shuffleEnabled = false)
-        )
-        assertEquals(
-            TransitionPresentation("Gapless", active = true),
-            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.WHILE_SHUFFLING, shuffleEnabled = false)
-        )
-        assertEquals(
-            TransitionPresentation("Fade 3s", active = true),
-            Y2UiLogic.transitionPresentation(true, 3_000, CrossfadeMode.WHILE_SHUFFLING, shuffleEnabled = true)
-        )
-        assertEquals(
-            TransitionPresentation("Standard", active = false),
-            Y2UiLogic.transitionPresentation(false, 0, CrossfadeMode.ALWAYS, shuffleEnabled = false)
-        )
+    @Test fun nowPlayingFooterOmitsTransitionAndKeepsUsefulStatuses() {
+        val source = y2PlayerViewSource()
+        val footer = source.substringAfter("private fun drawNowPlayingFooterStatuses")
+            .substringBefore("private fun drawFooterStatus")
+        val compactFooter = source.substringAfter("private fun drawCompactFooter")
+            .substringBefore("private fun drawNowPlayingFooterStatuses")
+
+        assertTrue(footer.contains("Y2Icon.SHUFFLE"))
+        assertTrue(footer.contains("Y2Icon.REPEAT"))
+        assertFalse(footer.contains("Y2Icon.CROSSFADE"))
+        assertFalse(footer.contains("transitionPresentation"))
+        assertTrue("queue position remains right-aligned", compactFooter.contains("cachedFooterPosition"))
     }
 
     @Test fun themeUsesOneReadableAccentOnDarkSurfaces() {
@@ -222,6 +214,19 @@ class Y2UiLogicTest {
         val brighter = maxOf(luminance(first), luminance(second))
         val darker = minOf(luminance(first), luminance(second))
         return (brighter + 0.05) / (darker + 0.05)
+    }
+
+    private fun y2PlayerViewSource(): String {
+        var directory: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (directory != null) {
+            val source = File(
+                directory,
+                "app/src/main/kotlin/com/schulzcode/y2player/ui/Y2PlayerView.kt"
+            )
+            if (source.isFile) return source.readText()
+            directory = directory.parentFile
+        }
+        throw AssertionError("repository root not found")
     }
 
     private fun luminance(color: Int): Double {
