@@ -35,6 +35,7 @@ class Y2InputController(
                     KeyEvent.KEYCODE_DPAD_LEFT -> dispatch(AppAction.SeekBackwardLong)
                     KeyEvent.KEYCODE_DPAD_RIGHT -> dispatch(AppAction.SeekForwardLong)
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> dispatch(AppAction.ConfirmLong)
+                    KeyEvent.KEYCODE_BACK -> dispatch(AppAction.NavigateHome)
                     in InputPressClassifier.PLAY_PAUSE_KEYS -> dispatch(AppAction.ShowNowPlaying)
                 }
             } else if (longPress && event.repeatCount > 0 &&
@@ -53,6 +54,10 @@ class Y2InputController(
         if (longPressedKeys.remove(keyCode)) return true
 
         val heldForMs = (event.eventTime - event.downTime).coerceAtLeast(0)
+        if (InputPressClassifier.releaseNavigatesHome(keyCode, heldForMs)) {
+            dispatch(AppAction.NavigateHome)
+            return true
+        }
         if (InputPressClassifier.releaseOpensNowPlaying(keyCode, heldForMs) &&
             HardwareKeyGate.isLocalKeypad(event.deviceId)
         ) {
@@ -131,4 +136,7 @@ internal object InputPressClassifier {
 
     fun releaseOpensNowPlaying(keyCode: Int, heldForMs: Long): Boolean =
         keyCode in PLAY_PAUSE_KEYS && heldForMs.coerceAtLeast(0) >= LONG_PRESS_MS
+
+    fun releaseNavigatesHome(keyCode: Int, heldForMs: Long): Boolean =
+        keyCode == KeyEvent.KEYCODE_BACK && heldForMs.coerceAtLeast(0) >= LONG_PRESS_MS
 }
