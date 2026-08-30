@@ -75,14 +75,33 @@ class InputPressClassifierTest {
     }
 
     @Test
-    fun `a long release on a non-play key never navigates`() {
+    fun `a long release on an unrelated key never navigates`() {
         assertFalse(InputPressClassifier.releaseOpensNowPlaying(KeyEvent.KEYCODE_DPAD_CENTER, 5_000))
         assertFalse(InputPressClassifier.releaseOpensNowPlaying(KeyEvent.KEYCODE_BACK, 5_000))
+        assertFalse(InputPressClassifier.releaseNavigatesHome(KeyEvent.KEYCODE_DPAD_CENTER, 5_000))
+    }
+
+    @Test
+    fun `holding the top back button navigates home on release`() {
+        assertFalse(
+            InputPressClassifier.releaseNavigatesHome(
+                KeyEvent.KEYCODE_BACK,
+                InputPressClassifier.LONG_PRESS_MS - 1
+            )
+        )
+        assertTrue(
+            InputPressClassifier.releaseNavigatesHome(
+                KeyEvent.KEYCODE_BACK,
+                InputPressClassifier.LONG_PRESS_MS
+            )
+        )
+        assertFalse(InputPressClassifier.releaseNavigatesHome(KeyEvent.KEYCODE_DPAD_LEFT, 5_000))
     }
 
     @Test
     fun `a negative held time cannot navigate`() {
         assertFalse(InputPressClassifier.releaseOpensNowPlaying(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, -5_000))
+        assertFalse(InputPressClassifier.releaseNavigatesHome(KeyEvent.KEYCODE_BACK, -5_000))
     }
 
     @Test
