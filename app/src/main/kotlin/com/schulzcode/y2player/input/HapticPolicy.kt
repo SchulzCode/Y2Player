@@ -51,6 +51,11 @@ class HapticRateLimiter(private val minIntervalMs: Long = MIN_INTERVAL_MS) {
 }
 
 object HapticPolicy {
+    const val USB_CONNECTION_DURATION_MS = 500L
+
     fun shouldPulse(level: HapticLevel, available: Boolean, accepted: Boolean): Boolean =
         available && level.enabled && accepted
+
+    fun usbConnectionDuration(level: HapticLevel, available: Boolean): Long =
+        if (level.enabled && available) USB_CONNECTION_DURATION_MS else 0L
 }

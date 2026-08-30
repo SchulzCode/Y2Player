@@ -63,6 +63,18 @@ class HapticController(
     }
 
     @Synchronized
+    fun usbConnected() {
+        val device = vibrator
+        val ms = HapticPolicy.usbConnectionDuration(level, device != null)
+        if (ms <= 0L || device == null) return
+        handler?.post {
+            @Suppress("DEPRECATION")
+            val failed = runCatching { device.vibrate(ms) }.isFailure
+            if (failed) onPulseFailed()
+        }
+    }
+
+    @Synchronized
     fun release() {
         cancel()
         flushAggregate()

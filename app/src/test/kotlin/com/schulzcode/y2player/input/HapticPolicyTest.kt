@@ -110,6 +110,7 @@ class HapticPolicyTest {
         assertFalse(
             HapticPolicy.shouldPulse(HapticLevel.OFF, available = true, accepted = becameConnected)
         )
+        assertEquals(0L, HapticPolicy.usbConnectionDuration(HapticLevel.OFF, available = true))
     }
 
     @Test fun usbConnectionPulsesWhenHapticsAreEnabled() {
@@ -122,6 +123,16 @@ class HapticPolicyTest {
         assertTrue(
             HapticPolicy.shouldPulse(HapticLevel.LIGHT, available = true, accepted = becameConnected)
         )
+        assertEquals(
+            HapticPolicy.USB_CONNECTION_DURATION_MS,
+            HapticPolicy.usbConnectionDuration(HapticLevel.LIGHT, available = true)
+        )
+    }
+
+    @Test fun usbConnectionUsesDedicatedLongPulseAndRequiresAVibrator() {
+        assertEquals(500L, HapticPolicy.USB_CONNECTION_DURATION_MS)
+        assertTrue(HapticPolicy.USB_CONNECTION_DURATION_MS > HapticLevel.STRONG.durationMs)
+        assertEquals(0L, HapticPolicy.usbConnectionDuration(HapticLevel.STRONG, available = false))
     }
 
     @Test fun noPulseWhenTheActionWasNotAccepted() {

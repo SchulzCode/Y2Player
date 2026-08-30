@@ -13,7 +13,6 @@ import android.os.SystemClock
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.Sub
 import com.schulzcode.y2player.core.state.ScreenContent
-import com.schulzcode.y2player.input.HapticPolicy
 import com.schulzcode.y2player.library.ScanReason
 import com.schulzcode.y2player.playback.MediaButtonReceiver
 import com.schulzcode.y2player.playback.NativeAudio
@@ -65,15 +64,7 @@ class Y2Application : Application() {
 
     private val usbCoordinator = UsbStateMonitor.Listener { usb, becameConnected ->
         container.diagnosticsRepository.setUsbState(usb)
-        if (becameConnected) {
-            val haptics = container.hapticController
-            if (HapticPolicy.shouldPulse(
-                    container.preferences.snapshot().hapticLevel,
-                    haptics.available,
-                    accepted = true
-                )
-            ) haptics.acceptedAction()
-        }
+        if (becameConnected) container.hapticController.usbConnected()
     }
 
     private val bluetoothOwnershipReceiver = object : BroadcastReceiver() {
