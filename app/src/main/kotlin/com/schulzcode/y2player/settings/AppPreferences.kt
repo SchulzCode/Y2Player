@@ -114,22 +114,15 @@ class AppPreferences(context: Context) {
         snapshot().previousRestartThresholdMs
     )
 
-    fun cycleEqualizerPreset(presetCount: Int): PlayerPreferencesState {
-        if (presetCount <= 0) return snapshot()
-        val current = snapshot().equalizerPreset
-        val next = when {
-            current < 0 -> 0
-            current + 1 >= presetCount -> -1
-            else -> current + 1
-        }
-        return commit { putInt(KEY_EQ_PRESET, next) }
-    }
+    fun setEqualizerPreset(index: Int, presetCount: Int): PlayerPreferencesState =
+        if (index !in -1 until presetCount) snapshot()
+        else commit { putInt(KEY_EQ_PRESET, index) }
 
-    fun adjustEqualizerBand(index: Int, deltaSteps: Int, minMb: Int, maxMb: Int, bandCount: Int): PlayerPreferencesState {
+    fun setEqualizerBand(index: Int, levelMb: Int, minMb: Int, maxMb: Int, bandCount: Int): PlayerPreferencesState {
         if (index !in 0 until bandCount) return snapshot()
         val levels = snapshot().equalizerBandLevelsMb.toMutableList()
         while (levels.size < bandCount) levels += 0
-        levels[index] = (levels[index] + deltaSteps * EQ_STEP_MB).coerceIn(minMb, maxMb)
+        levels[index] = levelMb.coerceIn(minMb, maxMb)
         return commit {
             putInt(KEY_EQ_PRESET, -1)
             putString(KEY_EQ_BANDS, levels.joinToString(","))

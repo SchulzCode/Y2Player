@@ -133,8 +133,11 @@ object ScreenContent {
         Screen.PlaybackInterruptions -> "Interruptions"
         Screen.SoundEffects -> "Sound Effects"
         Screen.EqualizerSettings -> "Equalizer"
+        Screen.EqualizerPresets -> "Equalizer Preset"
         Screen.OutputInformation -> "Output"
         Screen.EqualizerBands -> "Equalizer Bands"
+        is Screen.EqualizerBandLevel -> state.playback.audioEffects.bandFrequenciesHz
+            .getOrNull(screen.bandIndex)?.let { "${formatFrequency(it)} Level" } ?: "Band Level"
         Screen.SortOrder -> "Sort Order"
         Screen.TrackSorting -> "Track Order"
         Screen.AlbumSorting -> "Album Order"
@@ -234,8 +237,10 @@ object ScreenContent {
         Screen.PlaybackInterruptions -> playbackInterruptionRows(state)
         Screen.SoundEffects -> soundEffectRows(state)
         Screen.EqualizerSettings -> equalizerRows(state)
+        Screen.EqualizerPresets -> equalizerPresetRows(state)
         Screen.OutputInformation -> outputInformationRows(state)
         Screen.EqualizerBands -> equalizerBandRows(state)
+        is Screen.EqualizerBandLevel -> equalizerBandLevelRows(state, screen.bandIndex)
         Screen.SortOrder -> sortOrderRows(state)
         Screen.TrackSorting -> trackSortRows()
         Screen.AlbumSorting -> albumSortRows()
@@ -939,8 +944,18 @@ object ScreenContent {
             ?: "Preset ${state.preferences.equalizerPreset + 1}"
         return listOf(
             ScreenRow.Action("Preset", preset, "eq_preset"),
-            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · center adjusts", "eq_bands")
+            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · choose values", "eq_bands")
         )
+    }
+
+    private fun equalizerPresetRows(state: AppState): List<ScreenRow> {
+        val selected = state.preferences.equalizerPreset
+        return buildList {
+            add(ScreenRow.Action("Custom", if (selected < 0) "Current" else null, "eq_preset:-1"))
+            state.playback.audioEffects.presetNames.forEachIndexed { index, name ->
+                add(ScreenRow.Action(name, if (selected == index) "Current" else null, "eq_preset:$index"))
+            }
+        }
     }
 
 
@@ -998,6 +1013,37 @@ object ScreenContent {
         return effects.bandFrequenciesHz.mapIndexed { index, frequency ->
             val level = effects.bandLevelsMb.getOrNull(index) ?: state.preferences.equalizerBandLevelsMb.getOrNull(index) ?: 0
             ScreenRow.Action(formatFrequency(frequency), signedDb(level), "eq_band:$index")
+        }
+    }
+
+    internal fun equalizerBandLevels(state: AppState): List<Int> {
+        val effects = state.playback.audioEffects
+        if (effects.bandMinMb > effects.bandMaxMb) return emptyList()
+        return buildSet {
+            add(effects.bandMinMb)
+            add(effects.bandMaxMb)
+            add(0.coerceIn(effects.bandMinMb, effects.bandMaxMb))
+            var level = Math.floorDiv(effects.bandMinMb, EQ_BAND_STEP_MB) * EQ_BAND_STEP_MB
+            if (level < effects.bandMinMb) level += EQ_BAND_STEP_MB
+            while (level <= effects.bandMaxMb) {
+                add(level)
+                level += EQ_BAND_STEP_MB
+            }
+        }.sorted()
+    }
+
+    internal fun equalizerBandLevel(state: AppState, bandIndex: Int): Int {
+        val effects = state.playback.audioEffects
+        return state.preferences.equalizerBandLevelsMb.getOrNull(bandIndex)
+            ?.takeIf { state.preferences.equalizerPreset < 0 }
+            ?: effects.bandLevelsMb.getOrNull(bandIndex)
+            ?: 0
+    }
+
+    private fun equalizerBandLevelRows(state: AppState, bandIndex: Int): List<ScreenRow> {
+        val current = equalizerBandLevel(state, bandIndex)
+        return equalizerBandLevels(state).map { level ->
+            ScreenRow.Action(signedDb(level), if (level == current) "Current" else null, "eq_level:$level")
         }
     }
 
@@ -1558,6 +1604,7 @@ object ScreenContent {
     }
 
     private const val ROW_CACHE_ENTRIES = 4
+    private const val EQ_BAND_STEP_MB = 100
 
     const val COLLECTION_SHUFFLE_KEY = "collection_shuffle"
     const val AUDIOBOOK_KEY_PREFIX = "audiobook:"

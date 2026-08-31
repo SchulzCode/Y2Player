@@ -529,16 +529,16 @@ class MainActivity : Activity() {
                 )
             }
             AppEffect.ToggleAudioEffects -> applyPlaybackPreferences(preferences.toggleAudioEffects())
-            AppEffect.CycleEqualizerPreset -> {
+            is AppEffect.SetEqualizerPreset -> {
                 val presetCount = store.state.playback.audioEffects.presetNames.size
-                applyPlaybackPreferences(preferences.cycleEqualizerPreset(presetCount))
+                applyPlaybackPreferences(preferences.setEqualizerPreset(effect.index, presetCount))
             }
-            is AppEffect.AdjustEqualizerBand -> {
+            is AppEffect.SetEqualizerBand -> {
                 val effects = store.state.playback.audioEffects
                 applyPlaybackPreferences(
-                    preferences.adjustEqualizerBand(
+                    preferences.setEqualizerBand(
                         effect.index,
-                        effect.deltaSteps,
+                        effect.levelMb,
                         effects.bandMinMb,
                         effects.bandMaxMb,
                         effects.bandFrequenciesHz.size

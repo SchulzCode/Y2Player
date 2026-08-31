@@ -1961,7 +1961,7 @@ class Y2PlayerView(
         val hint = when {
             isNowPlayingSurface() -> ""
             state.currentScreen is Screen.QueueMove -> "WHEEL MOVE · CENTER CONFIRM · BACK CANCEL"
-            state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER + · HOLD CENTER - · L/R TRACK"
+            state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER CHOOSE · L/R TRACK"
             state.currentScreen == Screen.Brightness || state.currentScreen == Screen.ScreenTimeout ||
                 state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY · L/R TRACK"
             else -> "WHEEL NAVIGATE · CENTER SELECT · L/R TRACK"

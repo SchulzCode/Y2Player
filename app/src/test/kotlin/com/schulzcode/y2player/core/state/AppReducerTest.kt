@@ -876,23 +876,54 @@ class AppReducerTest {
         assertEquals(AppEffect.PlayNext(listOf(2L, 1L)), playNext.effects.single())
     }
 
-    @Test fun equalizerBandsUseCenterForAdjustmentInsteadOfLeftAndRight() {
+    @Test fun equalizerBandsOpenAnExplicitValuePicker() {
         val state = AppState(
             screenStack = listOf(ScreenEntry(Screen.EqualizerBands, selectedIndex = 1)),
+            preferences = PlayerPreferencesState(equalizerPreset = -1, equalizerBandLevelsMb = listOf(0, 300, 0)),
             playback = PlaybackSnapshot(
                 audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(
                     available = true,
                     equalizerSupported = true,
                     bandFrequenciesHz = listOf(60, 230, 910),
-                    bandLevelsMb = listOf(0, 0, 0)
+                    bandLevelsMb = listOf(0, 300, 0),
+                    bandMinMb = -1_500,
+                    bandMaxMb = 1_500
                 )
             )
         )
 
-        assertEquals(AppEffect.AdjustEqualizerBand(1, 1), AppReducer.reduce(state, AppAction.Confirm).effects.single())
-        assertEquals(AppEffect.AdjustEqualizerBand(1, -1), AppReducer.reduce(state, AppAction.ConfirmLong).effects.single())
+        val picker = AppReducer.reduce(state, AppAction.Confirm).state
+        assertEquals(Screen.EqualizerBandLevel(1), picker.currentScreen)
+        assertEquals("Current", ScreenContent.rows(picker)[picker.selectedIndex].subtitle)
+
+        val selected = AppReducer.reduce(selectKey(picker, "eq_level:-400"), AppAction.Confirm)
+        assertEquals(Screen.EqualizerBands, selected.state.currentScreen)
+        assertEquals(AppEffect.SetEqualizerBand(1, -400), selected.effects.single())
         assertEquals(AppEffect.PreviousTrack, AppReducer.reduce(state, AppAction.Left).effects.single())
         assertEquals(AppEffect.NextTrack, AppReducer.reduce(state, AppAction.Right).effects.single())
+    }
+
+    @Test fun equalizerPresetOpensAListAndAppliesTheChosenValue() {
+        val state = AppState(
+            screenStack = listOf(ScreenEntry(Screen.EqualizerSettings)),
+            preferences = PlayerPreferencesState(equalizerPreset = 1),
+            playback = PlaybackSnapshot(
+                audioEffects = com.schulzcode.y2player.core.model.AudioEffectsState(
+                    available = true,
+                    equalizerSupported = true,
+                    presetNames = listOf("Normal", "Rock", "Jazz")
+                )
+            )
+        )
+
+        val picker = AppReducer.reduce(selectKey(state, "eq_preset"), AppAction.Confirm).state
+        assertEquals(Screen.EqualizerPresets, picker.currentScreen)
+        assertEquals(2, picker.selectedIndex)
+        assertEquals("Current", ScreenContent.rows(picker)[picker.selectedIndex].subtitle)
+
+        val selected = AppReducer.reduce(selectKey(picker, "eq_preset:-1"), AppAction.Confirm)
+        assertEquals(Screen.EqualizerSettings, selected.state.currentScreen)
+        assertEquals(AppEffect.SetEqualizerPreset(-1), selected.effects.single())
     }
 
     @Test fun theThemeRowOnTheDisplayScreenTogglesTheTheme() {
