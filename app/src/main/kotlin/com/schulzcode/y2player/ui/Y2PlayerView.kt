@@ -501,9 +501,9 @@ class Y2PlayerView(
         else -> 0f
     }
 
-    private fun rowAreaBottom(): Float = height - footerHeight -
-        if (state.currentScreen is Screen.Search) SEARCH_KEYBOARD_HEIGHT_DP * density else 0f -
-        if (cachedMessageSource != null) 66f * density else 0f
+    private fun rowAreaBottom(): Float =
+        (if (state.currentScreen is Screen.Search) height.toFloat() - SEARCH_KEYBOARD_HEIGHT_DP * density
+        else height - footerHeight) - if (cachedMessageSource != null) 66f * density else 0f
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         return when (event.action) {
@@ -572,8 +572,8 @@ class Y2PlayerView(
     private fun searchKeyAt(x: Float, y: Float): String? {
         if (state.currentScreen !is Screen.Search) return null
         val top = searchKeyboardTop()
-        if (y < top || y >= height - footerHeight || x !in 0f..width.toFloat()) return null
-        val rowHeight = (height - footerHeight - top) / SearchKeyboard.rows.size
+        if (y < top || y >= height || x !in 0f..width.toFloat()) return null
+        val rowHeight = (height - top) / SearchKeyboard.rows.size
         val row = ((y - top) / rowHeight).toInt().coerceIn(0, SearchKeyboard.rows.lastIndex)
         val keys = SearchKeyboard.rows[row]
         val keyWidth = width.toFloat() / keys.size
@@ -599,16 +599,16 @@ class Y2PlayerView(
         paint.textAlign = Paint.Align.LEFT
     }
 
-    private fun searchKeyboardTop(): Float = height - footerHeight - SEARCH_KEYBOARD_HEIGHT_DP * density
+    private fun searchKeyboardTop(): Float = height - SEARCH_KEYBOARD_HEIGHT_DP * density
 
     private fun drawSearchKeyboard(canvas: Canvas) {
         val screen = state.currentScreen as? Screen.Search ?: return
         val top = searchKeyboardTop()
-        val keyboardHeight = height - footerHeight - top
+        val keyboardHeight = height - top
         val keyHeight = keyboardHeight / SearchKeyboard.rows.size
         paint.style = Paint.Style.FILL
         paint.color = palette.surface
-        canvas.drawRect(0f, top, width.toFloat(), height - footerHeight, paint)
+        canvas.drawRect(0f, top, width.toFloat(), height.toFloat(), paint)
         SearchKeyboard.rows.forEachIndexed { rowIndex, keys ->
             val keyWidth = width.toFloat() / keys.size
             keys.forEachIndexed { columnIndex, key ->
@@ -1652,7 +1652,7 @@ class Y2PlayerView(
     }
 
     private fun drawFooter(canvas: Canvas) {
-        if (isSplitHome()) return
+        if (isSplitHome() || state.currentScreen is Screen.Search) return
 
         if (
             state.playback.currentTrackId != null &&

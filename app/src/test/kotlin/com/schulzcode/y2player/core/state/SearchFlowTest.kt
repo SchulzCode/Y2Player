@@ -63,15 +63,29 @@ class SearchFlowTest {
         assertEquals(Screen.MainMenu, AppReducer.reduce(erased, AppAction.Back).state.currentScreen)
     }
 
-    @Test fun `wheel and horizontal buttons navigate the qwerty grid`() {
+    @Test fun `wheel traverses every key while horizontal buttons stay within a row`() {
         val state = AppState(screenStack = listOf(ScreenEntry(Screen.Search())))
         val right = AppReducer.reduce(state, AppAction.Right).state.currentScreen as Screen.Search
         assertEquals("W", SearchKeyboard.key(right))
-        val down = AppReducer.reduce(rightState(state, right), AppAction.WheelMoved(1)).state.currentScreen as Screen.Search
-        assertEquals(1, down.keyboardRow)
-        assertTrue(SearchKeyboard.key(down) in SearchKeyboard.rows[1])
+
+        val wheelOne = AppReducer.reduce(state, AppAction.WheelMoved(1)).state.currentScreen as Screen.Search
+        assertEquals("W", SearchKeyboard.key(wheelOne))
+        val wheelTen = AppReducer.reduce(state, AppAction.WheelMoved(10)).state.currentScreen as Screen.Search
+        assertEquals("A", SearchKeyboard.key(wheelTen))
     }
 
-    private fun rightState(state: AppState, screen: Screen.Search) =
-        state.copy(screenStack = listOf(ScreenEntry(screen)))
+    @Test fun `keyboard wheel follows the global wrapping preference`() {
+        val bounded = AppState(
+            screenStack = listOf(ScreenEntry(Screen.Search())),
+            preferences = PlayerPreferencesState(wrapLists = false)
+        )
+        assertEquals("Q", SearchKeyboard.key(
+            AppReducer.reduce(bounded, AppAction.WheelMoved(-1)).state.currentScreen as Screen.Search
+        ))
+
+        val wrapped = bounded.copy(preferences = bounded.preferences.copy(wrapLists = true))
+        assertEquals(SearchKeyboard.RESULTS, SearchKeyboard.key(
+            AppReducer.reduce(wrapped, AppAction.WheelMoved(-1)).state.currentScreen as Screen.Search
+        ))
+    }
 }

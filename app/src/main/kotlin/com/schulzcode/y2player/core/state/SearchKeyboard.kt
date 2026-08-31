@@ -21,16 +21,20 @@ internal object SearchKeyboard {
         return screen.copy(keyboardColumn = column)
     }
 
-    fun moveVertical(screen: Screen.Search, delta: Int): Screen.Search {
-        val nextRow = (screen.keyboardRow + delta).coerceIn(0, rows.lastIndex)
-        if (nextRow == screen.keyboardRow) return screen
-        val oldSize = rows[screen.keyboardRow].size
-        val nextSize = rows[nextRow].size
-        val fraction = if (oldSize <= 1) 0f else screen.keyboardColumn.toFloat() / (oldSize - 1)
-        return screen.copy(
-            keyboardRow = nextRow,
-            keyboardColumn = (fraction * (nextSize - 1)).toInt().coerceIn(0, nextSize - 1)
-        )
+    fun moveLinear(screen: Screen.Search, delta: Int, wrap: Boolean): Screen.Search {
+        val current = rows.take(screen.keyboardRow).sumOf(List<String>::size) + screen.keyboardColumn
+        val total = rows.sumOf(List<String>::size)
+        val next = if (wrap) {
+            ((current + delta) % total + total) % total
+        } else {
+            (current + delta).coerceIn(0, total - 1)
+        }
+        var remaining = next
+        rows.forEachIndexed { rowIndex, row ->
+            if (remaining < row.size) return screen.copy(keyboardRow = rowIndex, keyboardColumn = remaining)
+            remaining -= row.size
+        }
+        return screen
     }
 
     fun label(key: String): String = when (key) {
