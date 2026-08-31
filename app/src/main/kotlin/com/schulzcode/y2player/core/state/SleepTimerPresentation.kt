@@ -16,7 +16,7 @@ internal object SleepTimerPresentation {
     }
 
     fun label(mode: SleepTimerMode, remainingMs: Long?): String =
-        if (mode.durationMs != null && remainingMs != null) countdown(remainingMs) else mode.label
+        if (mode == SleepTimerMode.MINUTES && remainingMs != null) countdown(remainingMs) else mode.label
 
     fun shouldRefresh(
         screen: Screen,
@@ -24,5 +24,5 @@ internal object SleepTimerPresentation {
         deadlineElapsedMs: Long?,
         uiVisible: Boolean
     ): Boolean = uiVisible && screen == Screen.NowPlayingOptions &&
-        mode.durationMs != null && deadlineElapsedMs != null
+        mode == SleepTimerMode.MINUTES && deadlineElapsedMs != null
 }

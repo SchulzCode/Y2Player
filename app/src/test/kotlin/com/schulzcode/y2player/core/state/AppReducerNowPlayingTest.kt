@@ -3,6 +3,7 @@ package com.schulzcode.y2player.core.state
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
 import com.schulzcode.y2player.core.model.RepeatMode
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -123,10 +124,43 @@ class AppReducerNowPlayingTest {
         assertTrue("track-list options keep Add to Playlist", "track_playlist:1" in keys)
     }
 
-    @Test fun optionsMenuTogglesShuffleAndRepeat() {
+    @Test fun optionsMenuTogglesShuffleAndRepeatAndOpensTheSleepTimer() {
         assertEquals(AppEffect.ToggleShuffle, optionsReductionFor("shuffle").effects.single())
         assertEquals(AppEffect.CycleRepeat, optionsReductionFor("repeat").effects.single())
-        assertEquals(AppEffect.CycleSleepTimer, optionsReductionFor("sleep_timer").effects.single())
+        val sleepTimer = optionsReductionFor("sleep_timer")
+        assertEquals(Screen.SleepTimer, sleepTimer.state.currentScreen)
+        assertTrue(sleepTimer.effects.isEmpty())
+    }
+
+    @Test fun sleepTimerOffersEveryMinuteAndAppliesTheSelectedValue() {
+        val opened = optionsReductionFor("sleep_timer").state
+        val rows = ScreenContent.rows(opened).filterIsInstance<ScreenRow.Action>()
+        assertEquals(64, rows.size)
+        assertEquals("sleep_timer_minutes:1", rows[4].key)
+        assertEquals("sleep_timer_minutes:60", rows.last().key)
+
+        val selected = opened.copy(
+            screenStack = opened.screenStack.dropLast(1) + opened.currentEntry.copy(selectedIndex = 8)
+        )
+        val applied = AppReducer.reduce(selected, AppAction.Confirm)
+
+        assertEquals(Screen.NowPlayingOptions, applied.state.currentScreen)
+        assertEquals(AppEffect.SetSleepTimer(SleepTimerMode.MINUTES, 5), applied.effects.single())
+    }
+
+    @Test fun reopeningSleepTimerSelectsTheActiveMinute() {
+        val state = optionsState().copy(playback = optionsState().playback.copy(
+            sleepTimerMode = SleepTimerMode.MINUTES,
+            sleepTimerConfiguredMinutes = 7
+        ))
+        val index = ScreenContent.rows(state).indexOfFirst { (it as? ScreenRow.Action)?.key == "sleep_timer" }
+        val opened = AppReducer.reduce(
+            state.copy(screenStack = state.screenStack.dropLast(1) + state.currentEntry.copy(selectedIndex = index)),
+            AppAction.Confirm
+        ).state
+
+        assertEquals(10, opened.selectedIndex)
+        assertEquals("Active", (ScreenContent.rows(opened)[10] as ScreenRow.Action).subtitle)
     }
 
     @Test fun optionsMenuTogglesFavoriteOfTheCurrentTrack() {

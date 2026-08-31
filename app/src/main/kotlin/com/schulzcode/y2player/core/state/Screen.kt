@@ -50,6 +50,7 @@ sealed interface Screen {
     data object QueueManagement : Screen
     data object NowPlaying : Screen
     data object NowPlayingOptions : Screen
+    data object SleepTimer : Screen
     data object Queue : Screen
     data object Audio : Screen
     data object Settings : Screen
@@ -127,6 +128,7 @@ val Screen.code: String get() = when (this) {
     Screen.QueueManagement -> "queue_management"
     Screen.NowPlaying -> "now_playing"
     Screen.NowPlayingOptions -> "now_playing_options"
+    Screen.SleepTimer -> "sleep_timer"
     Screen.Queue -> "queue"
     Screen.Audio -> "audio"
     Screen.Settings -> "settings"

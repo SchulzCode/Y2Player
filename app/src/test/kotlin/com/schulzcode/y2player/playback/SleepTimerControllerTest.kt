@@ -9,106 +9,70 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SleepTimerControllerTest {
-    @Test fun activeTimerExpiresBeforeThePlaybackStopPathRuns() {
+    @Test fun customMinuteTimerExpiresBeforeThePlaybackStopPathRuns() {
         val timer = SleepTimerController()
-        val scheduled = requireNotNull(timer.cycle(1_000L))
+        val scheduled = requireNotNull(timer.set(SleepTimerMode.MINUTES, 5, 1_000L))
 
-        assertEquals(
-            SleepTimerTick.Expired,
-            timer.onTimer(scheduled.generation, 1_000L + requireNotNull(timer.mode.durationMs))
-        )
+        assertEquals(SleepTimerTick.Expired, timer.onTimer(scheduled.generation, 301_000L))
         assertEquals(SleepTimerMode.OFF, timer.mode)
         assertNull(timer.deadlineElapsedMs)
 
-        val source = playbackServiceSource()
-        val expiry = source.substringAfter("SleepTimerTick.Expired ->")
+        val expiry = playbackServiceSource().substringAfter("SleepTimerTick.Expired ->")
             .substringBefore("is SleepTimerTick.Waiting")
         assertTrue(expiry.indexOf("syncSleepTimerSnapshot()") < expiry.indexOf("pauseInternal(PauseReason.SLEEP_TIMER)"))
     }
 
-    @Test fun expiredTimerIsInactiveInThePublishedSnapshot() {
+    @Test fun snapshotPublishesTheConfiguredMinutesAndDeadline() {
         val timer = SleepTimerController()
-        val scheduled = requireNotNull(timer.cycle(0L))
-        val deadline = requireNotNull(timer.deadlineElapsedMs)
-        val active = timer.applyTo(PlaybackSnapshot(), 1L)
-        assertEquals(SleepTimerMode.MINUTES_15, active.sleepTimerMode)
+        timer.set(SleepTimerMode.MINUTES, 7, 10_000L)
+        val snapshot = timer.applyTo(PlaybackSnapshot(), 10_001L)
 
-        timer.onTimer(scheduled.generation, deadline)
-        val expired = timer.applyTo(active, deadline)
-
-        assertEquals(SleepTimerMode.OFF, expired.sleepTimerMode)
-        assertNull(expired.sleepTimerRemainingMs)
+        assertEquals(SleepTimerMode.MINUTES, snapshot.sleepTimerMode)
+        assertEquals(7, snapshot.sleepTimerConfiguredMinutes)
+        assertEquals(419_999L, snapshot.sleepTimerRemainingMs)
     }
 
-    @Test fun manuallyCancelledTimerStaysOffAndCannotBeRestoredByItsCallback() {
+    @Test fun minuteInputIsClampedToTheSupportedWheelRange() {
         val timer = SleepTimerController()
-        val cancelled = requireNotNull(timer.cycle(10L))
+        timer.set(SleepTimerMode.MINUTES, 0, 0L)
+        assertEquals(1, timer.configuredMinutes)
+        assertEquals(60_000L, timer.deadlineElapsedMs)
 
-        repeat(SleepTimerMode.values().size - 1) { timer.cycle(20L + it) }
-
-        assertEquals(SleepTimerMode.OFF, timer.mode)
-        assertNull(timer.deadlineElapsedMs)
-        assertEquals(
-            SleepTimerTick.Stale,
-            timer.onTimer(cancelled.generation, 10L + requireNotNull(SleepTimerMode.MINUTES_15.durationMs))
-        )
-        assertEquals(SleepTimerMode.OFF, timer.mode)
+        timer.set(SleepTimerMode.MINUTES, 99, 0L)
+        assertEquals(60, timer.configuredMinutes)
+        assertEquals(3_600_000L, timer.deadlineElapsedMs)
     }
 
-    @Test fun trackAlbumAndQueueModesRemainBoundaryBasedAndClearAfterStopping() {
-        listOf(SleepTimerMode.END_TRACK, SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE).forEach { target ->
+    @Test fun boundaryModesDoNotScheduleCallbacksAndClearNormally() {
+        listOf(SleepTimerMode.END_TRACK, SleepTimerMode.END_ALBUM, SleepTimerMode.END_QUEUE).forEach { mode ->
             val timer = SleepTimerController()
-            var scheduled: ScheduledSleepTimer? = null
-            repeat(target.ordinal) { scheduled = timer.cycle(it.toLong()) }
-
-            assertEquals(target, timer.mode)
-            assertNull(scheduled)
+            assertNull(timer.set(mode, null, 0L))
+            assertEquals(mode, timer.mode)
             assertNull(timer.deadlineElapsedMs)
-
             timer.clear()
             assertEquals(SleepTimerMode.OFF, timer.mode)
         }
     }
 
-    @Test fun aNewTimerWorksAfterThePreviousTimerExpired() {
+    @Test fun replacingOrClearingATimerInvalidatesItsOldCallback() {
         val timer = SleepTimerController()
-        val first = requireNotNull(timer.cycle(0L))
-        timer.onTimer(first.generation, requireNotNull(timer.mode.durationMs))
+        val old = requireNotNull(timer.set(SleepTimerMode.MINUTES, 5, 0L))
+        val replacement = requireNotNull(timer.set(SleepTimerMode.MINUTES, 10, 500L))
 
-        val secondStartedAt = 2_000_000L
-        val second = requireNotNull(timer.cycle(secondStartedAt))
-        assertEquals(SleepTimerMode.MINUTES_15, timer.mode)
-        assertEquals(
-            SleepTimerTick.Expired,
-            timer.onTimer(second.generation, secondStartedAt + requireNotNull(timer.mode.durationMs))
-        )
-        assertEquals(SleepTimerMode.OFF, timer.mode)
+        assertEquals(SleepTimerTick.Stale, timer.onTimer(old.generation, 300_000L))
+        assertEquals(SleepTimerTick.Expired, timer.onTimer(replacement.generation, 600_500L))
+
+        val cancelled = requireNotNull(timer.set(SleepTimerMode.MINUTES, 2, 0L))
+        timer.set(SleepTimerMode.OFF, null, 1L)
+        assertEquals(SleepTimerTick.Stale, timer.onTimer(cancelled.generation, 120_000L))
     }
 
-    @Test fun replacingATimerInvalidatesTheOldCallbackAndKeepsTheNewDeadline() {
+    @Test fun earlyCallbackIsRescheduled() {
         val timer = SleepTimerController()
-        val old = requireNotNull(timer.cycle(0L))
-        val replacementStartedAt = 500L
-        val replacement = requireNotNull(timer.cycle(replacementStartedAt))
-
-        assertEquals(SleepTimerMode.MINUTES_30, timer.mode)
-        assertEquals(SleepTimerTick.Stale, timer.onTimer(old.generation, requireNotNull(SleepTimerMode.MINUTES_15.durationMs)))
-        assertEquals(
-            SleepTimerTick.Expired,
-            timer.onTimer(replacement.generation, replacementStartedAt + requireNotNull(SleepTimerMode.MINUTES_30.durationMs))
-        )
-    }
-
-    @Test fun anEarlyCallbackIsRescheduledInsteadOfLeavingAnElapsedTimerActive() {
-        val timer = SleepTimerController()
-        val scheduled = requireNotNull(timer.cycle(1_000L))
+        val scheduled = requireNotNull(timer.set(SleepTimerMode.MINUTES, 1, 1_000L))
         val deadline = requireNotNull(timer.deadlineElapsedMs)
 
-        assertEquals(
-            SleepTimerTick.Waiting(1L),
-            timer.onTimer(scheduled.generation, deadline - 1L)
-        )
-        assertEquals(SleepTimerMode.MINUTES_15, timer.mode)
+        assertEquals(SleepTimerTick.Waiting(1L), timer.onTimer(scheduled.generation, deadline - 1L))
         assertEquals(SleepTimerTick.Expired, timer.onTimer(scheduled.generation, deadline))
     }
 

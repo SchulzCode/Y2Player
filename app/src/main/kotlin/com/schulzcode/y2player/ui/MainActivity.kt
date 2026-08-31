@@ -516,7 +516,7 @@ class MainActivity : Activity() {
             AppEffect.ToggleWrapLists -> applyPlaybackPreferences(preferences.toggleWrapLists())
             AppEffect.CycleVolumeMode -> cycleVolumeMode()
             AppEffect.CycleReplayGain -> applyPlaybackPreferences(preferences.cycleReplayGain())
-            AppEffect.CycleSleepTimer -> requirePlayback { it.cycleSleepTimer() }
+            is AppEffect.SetSleepTimer -> requirePlayback { it.setSleepTimer(effect.mode, effect.minutes) }
             AppEffect.CycleAudioQuality -> {
                 val value = preferences.cycleAudioQuality()
                 applyPlaybackPreferences(value)
