@@ -56,11 +56,16 @@ class AppReducerTest {
         assertEquals(rowCount - 1, AppReducer.reduce(state, AppAction.WheelMoved(5)).state.selectedIndex)
     }
 
-    @Test fun confirmationsRemainBoundedEvenWhenOrdinaryListsWrap() {
+    @Test fun confirmationChoicesFollowTheWrapListsPreference() {
         val state = AppState(screenStack = listOf(ScreenEntry(Screen.ConfirmAction("reset_library"), 1)))
-        assertEquals(1, AppReducer.reduce(state, AppAction.WheelMoved(-1)).state.selectedIndex)
+        assertEquals(2, AppReducer.reduce(state, AppAction.WheelMoved(-1)).state.selectedIndex)
         val onConfirm = state.copy(screenStack = listOf(ScreenEntry(state.currentScreen, 2)))
-        assertEquals(2, AppReducer.reduce(onConfirm, AppAction.WheelMoved(1)).state.selectedIndex)
+        assertEquals(1, AppReducer.reduce(onConfirm, AppAction.WheelMoved(1)).state.selectedIndex)
+
+        val bounded = state.copy(preferences = state.preferences.copy(wrapLists = false))
+        assertEquals(1, AppReducer.reduce(bounded, AppAction.WheelMoved(-1)).state.selectedIndex)
+        val boundedOnConfirm = bounded.copy(screenStack = listOf(ScreenEntry(bounded.currentScreen, 2)))
+        assertEquals(2, AppReducer.reduce(boundedOnConfirm, AppAction.WheelMoved(1)).state.selectedIndex)
     }
 
     @Test fun everyMainMenuItemRemainsReachableWithThePhysicalWheel() {
