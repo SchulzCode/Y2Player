@@ -107,6 +107,10 @@ class ScreenCatalogueTest {
             val nested = AppState(screenStack = listOf(ScreenEntry(Screen.MainMenu), ScreenEntry(screen)))
             val back = AppReducer.reduce(nested, AppAction.Back).state
             assertTrue("${screen.code} left an empty stack", back.screenStack.isNotEmpty())
+            if (screen is Screen.Search && screen.query.isNotEmpty()) {
+                assertTrue("search Back should erase before leaving", back.currentScreen is Screen.Search)
+                return@forEach
+            }
             assertTrue(
                 "${screen.code} did not move up",
                 back.screenStack.size < nested.screenStack.size || back.currentScreen == screen
@@ -116,6 +120,7 @@ class ScreenCatalogueTest {
 
     @Test fun `Left and Right are media controls on every screen`() {
         ScreenCatalogue.all().forEach { screen ->
+            if (screen is Screen.Search) return@forEach
             val state = bare(screen).copy(library = LibraryState())
             val right = AppReducer.reduce(state, AppAction.Right)
             val left = AppReducer.reduce(state, AppAction.Left)

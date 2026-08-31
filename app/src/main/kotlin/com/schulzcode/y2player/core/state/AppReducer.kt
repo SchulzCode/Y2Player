@@ -4,6 +4,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.LibraryScope
+import com.schulzcode.y2player.core.model.Track
 import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.AppEffect.*
@@ -14,24 +15,25 @@ import com.schulzcode.y2player.core.state.ScreenRow.TrackRow
 import com.schulzcode.y2player.playback.AudioBalance
 
 object AppReducer {
+    private const val MAX_SEARCH_QUERY_LENGTH = 64
     fun reduce(state: AppState, action: AppAction): Reduction = when (action) {
-        is AppAction.WheelMoved -> moveSelection(clearAlphabetScrub(state), action.delta)
+        is AppAction.WheelMoved -> if (state.currentScreen is Screen.Search) moveSearch(state, action.delta) else moveSelection(clearAlphabetScrub(state), action.delta)
         is AppAction.AlphabetMoved -> moveAlphabet(state, action.direction)
         AppAction.EndAlphabetScrub -> Reduction(clearAlphabetScrub(state))
-        AppAction.Confirm -> confirm(clearAlphabetScrub(state))
-        AppAction.ConfirmLong -> confirmLong(clearAlphabetScrub(state))
+        AppAction.Confirm -> if (state.currentScreen is Screen.Search) confirmSearch(state) else confirm(clearAlphabetScrub(state))
+        AppAction.ConfirmLong -> if (state.currentScreen is Screen.Search) confirmSearchLong(state) else confirmLong(clearAlphabetScrub(state))
         AppAction.ShowNowPlaying -> showNowPlaying(clearAlphabetScrub(state))
         AppAction.Back -> if (state.transientMessage != null) {
             Reduction(clearAlphabetScrub(state).copy(transientMessage = null))
         } else {
-            back(clearAlphabetScrub(state))
+            if (state.currentScreen is Screen.Search) backSearch(clearAlphabetScrub(state)) else back(clearAlphabetScrub(state))
         }
         AppAction.NavigateHome -> Reduction(
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) clearAlphabetScrub(state)
             else clearAlphabetScrub(state).copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
         )
-        AppAction.Left -> Reduction(state, listOf(PreviousTrack))
-        AppAction.Right -> Reduction(state, listOf(NextTrack))
+        AppAction.Left -> if (state.currentScreen is Screen.Search) moveSearchHorizontal(state, -1) else Reduction(state, listOf(PreviousTrack))
+        AppAction.Right -> if (state.currentScreen is Screen.Search) moveSearchHorizontal(state, 1) else Reduction(state, listOf(NextTrack))
         AppAction.PlayPause -> Reduction(state, listOf(TogglePlayback))
         AppAction.MediaNext -> Reduction(state, listOf(NextTrack))
         AppAction.MediaPrevious -> Reduction(state, listOf(PreviousTrack))
@@ -57,7 +59,8 @@ object AppReducer {
         )
         is AppAction.SafeModeChanged -> Reduction(state.copy(safeMode = action.enabled))
         is AppAction.ShowMessage -> Reduction(state.copy(transientMessage = action.message))
-        is AppAction.SelectIndex -> Reduction(normalizeSelection(setSelected(clearAlphabetScrub(state), action.index.coerceAtLeast(0))))
+        is AppAction.SelectIndex -> if (state.currentScreen is Screen.Search) focusSearchResult(state, action.index) else Reduction(normalizeSelection(setSelected(clearAlphabetScrub(state), action.index.coerceAtLeast(0))))
+        is AppAction.PressSearchKey -> pressSearchKey(state, action.key)
     }
 
     private fun moveAlphabet(state: AppState, direction: Int): Reduction {
@@ -101,6 +104,108 @@ object AppReducer {
         return if (next == state.selectedIndex) Reduction(state) else Reduction(setSelected(state, next))
     }
 
+    private fun moveSearch(state: AppState, delta: Int): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        if (!screen.resultsFocused) {
+            return Reduction(replaceSearch(state, SearchKeyboard.moveVertical(screen, delta.sign())))
+        }
+        val count = ScreenContent.rows(state).size
+        if (count == 0) return Reduction(replaceSearch(state, screen.copy(resultsFocused = false)))
+        val next = ListNavigationPolicy.nextIndex(screen, state.selectedIndex, delta, count, state.preferences.wrapLists)
+        return Reduction(setSelected(state, next))
+    }
+
+    private fun moveSearchHorizontal(state: AppState, delta: Int): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        return if (screen.resultsFocused) {
+            if (delta < 0) Reduction(replaceSearch(state, screen.copy(resultsFocused = false))) else Reduction(state)
+        } else Reduction(replaceSearch(state, SearchKeyboard.moveHorizontal(screen, delta)))
+    }
+
+    private fun pressSearchKey(state: AppState, key: String): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        if (key !in SearchKeyboard.rows.flatten()) return Reduction(state)
+        return applySearchKey(state, screen, key)
+    }
+
+    private fun confirmSearch(state: AppState): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        if (!screen.resultsFocused) return applySearchKey(state, screen, SearchKeyboard.key(screen))
+        val result = ScreenContent.searchResults(state).getOrNull(state.selectedIndex) ?: return Reduction(state)
+        return when (result) {
+            is DeviceSearchResult.TrackResult -> Reduction(toNowPlaying(state), listOf(PlayCollection(listOf(result.track.id), 0)))
+            is DeviceSearchResult.AlbumResult -> push(state, Screen.AlbumSongs(result.key.title, result.key.albumArtist))
+            is DeviceSearchResult.ArtistResult -> push(state, Screen.ArtistAlbums(result.title))
+            is DeviceSearchResult.PlaylistResult -> push(state, Screen.PlaylistTracks(result.id, result.title))
+            is DeviceSearchResult.AudiobookResult -> push(state, Screen.AudiobookOptions(result.folderKey))
+        }
+    }
+
+    private fun confirmSearchLong(state: AppState): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        if (!screen.resultsFocused) return confirmSearch(state)
+        val result = ScreenContent.searchResults(state).getOrNull(state.selectedIndex) ?: return Reduction(state)
+        return when (result) {
+            is DeviceSearchResult.TrackResult -> push(state, Screen.TrackOptions(result.track.id))
+            is DeviceSearchResult.AlbumResult -> {
+                val ids = state.library.index.organization.albumTracks(LibraryScope.All, result.key).map(Track::id)
+                push(state, Screen.CollectionOptions(result.title, ids))
+            }
+            is DeviceSearchResult.ArtistResult -> {
+                val ids = state.library.index.organization.artistTracks(
+                    LibraryScope.All, result.title, state.preferences.albumSortOrder
+                ).map(Track::id)
+                push(state, Screen.CollectionOptions(result.title, ids))
+            }
+            is DeviceSearchResult.PlaylistResult -> push(
+                state,
+                Screen.CollectionOptions(result.title, state.library.playlistTrackIds[result.id].orEmpty())
+            )
+            is DeviceSearchResult.AudiobookResult -> push(state, Screen.AudiobookOptions(result.folderKey))
+        }
+    }
+
+    private fun applySearchKey(state: AppState, screen: Screen.Search, key: String): Reduction = when (key) {
+        SearchKeyboard.RESULTS -> if (ScreenContent.rows(state).isEmpty()) Reduction(state)
+            else Reduction(replaceSearch(state, screen.copy(resultsFocused = true)))
+        SearchKeyboard.DELETE -> updateSearchQuery(state, screen.query.dropLast(1))
+        SearchKeyboard.CLEAR -> updateSearchQuery(state, "")
+        SearchKeyboard.SPACE -> if (screen.query.isBlank() || screen.query.endsWith(' ')) Reduction(state)
+            else updateSearchQuery(state, screen.query + " ")
+        else -> if (screen.query.length >= MAX_SEARCH_QUERY_LENGTH) Reduction(state)
+            else updateSearchQuery(state, screen.query + key)
+    }
+
+    private fun updateSearchQuery(state: AppState, query: String): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        return Reduction(replaceSearch(state, screen.copy(query = query, resultsFocused = false), selectedIndex = 0))
+    }
+
+    private fun focusSearchResult(state: AppState, index: Int): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        val last = ScreenContent.rows(state).lastIndex
+        if (last < 0) return Reduction(state)
+        return Reduction(replaceSearch(state, screen.copy(resultsFocused = true), index.coerceIn(0, last)))
+    }
+
+    private fun backSearch(state: AppState): Reduction {
+        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
+        return when {
+            screen.resultsFocused -> Reduction(replaceSearch(state, screen.copy(resultsFocused = false)))
+            screen.query.isNotEmpty() -> updateSearchQuery(state, screen.query.dropLast(1))
+            else -> back(state)
+        }
+    }
+
+    private fun replaceSearch(state: AppState, screen: Screen.Search, selectedIndex: Int = state.selectedIndex): AppState =
+        state.copy(screenStack = state.screenStack.dropLast(1) + ScreenEntry(screen, selectedIndex))
+
+    private fun Int.sign(): Int = when {
+        this < 0 -> -1
+        this > 0 -> 1
+        else -> 0
+    }
+
     private fun confirm(state: AppState): Reduction {
         if (state.currentScreen == Screen.NowPlaying) return Reduction(state)
         val screenRows = ScreenContent.rows(state)
@@ -108,6 +213,7 @@ object AppReducer {
         val row = screenRows.getOrNull(state.selectedIndex) ?: return Reduction(state)
         return when (val screen = state.currentScreen) {
             Screen.MainMenu -> confirmMainMenu(state, row)
+            is Screen.Search -> confirmSearch(state)
             Screen.Music -> confirmMusic(state, row)
             Screen.Audiobooks -> confirmAudiobook(state, row)
             is Screen.AudiobookOptions -> confirmAudiobookOptions(state, screen, row)
@@ -193,6 +299,7 @@ object AppReducer {
         return when (key) {
             "music" -> push(state, Screen.Music)
             "audiobooks" -> Reduction(pushState(state, Screen.Audiobooks), listOf(RefreshAudiobooks))
+            "search" -> push(state, Screen.Search())
             "shuffle_all" -> Reduction(toNowPlaying(state), listOf(ShuffleAll))
             "settings" -> push(state, Screen.Settings)
             else -> Reduction(state)

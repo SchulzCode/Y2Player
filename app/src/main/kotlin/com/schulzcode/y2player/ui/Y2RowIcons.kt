@@ -70,6 +70,7 @@ object Y2RowIcons {
         "facet_albums" -> Y2Icon.ALBUM
         "facet_artist_all_tracks" -> Y2Icon.SONG
         "playlists" -> Y2Icon.PLAYLIST
+        "search" -> Y2Icon.SEARCH
         "folders" -> Y2Icon.FOLDER
         "favorites" -> Y2Icon.FAVORITE
         "recent" -> Y2Icon.RECENT
@@ -161,6 +162,11 @@ object Y2RowIcons {
         key.startsWith("brightness:") || key.startsWith("timeout:") -> Y2Icon.DISPLAY
         key.startsWith("sleep_timer_") -> Y2Icon.TIMER
         key.startsWith("eq_band:") || key.startsWith("eq_preset:") || key.startsWith("eq_level:") -> Y2Icon.EQUALIZER
+        key.startsWith("search_track:") -> Y2Icon.MUSIC
+        key.startsWith("search_album:") -> Y2Icon.ALBUM
+        key.startsWith("search_artist:") -> Y2Icon.ARTIST
+        key.startsWith("search_playlist:") -> Y2Icon.PLAYLIST
+        key.startsWith("search_audiobook:") -> Y2Icon.BOOK
         else -> Y2Icon.ACTION
     }
 }

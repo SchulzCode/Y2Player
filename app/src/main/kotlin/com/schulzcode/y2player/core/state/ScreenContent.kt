@@ -88,6 +88,7 @@ sealed interface ScreenGroupTarget {
 object ScreenContent {
     fun title(state: AppState): String = when (val screen = state.currentScreen) {
         Screen.MainMenu -> "Y2 Player"
+        is Screen.Search -> "Search"
         Screen.Music -> "Music"
         Screen.Audiobooks -> "Audiobooks"
         is Screen.AudiobookOptions -> audiobookName(state, screen.folderKey) ?: "Book"
@@ -185,6 +186,7 @@ object ScreenContent {
     }
 
     private fun contentRevision(state: AppState): Long = when (state.currentScreen) {
+        is Screen.Search -> state.library.revision
         Screen.RecentlyPlayed, Screen.Playlists, is Screen.PlaylistTracks,
         Screen.Audiobooks -> state.library.revision
         else -> state.library.tracksRevision
@@ -192,6 +194,7 @@ object ScreenContent {
 
     private fun buildRows(state: AppState): List<ScreenRow> = when (val screen = state.currentScreen) {
         Screen.MainMenu -> mainMenuRows(state)
+        is Screen.Search -> searchRows(state)
         Screen.Music -> musicRows(state)
         Screen.Audiobooks -> audiobookRows(state)
         is Screen.AudiobookOptions -> audiobookOptionRows(state, screen.folderKey)
@@ -308,12 +311,42 @@ object ScreenContent {
     private fun mainMenuRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"))
         add(ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"))
+        add(ScreenRow.Action("Search", "Find anything on this device", "search"))
         // Do not offer a destructive Shuffle All shortcut over a live or restored
         // session. Now Playing remains available through the playback panel.
         if (state.playback.currentTrackId == null && state.playback.queue.isEmpty()) {
             add(ScreenRow.Action("Shuffle All", "Every track in random order", "shuffle_all"))
         }
         add(ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings"))
+    }
+
+    internal fun searchResults(state: AppState): List<DeviceSearchResult> {
+        val screen = state.currentScreen as? Screen.Search ?: return emptyList()
+        return DeviceSearch.find(state.library, screen.query)
+    }
+
+    private fun searchRows(state: AppState): List<ScreenRow> = searchResults(state).mapIndexed { index, result ->
+        when (result) {
+            is DeviceSearchResult.TrackResult -> ScreenRow.Action(
+                result.title,
+                if (result.track.isAudiobookChapter) "Audiobook chapter · ${result.track.displayArtist}"
+                else "Song · ${result.track.displayArtist}",
+                "search_track:$index",
+                result.track.id
+            )
+            is DeviceSearchResult.AlbumResult -> ScreenRow.Action(
+                result.title, "Album · ${result.artist}", "search_album:$index", result.artworkTrackId
+            )
+            is DeviceSearchResult.ArtistResult -> ScreenRow.Action(
+                result.title, "Artist", "search_artist:$index", result.artworkTrackId
+            )
+            is DeviceSearchResult.PlaylistResult -> ScreenRow.Action(
+                result.title, "Playlist · ${trackCountLabel(result.trackCount)}", "search_playlist:$index"
+            )
+            is DeviceSearchResult.AudiobookResult -> ScreenRow.Action(
+                result.title, "Audiobook", "search_audiobook:$index", result.artworkTrackId
+            )
+        }
     }
 
     fun selectedCollection(state: AppState): Pair<String, List<Long>>? {
@@ -1595,6 +1628,7 @@ object ScreenContent {
     private fun isLargeScreen(screen: Screen): Boolean = when (screen) {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
         Screen.Genres, Screen.Years, Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
+        is Screen.Search -> true
         is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
         is Screen.FacetMenu, is Screen.FacetArtists, is Screen.FacetAlbums,
         is Screen.FacetArtistAlbums, is Screen.FacetTracks,
