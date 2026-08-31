@@ -1021,6 +1021,7 @@ class Y2PlayerView(
     }
 
     private fun drawEmptyState(canvas: Canvas) {
+        val search = state.currentScreen as? Screen.Search
         val storageAvailable = state.device.internalStorageAvailable || state.device.removableStorageAvailable
         val kind = Y2UiLogic.emptyState(
             scanning = state.library.isScanning,
@@ -1038,7 +1039,11 @@ class Y2PlayerView(
         val title: String
         val detail: String
         val icon: Y2Icon
-        when (kind) {
+        if (search != null) {
+            title = if (search.query.isBlank()) "Search your device" else "No search results"
+            detail = if (search.query.isBlank()) "Use the keyboard below to begin" else "Try another word or spelling"
+            icon = Y2Icon.SEARCH
+        } else when (kind) {
             EmptyStateKind.SCANNING -> {
                 title = "Scanning music"
                 detail = "Building your library safely"
@@ -1101,7 +1106,7 @@ class Y2PlayerView(
         paint.textSize = Y2UiTheme.BODY_SP * density
         paint.color = palette.secondaryText
         canvas.drawText(ellipsize(detail, width - 34f * density, paint), centerX, centerY + 32f * density, paint)
-        val emptyAction = Y2UiLogic.emptyStateAction(kind)
+        val emptyAction = if (search != null) EmptyStateAction.NONE else Y2UiLogic.emptyStateAction(kind)
         if (emptyAction != EmptyStateAction.NONE) {
             val action = when (emptyAction) {
                 EmptyStateAction.OPEN_STORAGE -> "CENTER · OPEN STORAGE"
@@ -2046,7 +2051,7 @@ class Y2PlayerView(
             state.currentScreen is Screen.Search -> if ((state.currentScreen as Screen.Search).resultsFocused) {
                 "WHEEL RESULTS · CENTER OPEN · BACK KEYBOARD"
             } else {
-                "WHEEL ↑↓ · L/R MOVE · CENTER TYPE · BACK DELETE"
+                "WHEEL KEYS · CENTER TYPE · TOP DELETE"
             }
             state.currentScreen is Screen.QueueMove -> "WHEEL MOVE · CENTER CONFIRM · BACK CANCEL"
             state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER CHOOSE · L/R TRACK"

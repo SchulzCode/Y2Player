@@ -15,12 +15,6 @@ internal object SearchKeyboard {
 
     fun key(screen: Screen.Search): String = rows[screen.keyboardRow][screen.keyboardColumn]
 
-    fun moveHorizontal(screen: Screen.Search, delta: Int): Screen.Search {
-        val row = rows[screen.keyboardRow]
-        val column = ((screen.keyboardColumn + delta) % row.size + row.size) % row.size
-        return screen.copy(keyboardColumn = column)
-    }
-
     fun moveLinear(screen: Screen.Search, delta: Int, wrap: Boolean): Screen.Search {
         val current = rows.take(screen.keyboardRow).sumOf(List<String>::size) + screen.keyboardColumn
         val total = rows.sumOf(List<String>::size)
