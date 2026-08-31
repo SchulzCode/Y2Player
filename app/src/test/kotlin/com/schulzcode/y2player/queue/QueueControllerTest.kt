@@ -83,6 +83,34 @@ class QueueControllerTest {
         assertEquals(listOf(1L, 2L, 3L, 4L, 5L), queue.visibleIds())
     }
 
+    @Test fun disablingShuffleContinuesAfterTheCurrentPlaylistTrack() {
+        val queue = shuffledQueueAt(trackId = 4)
+
+        queue.toggleShuffle()
+
+        assertEquals(4L, queue.currentTrackId())
+        assertEquals(listOf(4L, 5L), queue.visibleIds())
+        assertEquals(5L, queue.next())
+    }
+
+    @Test fun disablingShuffleAtTheLastPlaylistTrackDoesNotRestartAtTrackOne() {
+        val queue = shuffledQueueAt(trackId = 5)
+
+        queue.toggleShuffle()
+
+        assertEquals(listOf(5L), queue.visibleIds())
+        assertNull(queue.next())
+    }
+
+    @Test fun disablingShuffleKeepsFutureUpNextAheadOfTheOrderedContinuation() {
+        val queue = shuffledQueueAt(trackId = 2)
+        queue.addToUpNext(listOf(80, 81))
+
+        queue.toggleShuffle()
+
+        assertEquals(listOf(2L, 80L, 81L, 3L, 4L, 5L), queue.visibleIds())
+    }
+
     @Test fun repeatAllDoesNotRepeatManualEntries() {
         val queue = QueueController(
             initialItems = listOf(1, 2), initialIndex = 0, initialRepeatMode = RepeatMode.ALL
@@ -196,5 +224,23 @@ class QueueControllerTest {
         assertNull(queue.peekNextInCurrentPass())
         assertNull(queue.nextInCurrentPass())
         assertEquals(20L, queue.currentTrackId())
+    }
+
+    private fun shuffledQueueAt(trackId: Long): QueueController {
+        val shuffled = listOf(4L, 2L, 1L, 3L, 5L).map { id ->
+            QueueEntry(id, id, QueueOrigin.CONTINUATION, sourceOrder = id.toInt() - 1)
+        }
+        return QueueController().apply {
+            restore(
+                shuffled,
+                PersistedPlaybackSession(
+                    currentEntryId = trackId,
+                    positionMs = 0,
+                    repeatMode = RepeatMode.OFF,
+                    shuffleEnabled = true,
+                    shuffleSeed = 7
+                )
+            )
+        }
     }
 }
