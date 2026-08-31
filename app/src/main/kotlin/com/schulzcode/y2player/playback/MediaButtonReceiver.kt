@@ -28,6 +28,12 @@ class MediaButtonReceiver : BroadcastReceiver() {
             scanCode = event.scanCode,
             fromLocalKeypad = fromLocalKeypad
         ) ?: return logRejected(context, "unmapped_key", source, event)
+        // The vendor rebroadcasts the same physical keypad stream delivered to the foreground
+        // activity. Letting that fallback path act while the display is usable turns the first
+        // edge of a hold into Previous/Next before the activity can classify it as a seek.
+        if (HardwareKeyGate.shouldDeferLocalBroadcastToActivity(context, source, fromLocalKeypad)) {
+            return logRejected(context, "activity_owns_local_key", source, event)
+        }
         val localKeysWhileScreenOff = (context.applicationContext as? Y2Application)
             ?.container?.preferences?.snapshot()?.localKeysWhileScreenOff ?: false
         if (!serviceRequest.isVolumeAdjustment && !HardwareKeyGate.isInputAllowed(

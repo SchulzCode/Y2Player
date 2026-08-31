@@ -101,6 +101,7 @@ class MainActivity : Activity() {
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             playbackBinder?.cancelVolumeKeyRepeat()
+            HardwareKeyGate.invalidateScreenState()
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> playerView.setTextAnimationsVisible(false)
                 Intent.ACTION_SCREEN_ON -> playerView.setTextAnimationsVisible(true)
@@ -300,6 +301,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        HardwareKeyGate.invalidateScreenState()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_RESUME)
         val currentPreferences = preferences.snapshot()
         val systemHaptics = systemHapticsController.suppress()

@@ -238,6 +238,38 @@ class HardwareKeyGateTest {
         )
     }
 
+    @Test fun unlockedActivityOwnsLocalVendorBroadcasts() {
+        assertTrue(HardwareKeyGate.shouldDeferLocalBroadcastToActivity(
+            HardwareKeyGate.Source.Y2_BROADCAST,
+            fromLocalKeypad = true,
+            screenOn = true,
+            keyguardLocked = false
+        ))
+        assertFalse(HardwareKeyGate.shouldDeferLocalBroadcastToActivity(
+            HardwareKeyGate.Source.Y2_BROADCAST,
+            fromLocalKeypad = true,
+            screenOn = false,
+            keyguardLocked = true
+        ))
+    }
+
+    @Test fun remoteAndFrameworkMediaBroadcastsNeverDeferToTheActivity() {
+        listOf(HardwareKeyGate.Source.MEDIA_BROADCAST, HardwareKeyGate.Source.Y2_BROADCAST).forEach { source ->
+            assertFalse(HardwareKeyGate.shouldDeferLocalBroadcastToActivity(
+                source,
+                fromLocalKeypad = false,
+                screenOn = true,
+                keyguardLocked = false
+            ))
+        }
+        assertFalse(HardwareKeyGate.shouldDeferLocalBroadcastToActivity(
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            fromLocalKeypad = true,
+            screenOn = true,
+            keyguardLocked = false
+        ))
+    }
+
     @Test fun screenOffHeadsetTransportIsAllowedOnBothChannels() {
         listOf(HardwareKeyGate.Source.MEDIA_BROADCAST, HardwareKeyGate.Source.Y2_BROADCAST).forEach { source ->
             transportKeys.forEach { keyCode ->
