@@ -95,16 +95,12 @@ enum class PlaybackExitReason(val code: String) {
     UNKNOWN("unknown")
 }
 
-enum class SleepTimerMode(val label: String, val durationMs: Long? = null) {
+enum class SleepTimerMode(val label: String) {
     OFF("Off"),
-    MINUTES_15("15 minutes", 15 * 60_000L),
-    MINUTES_30("30 minutes", 30 * 60_000L),
-    MINUTES_60("60 minutes", 60 * 60_000L),
+    MINUTES("Minutes"),
     END_TRACK("End of track"),
     END_ALBUM("End of album"),
-    END_QUEUE("End of queue");
-
-    fun next(): SleepTimerMode = values()[(ordinal + 1) % values().size]
+    END_QUEUE("End of queue")
 }
 
 data class AudioEffectsState(
@@ -142,6 +138,7 @@ data class PlaybackSnapshot(
     val pauseReason: PauseReason = PauseReason.NONE,
     val errorMessage: String? = null,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
+    val sleepTimerConfiguredMinutes: Int? = null,
     val sleepTimerDeadlineElapsedMs: Long? = null,
     val sleepTimerRemainingMs: Long? = null,
     val outputRoute: AudioOutputRoute = AudioOutputRoute.UNKNOWN,

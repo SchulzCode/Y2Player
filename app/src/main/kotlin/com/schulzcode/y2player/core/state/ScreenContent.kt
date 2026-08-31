@@ -11,6 +11,7 @@ import com.schulzcode.y2player.core.model.CodecSupport
 import com.schulzcode.y2player.core.model.LibraryScope
 import com.schulzcode.y2player.core.model.NaturalTextOrder
 import com.schulzcode.y2player.core.model.RepeatMode
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.QueueEntry
 import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.Track
@@ -122,6 +123,7 @@ object ScreenContent {
         Screen.QueueManagement -> "Queue"
         Screen.NowPlaying -> "Now Playing"
         Screen.NowPlayingOptions -> "Playback Options"
+        Screen.SleepTimer -> "Sleep Timer"
         Screen.Queue -> "Queue"
         Screen.Audio -> "Audio"
         Screen.Settings -> "Settings"
@@ -223,6 +225,7 @@ object ScreenContent {
         Screen.Queue -> queueRows(state)
         Screen.NowPlaying -> emptyList()
         Screen.NowPlayingOptions -> nowPlayingOptionsRows(state)
+        Screen.SleepTimer -> sleepTimerRows(state)
         Screen.Audio -> audioRows(state)
         Screen.Settings -> settingsRows(state)
         Screen.PlaybackTransitions -> playbackTransitionRows(state)
@@ -706,6 +709,33 @@ object ScreenContent {
                 add(ScreenRow.Action("Track Options", track.title, "np_track_options:${track.id}"))
             }
         }
+    }
+
+    private fun sleepTimerRows(state: AppState): List<ScreenRow> = buildList {
+        fun addChoice(title: String, key: String, active: Boolean) {
+            add(ScreenRow.Action(title, if (active) "Active" else null, key))
+        }
+        val playback = state.playback
+        addChoice("Off", "sleep_timer_off", playback.sleepTimerMode == SleepTimerMode.OFF)
+        addChoice("End of track", "sleep_timer_end_track", playback.sleepTimerMode == SleepTimerMode.END_TRACK)
+        addChoice("End of album", "sleep_timer_end_album", playback.sleepTimerMode == SleepTimerMode.END_ALBUM)
+        addChoice("End of queue", "sleep_timer_end_queue", playback.sleepTimerMode == SleepTimerMode.END_QUEUE)
+        for (minutes in 1..60) {
+            addChoice(
+                if (minutes == 1) "1 minute" else "$minutes minutes",
+                "sleep_timer_minutes:$minutes",
+                playback.sleepTimerMode == SleepTimerMode.MINUTES &&
+                    playback.sleepTimerConfiguredMinutes == minutes
+            )
+        }
+    }
+
+    fun sleepTimerSelectionIndex(state: AppState): Int = when (state.playback.sleepTimerMode) {
+        SleepTimerMode.OFF -> 0
+        SleepTimerMode.END_TRACK -> 1
+        SleepTimerMode.END_ALBUM -> 2
+        SleepTimerMode.END_QUEUE -> 3
+        SleepTimerMode.MINUTES -> 3 + (state.playback.sleepTimerConfiguredMinutes ?: 5).coerceIn(1, 60)
     }
 
     private fun playingNextLabel(state: AppState): String {

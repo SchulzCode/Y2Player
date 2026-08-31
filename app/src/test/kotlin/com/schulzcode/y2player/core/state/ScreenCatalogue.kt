@@ -47,6 +47,7 @@ object ScreenCatalogue {
         put(Screen.QueueManagement)
         put(Screen.NowPlaying)
         put(Screen.NowPlayingOptions)
+        put(Screen.SleepTimer)
         put(Screen.Queue)
         put(Screen.Audio)
         put(Screen.Settings)

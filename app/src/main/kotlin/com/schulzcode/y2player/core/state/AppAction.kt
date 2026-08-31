@@ -3,6 +3,7 @@ package com.schulzcode.y2player.core.state
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
@@ -104,7 +105,7 @@ sealed interface AppEffect {
     data object CycleReplayGain : AppEffect
     data object CycleHapticLevel : AppEffect
     data object ToggleWrapLists : AppEffect
-    data object CycleSleepTimer : AppEffect
+    data class SetSleepTimer(val mode: SleepTimerMode, val minutes: Int? = null) : AppEffect
     data object CycleAudioQuality : AppEffect
     data object ToggleAudioEffects : AppEffect
     data object CycleEqualizerPreset : AppEffect

@@ -19,12 +19,18 @@ internal class SleepTimerController {
 
     var mode: SleepTimerMode = SleepTimerMode.OFF
         private set
+    var configuredMinutes: Int? = null
+        private set
     var deadlineElapsedMs: Long? = null
         private set
 
-    fun cycle(nowElapsedMs: Long): ScheduledSleepTimer? {
-        mode = mode.next()
-        deadlineElapsedMs = mode.durationMs?.let { nowElapsedMs + it }
+    fun set(mode: SleepTimerMode, minutes: Int?, nowElapsedMs: Long): ScheduledSleepTimer? {
+        val safeMinutes = if (mode == SleepTimerMode.MINUTES) {
+            (minutes ?: DEFAULT_MINUTES).coerceIn(MIN_MINUTES, MAX_MINUTES)
+        } else null
+        this.mode = mode
+        configuredMinutes = safeMinutes.takeIf { mode == SleepTimerMode.MINUTES }
+        deadlineElapsedMs = configuredMinutes?.let { nowElapsedMs + it * 60_000L }
         val value = generation.advance()
         return deadlineElapsedMs?.let { deadline ->
             ScheduledSleepTimer(value, (deadline - nowElapsedMs).coerceAtLeast(1L))
@@ -43,12 +49,20 @@ internal class SleepTimerController {
     fun clear() {
         generation.advance()
         mode = SleepTimerMode.OFF
+        configuredMinutes = null
         deadlineElapsedMs = null
     }
 
     fun applyTo(snapshot: PlaybackSnapshot, nowElapsedMs: Long): PlaybackSnapshot = snapshot.copy(
         sleepTimerMode = mode,
+        sleepTimerConfiguredMinutes = configuredMinutes,
         sleepTimerDeadlineElapsedMs = deadlineElapsedMs,
         sleepTimerRemainingMs = deadlineElapsedMs?.let { (it - nowElapsedMs).coerceAtLeast(0L) }
     )
+
+    companion object {
+        const val MIN_MINUTES = 1
+        const val MAX_MINUTES = 60
+        const val DEFAULT_MINUTES = 5
+    }
 }

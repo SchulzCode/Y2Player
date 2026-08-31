@@ -157,7 +157,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             afterQueueMutation()
         }
 
-        fun cycleSleepTimer() = post(::cycleSleepTimerInternal)
+        fun setSleepTimer(mode: SleepTimerMode, minutes: Int? = null) =
+            post { setSleepTimerInternal(mode, minutes) }
 
         fun applyPreferences(value: PlayerPreferencesState) = post {
             applyPreferencesInternal(value)
@@ -1749,10 +1750,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         return engine.durationMs().takeIf { it > 0 } ?: snapshot.durationMs
     }
 
-    private fun cycleSleepTimerInternal() {
+    private fun setSleepTimerInternal(mode: SleepTimerMode, minutes: Int?) {
         sleepTimerCallback?.let(playbackHandler::removeCallbacks)
         sleepTimerCallback = null
-        sleepTimer.cycle(SystemClock.elapsedRealtime())?.let { scheduled ->
+        sleepTimer.set(mode, minutes, SystemClock.elapsedRealtime())?.let { scheduled ->
             val callback = object : Runnable {
                 override fun run() {
                     when (val tick = sleepTimer.onTimer(scheduled.generation, SystemClock.elapsedRealtime())) {

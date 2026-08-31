@@ -159,6 +159,7 @@ object Y2RowIcons {
         key.startsWith("sort:") -> Y2Icon.SORT
         key.startsWith("balance:") -> Y2Icon.VOLUME
         key.startsWith("brightness:") || key.startsWith("timeout:") -> Y2Icon.DISPLAY
+        key.startsWith("sleep_timer_") -> Y2Icon.TIMER
         key.startsWith("eq_band:") -> Y2Icon.EQUALIZER
         else -> Y2Icon.ACTION
     }

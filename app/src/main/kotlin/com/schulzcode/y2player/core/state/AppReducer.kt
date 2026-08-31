@@ -4,6 +4,7 @@ import com.schulzcode.y2player.core.model.PlaybackStatus
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.LibraryScope
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.core.state.AppEffect.*
 import com.schulzcode.y2player.core.state.ScreenRow.Action
@@ -151,6 +152,7 @@ object AppReducer {
                 else -> Reduction(state)
             }
             Screen.NowPlayingOptions -> confirmNowPlayingOptions(state, row)
+            Screen.SleepTimer -> confirmSleepTimer(state, row)
             Screen.Audio -> confirmAudio(state, row)
             Screen.Settings -> confirmSettings(state, row)
             Screen.PlaybackTransitions, Screen.PlaybackSeeking, Screen.PlaybackVolume,
@@ -792,7 +794,11 @@ object AppReducer {
         return when {
             key == "shuffle" -> Reduction(state, listOf(ToggleShuffle))
             key == "repeat" -> Reduction(state, listOf(CycleRepeat))
-            key == "sleep_timer" -> Reduction(state, listOf(CycleSleepTimer))
+            key == "sleep_timer" -> push(
+                state,
+                Screen.SleepTimer,
+                selectedIndex = ScreenContent.sleepTimerSelectionIndex(state)
+            )
             key == "queue" -> push(state, Screen.Queue, selectedIndex = 1)
             key.startsWith("np_audiobook_chapters:") ->
                 push(state, Screen.AudiobookChapters(key.substringAfter(':')))
@@ -814,6 +820,22 @@ object AppReducer {
             }
             else -> Reduction(state)
         }
+    }
+
+    private fun confirmSleepTimer(state: AppState, row: ScreenRow): Reduction {
+        val key = (row as? Action)?.key ?: return Reduction(state)
+        val effect = when {
+            key == "sleep_timer_off" -> SetSleepTimer(SleepTimerMode.OFF)
+            key == "sleep_timer_end_track" -> SetSleepTimer(SleepTimerMode.END_TRACK)
+            key == "sleep_timer_end_album" -> SetSleepTimer(SleepTimerMode.END_ALBUM)
+            key == "sleep_timer_end_queue" -> SetSleepTimer(SleepTimerMode.END_QUEUE)
+            key.startsWith("sleep_timer_minutes:") -> {
+                val minutes = key.substringAfter(':').toIntOrNull() ?: return Reduction(state)
+                SetSleepTimer(SleepTimerMode.MINUTES, minutes)
+            }
+            else -> return Reduction(state)
+        }
+        return Reduction(pop(state), listOf(effect))
     }
 
     private fun playSelected(state: AppState): Reduction {
