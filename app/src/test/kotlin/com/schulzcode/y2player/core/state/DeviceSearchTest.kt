@@ -4,6 +4,7 @@ import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.PlaylistSummary
 import com.schulzcode.y2player.core.model.Track
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,6 +32,34 @@ class DeviceSearchTest {
 
     @Test fun `blank queries do not enumerate the library`() {
         assertTrue(DeviceSearch.find(library, "   ").isEmpty())
+    }
+
+    @Test fun `index is reused across key presses and query results are cached`() {
+        DeviceSearch.clearCacheForTests()
+        val first = DeviceSearch.find(library, "b")
+        DeviceSearch.find(library, "be")
+        val repeated = DeviceSearch.find(library, "b")
+
+        assertEquals(1, DeviceSearch.indexBuildCountForTests())
+        assertSame(first, repeated)
+    }
+
+    @Test fun `a changed library builds a fresh index`() {
+        DeviceSearch.clearCacheForTests()
+        DeviceSearch.find(library, "halo")
+        val updated = LibraryState(tracks = library.tracks + track(3, "New Song", "Artist", "Album", "Music/New.mp3"))
+        assertTrue(DeviceSearch.find(updated, "new").any { it.title == "New Song" })
+        assertEquals(2, DeviceSearch.indexBuildCountForTests())
+    }
+
+    @Test fun `top one hundred preserves library order for equal matches`() {
+        val duplicates = (1L..150L).map { id ->
+            track(id, "Same title", "Same artist", "Same album", "Music/$id.mp3")
+        }
+        val ids = DeviceSearch.find(LibraryState(tracks = duplicates), "same title")
+            .filterIsInstance<DeviceSearchResult.TrackResult>()
+            .map { it.track.id }
+        assertEquals((1L..100L).toList(), ids)
     }
 
     private fun track(id: Long, title: String, artist: String, album: String, relativePath: String) = Track(
