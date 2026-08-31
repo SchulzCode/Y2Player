@@ -22,7 +22,7 @@ object AppReducer {
         AppAction.EndAlphabetScrub -> Reduction(clearAlphabetScrub(state))
         AppAction.Confirm -> if (state.currentScreen is Screen.Search) confirmSearch(state) else confirm(clearAlphabetScrub(state))
         AppAction.ConfirmLong -> if (state.currentScreen is Screen.Search) confirmSearchLong(state) else confirmLong(clearAlphabetScrub(state))
-        AppAction.ShowNowPlaying -> showNowPlaying(clearAlphabetScrub(state))
+        AppAction.ShowNowPlaying -> if (state.currentScreen is Screen.Search) Reduction(state) else showNowPlaying(clearAlphabetScrub(state))
         AppAction.Back -> if (state.transientMessage != null) {
             Reduction(clearAlphabetScrub(state).copy(transientMessage = null))
         } else {
@@ -32,16 +32,16 @@ object AppReducer {
             if (state.screenStack.size == 1 && state.currentScreen == Screen.MainMenu) clearAlphabetScrub(state)
             else clearAlphabetScrub(state).copy(screenStack = listOf(ScreenEntry(Screen.MainMenu)))
         )
-        AppAction.Left -> if (state.currentScreen is Screen.Search) moveSearchHorizontal(state, -1) else Reduction(state, listOf(PreviousTrack))
-        AppAction.Right -> if (state.currentScreen is Screen.Search) moveSearchHorizontal(state, 1) else Reduction(state, listOf(NextTrack))
-        AppAction.PlayPause -> Reduction(state, listOf(TogglePlayback))
+        AppAction.Left -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(PreviousTrack))
+        AppAction.Right -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(NextTrack))
+        AppAction.PlayPause -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(TogglePlayback))
         AppAction.MediaNext -> Reduction(state, listOf(NextTrack))
         AppAction.MediaPrevious -> Reduction(state, listOf(PreviousTrack))
         AppAction.MediaStop -> if (state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PLAYING || state.playback.status == com.schulzcode.y2player.core.model.PlaybackStatus.PREPARING) Reduction(state, listOf(TogglePlayback)) else Reduction(state)
-        AppAction.SeekBackward -> Reduction(state, listOf(SeekBy(-state.preferences.seekStepMs.toLong())))
-        AppAction.SeekForward -> Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong())))
-        AppAction.SeekBackwardLong -> Reduction(state, listOf(SeekBy(-state.preferences.longSeekStepMs.toLong())))
-        AppAction.SeekForwardLong -> Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong())))
+        AppAction.SeekBackward -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(SeekBy(-state.preferences.seekStepMs.toLong())))
+        AppAction.SeekForward -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(SeekBy(state.preferences.seekStepMs.toLong())))
+        AppAction.SeekBackwardLong -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(SeekBy(-state.preferences.longSeekStepMs.toLong())))
+        AppAction.SeekForwardLong -> if (state.currentScreen is Screen.Search) Reduction(state) else Reduction(state, listOf(SeekBy(state.preferences.longSeekStepMs.toLong())))
         is AppAction.LibraryChanged -> Reduction(preserveSelection(state, state.copy(library = action.library, alphabetScrub = null)))
         is AppAction.PlaybackChanged -> Reduction(playbackChanged(state, action.playback))
         is AppAction.DeviceChanged -> Reduction(preserveSelection(state, state.copy(device = action.device)))
@@ -116,13 +116,6 @@ object AppReducer {
         if (count == 0) return Reduction(replaceSearch(state, screen.copy(resultsFocused = false)))
         val next = ListNavigationPolicy.nextIndex(screen, state.selectedIndex, delta, count, state.preferences.wrapLists)
         return Reduction(setSelected(state, next))
-    }
-
-    private fun moveSearchHorizontal(state: AppState, delta: Int): Reduction {
-        val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
-        return if (screen.resultsFocused) {
-            if (delta < 0) Reduction(replaceSearch(state, screen.copy(resultsFocused = false))) else Reduction(state)
-        } else Reduction(replaceSearch(state, SearchKeyboard.moveHorizontal(screen, delta)))
     }
 
     private fun pressSearchKey(state: AppState, key: String): Reduction {

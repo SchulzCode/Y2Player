@@ -63,15 +63,36 @@ class SearchFlowTest {
         assertEquals(Screen.MainMenu, AppReducer.reduce(erased, AppAction.Back).state.currentScreen)
     }
 
-    @Test fun `wheel traverses every key while horizontal buttons stay within a row`() {
+    @Test fun `wheel traverses every key while side buttons do nothing`() {
         val state = AppState(screenStack = listOf(ScreenEntry(Screen.Search())))
-        val right = AppReducer.reduce(state, AppAction.Right).state.currentScreen as Screen.Search
-        assertEquals("W", SearchKeyboard.key(right))
+        assertEquals(state, AppReducer.reduce(state, AppAction.Left).state)
+        assertEquals(state, AppReducer.reduce(state, AppAction.Right).state)
 
         val wheelOne = AppReducer.reduce(state, AppAction.WheelMoved(1)).state.currentScreen as Screen.Search
         assertEquals("W", SearchKeyboard.key(wheelOne))
         val wheelTen = AppReducer.reduce(state, AppAction.WheelMoved(10)).state.currentScreen as Screen.Search
         assertEquals("A", SearchKeyboard.key(wheelTen))
+    }
+
+    @Test fun `side and bottom button presses and holds do nothing in search`() {
+        val state = AppState(screenStack = listOf(
+            ScreenEntry(Screen.MainMenu),
+            ScreenEntry(Screen.Search(query = "QUEEN"))
+        ))
+        listOf(
+            AppAction.Left,
+            AppAction.Right,
+            AppAction.SeekBackward,
+            AppAction.SeekForward,
+            AppAction.SeekBackwardLong,
+            AppAction.SeekForwardLong,
+            AppAction.PlayPause,
+            AppAction.ShowNowPlaying
+        ).forEach { action ->
+            val reduction = AppReducer.reduce(state, action)
+            assertEquals(action.toString(), state, reduction.state)
+            assertTrue(action.toString(), reduction.effects.isEmpty())
+        }
     }
 
     @Test fun `keyboard wheel follows the global wrapping preference`() {
