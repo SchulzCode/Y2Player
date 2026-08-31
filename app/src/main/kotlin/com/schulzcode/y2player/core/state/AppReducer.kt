@@ -107,7 +107,10 @@ object AppReducer {
     private fun moveSearch(state: AppState, delta: Int): Reduction {
         val screen = state.currentScreen as? Screen.Search ?: return Reduction(state)
         if (!screen.resultsFocused) {
-            return Reduction(replaceSearch(state, SearchKeyboard.moveVertical(screen, delta.sign())))
+            return Reduction(replaceSearch(
+                state,
+                SearchKeyboard.moveLinear(screen, delta, state.preferences.wrapLists)
+            ))
         }
         val count = ScreenContent.rows(state).size
         if (count == 0) return Reduction(replaceSearch(state, screen.copy(resultsFocused = false)))
@@ -199,12 +202,6 @@ object AppReducer {
 
     private fun replaceSearch(state: AppState, screen: Screen.Search, selectedIndex: Int = state.selectedIndex): AppState =
         state.copy(screenStack = state.screenStack.dropLast(1) + ScreenEntry(screen, selectedIndex))
-
-    private fun Int.sign(): Int = when {
-        this < 0 -> -1
-        this > 0 -> 1
-        else -> 0
-    }
 
     private fun confirm(state: AppState): Reduction {
         if (state.currentScreen == Screen.NowPlaying) return Reduction(state)
