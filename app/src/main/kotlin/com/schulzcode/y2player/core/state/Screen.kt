@@ -60,8 +60,10 @@ sealed interface Screen {
     data object PlaybackInterruptions : Screen
     data object SoundEffects : Screen
     data object EqualizerSettings : Screen
+    data object EqualizerPresets : Screen
     data object OutputInformation : Screen
     data object EqualizerBands : Screen
+    data class EqualizerBandLevel(val bandIndex: Int) : Screen
     data object SortOrder : Screen
     data object TrackSorting : Screen
     data object AlbumSorting : Screen
@@ -138,8 +140,10 @@ val Screen.code: String get() = when (this) {
     Screen.PlaybackInterruptions -> "playback_interruptions"
     Screen.SoundEffects -> "sound_effects"
     Screen.EqualizerSettings -> "equalizer_settings"
+    Screen.EqualizerPresets -> "equalizer_presets"
     Screen.OutputInformation -> "output_information"
     Screen.EqualizerBands -> "equalizer_bands"
+    is Screen.EqualizerBandLevel -> "equalizer_band_level"
     Screen.SortOrder -> "sort_order"
     Screen.TrackSorting -> "track_sorting"
     Screen.AlbumSorting -> "album_sorting"

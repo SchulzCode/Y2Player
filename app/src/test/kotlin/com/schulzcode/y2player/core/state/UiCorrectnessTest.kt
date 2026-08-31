@@ -168,7 +168,8 @@ class UiCorrectnessTest {
         val settingsScreens = listOf(
             Screen.Settings, Screen.Audio, Screen.OutputInformation, Screen.PlaybackTransitions,
             Screen.PlaybackSeeking, Screen.PlaybackVolume, Screen.PlaybackInterruptions,
-            Screen.SoundEffects, Screen.EqualizerSettings, Screen.SortOrder, Screen.Bluetooth,
+            Screen.SoundEffects, Screen.EqualizerSettings, Screen.EqualizerPresets,
+            Screen.EqualizerBandLevel(0), Screen.SortOrder, Screen.Bluetooth,
             Screen.InterfaceSettings, Screen.LibrarySettings, Screen.Display, Screen.Controls,
             Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.PlaybackHistory,
             Screen.System, Screen.Diagnostics, Screen.Reset, Screen.About
@@ -247,8 +248,8 @@ class UiCorrectnessTest {
         Screen.NowPlayingOptions, Screen.Queue, Screen.Audio, Screen.Settings,
         Screen.PlaybackTransitions, Screen.PlaybackSeeking,
         Screen.PlaybackVolume, Screen.PlaybackInterruptions, Screen.SoundEffects,
-        Screen.EqualizerSettings, Screen.OutputInformation,
-        Screen.EqualizerBands, Screen.SortOrder, Screen.Bluetooth,
+        Screen.EqualizerSettings, Screen.EqualizerPresets, Screen.OutputInformation,
+        Screen.EqualizerBands, Screen.EqualizerBandLevel(0), Screen.SortOrder, Screen.Bluetooth,
         Screen.BluetoothDevice("AA:BB:CC:DD:EE:FF"), Screen.ConfirmAction("forget_device:AA:BB"),
         Screen.InterfaceSettings, Screen.LibrarySettings, Screen.Display, Screen.Controls,
         Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.Storage,

@@ -108,8 +108,8 @@ sealed interface AppEffect {
     data class SetSleepTimer(val mode: SleepTimerMode, val minutes: Int? = null) : AppEffect
     data object CycleAudioQuality : AppEffect
     data object ToggleAudioEffects : AppEffect
-    data object CycleEqualizerPreset : AppEffect
-    data class AdjustEqualizerBand(val index: Int, val deltaSteps: Int) : AppEffect
+    data class SetEqualizerPreset(val index: Int) : AppEffect
+    data class SetEqualizerBand(val index: Int, val levelMb: Int) : AppEffect
     data object CycleBassStrength : AppEffect
     data object CycleLoudnessGain : AppEffect
     data class SetSortOrder(val order: TrackSortOrder) : AppEffect

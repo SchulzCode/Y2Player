@@ -159,8 +159,10 @@ object AppReducer {
             Screen.PlaybackInterruptions -> confirmPlaybackPreference(state, row)
             Screen.SoundEffects -> confirmSoundEffects(state, row)
             Screen.EqualizerSettings -> confirmEqualizerSettings(state, row)
+            Screen.EqualizerPresets -> confirmEqualizerPreset(state, row)
             Screen.OutputInformation -> confirmOutput(state, row)
             Screen.EqualizerBands -> confirmEqualizerBands(state, row)
+            is Screen.EqualizerBandLevel -> confirmEqualizerBandLevel(state, screen, row)
             Screen.SortOrder -> confirmSortOrder(state, row)
             Screen.TrackSorting -> confirmTrackSorting(state, row)
             Screen.AlbumSorting -> confirmAlbumSorting(state, row)
@@ -421,15 +423,42 @@ object AppReducer {
     private fun confirmEqualizerSettings(state: AppState, row: ScreenRow): Reduction {
         val key = (row as? Action)?.key ?: return Reduction(state)
         return when (key) {
-            "eq_preset" -> Reduction(state, listOf(CycleEqualizerPreset))
+            "eq_preset" -> push(
+                state,
+                Screen.EqualizerPresets,
+                selectedIndex = (state.preferences.equalizerPreset + 1)
+                    .coerceIn(0, state.playback.audioEffects.presetNames.size)
+            )
             "eq_bands" -> push(state, Screen.EqualizerBands)
             else -> Reduction(state)
         }
     }
 
+    private fun confirmEqualizerPreset(state: AppState, row: ScreenRow): Reduction {
+        val index = (row as? Action)?.key?.substringAfter("eq_preset:", "")?.toIntOrNull()
+            ?: return Reduction(state)
+        if (index !in -1 until state.playback.audioEffects.presetNames.size) return Reduction(state)
+        return Reduction(pop(state), listOf(SetEqualizerPreset(index)))
+    }
+
     private fun confirmEqualizerBands(state: AppState, row: ScreenRow): Reduction {
         val index = (row as? Action)?.key?.substringAfter("eq_band:", "")?.toIntOrNull() ?: return Reduction(state)
-        return Reduction(state, listOf(AdjustEqualizerBand(index, 1)))
+        if (index !in state.playback.audioEffects.bandFrequenciesHz.indices) return Reduction(state)
+        val levels = ScreenContent.equalizerBandLevels(state)
+        val current = ScreenContent.equalizerBandLevel(state, index)
+        val selected = levels.indices.minByOrNull { kotlin.math.abs(levels[it] - current) } ?: 0
+        return push(state, Screen.EqualizerBandLevel(index), selectedIndex = selected)
+    }
+
+    private fun confirmEqualizerBandLevel(
+        state: AppState,
+        screen: Screen.EqualizerBandLevel,
+        row: ScreenRow
+    ): Reduction {
+        val level = (row as? Action)?.key?.substringAfter("eq_level:", "")?.toIntOrNull()
+            ?: return Reduction(state)
+        if (level !in ScreenContent.equalizerBandLevels(state)) return Reduction(state)
+        return Reduction(pop(state), listOf(SetEqualizerBand(screen.bandIndex, level)))
     }
 
     private fun confirmSortOrder(state: AppState, row: ScreenRow): Reduction {
@@ -761,8 +790,6 @@ object AppReducer {
     private fun confirmLong(state: AppState): Reduction = when {
         state.currentScreen == Screen.NowPlaying -> push(state, Screen.NowPlayingOptions)
         state.currentScreen.isRadialMenu() -> back(state)
-        state.currentScreen == Screen.EqualizerBands ->
-            Reduction(state, listOf(AdjustEqualizerBand(state.selectedIndex, -1)))
         state.currentScreen is Screen.MultiSelect -> {
             val screen = state.currentScreen as Screen.MultiSelect
             val ids = screen.trackIds.filterIndexed { index, _ ->
