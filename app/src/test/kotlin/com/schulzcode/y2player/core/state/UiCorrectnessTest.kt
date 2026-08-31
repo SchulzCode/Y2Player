@@ -47,14 +47,14 @@ class UiCorrectnessTest {
     @Test fun `a live session has no duplicate Now Playing row`() {
         val state = AppState(library = LibraryState(), playback = playing)
         assertEquals(
-            listOf("music", "audiobooks", "settings"),
+            listOf("music", "audiobooks", "search", "settings"),
             keys(state)
         )
     }
 
     @Test fun `Shuffle All is present only when the session has ended`() {
         val stopped = AppState(library = LibraryState(tracks = listOf(track)), playback = PlaybackSnapshot())
-        assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(stopped))
+        assertEquals(listOf("music", "audiobooks", "search", "shuffle_all", "settings"), keys(stopped))
     }
 
     @Test fun `a restored queue has neither Shuffle All nor a duplicate Now Playing row`() {
@@ -63,14 +63,14 @@ class UiCorrectnessTest {
             playback = PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
         assertEquals(
-            listOf("music", "audiobooks", "settings"),
+            listOf("music", "audiobooks", "search", "settings"),
             keys(restored)
         )
     }
 
     @Test fun `Settings selection survives removal of the idle Shuffle All row`() {
         val idle = AppState(
-            screenStack = listOf(ScreenEntry(Screen.MainMenu, 3)),
+            screenStack = listOf(ScreenEntry(Screen.MainMenu, 4)),
             library = LibraryState(tracks = listOf(track))
         )
         val live = AppReducer.reduce(idle, AppAction.PlaybackChanged(playing)).state
@@ -237,7 +237,7 @@ class UiCorrectnessTest {
     }
 
     private fun allScreens(): List<Screen> = listOf(
-        Screen.MainMenu, Screen.Music, Screen.Audiobooks,
+        Screen.MainMenu, Screen.Search(), Screen.Music, Screen.Audiobooks,
         Screen.AudiobookOptions("sdcard|AUDIOBOOKS/Dune"), Screen.AudiobookChapters("sdcard|AUDIOBOOKS/Dune"),
         Screen.Songs, Screen.Favorites,
         Screen.RecentlyPlayed, Screen.Albums, Screen.AlbumSongs("Album"), Screen.Artists,

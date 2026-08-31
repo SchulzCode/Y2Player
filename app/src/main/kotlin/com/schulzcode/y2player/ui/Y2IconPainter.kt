@@ -11,7 +11,7 @@ enum class Y2Icon {
     ACTION, REFRESH, HEADPHONES, SPEAKER, DISCONNECTED, UNKNOWN, CHEVRON, PLAY, PAUSE,
     PREVIOUS, NEXT, CHECK, PREPARING, WARNING, SHUFFLE, REPEAT, TIMER, DAC,
     MUSIC, BOOK, LIBRARY, SLIDERS, VOLUME, EQUALIZER, CROSSFADE, HISTORY, REMOVE, SYSTEM, WHEEL,
-    CHAPTERS
+    CHAPTERS, SEARCH
 }
 
 class Y2IconPainter(private val paint: Paint, density: Float) {
@@ -53,6 +53,10 @@ class Y2IconPainter(private val paint: Paint, density: Float) {
             Y2Icon.SYSTEM -> drawSystem(canvas, left, top, size)
             Y2Icon.WHEEL -> drawWheel(canvas, centerX, centerY, size)
             Y2Icon.CHAPTERS -> drawChapters(canvas, left, top, size)
+            Y2Icon.SEARCH -> {
+                canvas.drawCircle(centerX - size * .1f, centerY - size * .1f, size * .27f, paint)
+                canvas.drawLine(centerX + size * .1f, centerY + size * .1f, centerX + size * .35f, centerY + size * .35f, paint)
+            }
             Y2Icon.QUEUE -> drawQueue(canvas, left, top, size)
             Y2Icon.BLUETOOTH -> drawBluetooth(canvas, left, top, size)
             Y2Icon.SETTINGS -> drawSettings(canvas, centerX, centerY, size)

@@ -14,6 +14,7 @@ object ScreenCatalogue {
     private val samples: Map<KClass<out Screen>, Screen> = buildMap {
         fun put(screen: Screen) = put(screen::class, screen)
         put(Screen.MainMenu)
+        put(Screen.Search("test"))
         put(Screen.Music)
         put(Screen.Audiobooks)
         put(Screen.AudiobookOptions("sdcard|AUDIOBOOKS/Dune"))
@@ -97,6 +98,7 @@ object ScreenCatalogue {
     /** Screens whose content depends on a library, so emptiness is legitimate. */
     val contentScreens: Set<String> = setOf(
         Screen.Songs.code, Screen.Favorites.code, Screen.RecentlyPlayed.code,
+        Screen.Search().code,
         Screen.Albums.code, Screen.Artists.code, Screen.Genres.code, Screen.Years.code, Screen.Audiobooks.code,
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,

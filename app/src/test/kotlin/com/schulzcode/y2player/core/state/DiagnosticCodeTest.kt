@@ -61,7 +61,7 @@ class DiagnosticCodeTest {
     @Test
     fun `every screen reachable from the reducer has a code`() {
         val screens = listOf<Screen>(
-            Screen.MainMenu, Screen.Music, Screen.Audiobooks,
+            Screen.MainMenu, Screen.Search(), Screen.Music, Screen.Audiobooks,
             Screen.AudiobookOptions("k"), Screen.AudiobookChapters("k"),
             Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed,
             Screen.Albums, Screen.Artists, Screen.Playlists, Screen.Queue, Screen.NowPlaying,

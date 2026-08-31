@@ -5,6 +5,12 @@ import com.schulzcode.y2player.core.model.LibraryScope
 
 sealed interface Screen {
     data object MainMenu : Screen
+    data class Search(
+        val query: String = "",
+        val keyboardRow: Int = 0,
+        val keyboardColumn: Int = 0,
+        val resultsFocused: Boolean = false
+    ) : Screen
     data object Music : Screen
     data object Audiobooks : Screen
     data class AudiobookOptions(val folderKey: String) : Screen
@@ -97,6 +103,7 @@ fun Screen.isRadialMenu(): Boolean =
 // R8 renames these classes, so simpleName logs as `b0` in release builds.
 val Screen.code: String get() = when (this) {
     Screen.MainMenu -> "main_menu"
+    is Screen.Search -> "search"
     Screen.Music -> "music"
     Screen.Audiobooks -> "audiobooks"
     is Screen.AudiobookOptions -> "audiobook_options"

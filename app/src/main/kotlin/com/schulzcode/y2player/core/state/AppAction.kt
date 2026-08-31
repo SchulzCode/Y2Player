@@ -39,6 +39,7 @@ sealed interface AppAction {
     data class SafeModeChanged(val enabled: Boolean) : AppAction
     data class ShowMessage(val message: String?) : AppAction
     data class SelectIndex(val index: Int) : AppAction
+    data class PressSearchKey(val key: String) : AppAction
 }
 
 sealed interface AppEffect {
@@ -166,4 +167,5 @@ val AppAction.code: String get() = when (this) {
     is AppAction.SafeModeChanged -> "safe_mode_changed"
     is AppAction.ShowMessage -> "show_message"
     is AppAction.SelectIndex -> "select_index"
+    is AppAction.PressSearchKey -> "search_key"
 }
