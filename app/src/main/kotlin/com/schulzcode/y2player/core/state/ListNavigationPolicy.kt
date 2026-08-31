@@ -18,7 +18,7 @@ internal object ListNavigationPolicy {
         val last = itemCount - 1
         val current = currentIndex.coerceIn(first, last)
         if (current == last && first == last) return current
-        if (!wraps(screen, wrapLists)) return (current + delta).coerceIn(first, last)
+        if (!wrapLists) return (current + delta).coerceIn(first, last)
 
         val selectableCount = last - first + 1
         val relative = ((current - first + delta) % selectableCount + selectableCount) % selectableCount
@@ -35,10 +35,4 @@ internal object ListNavigationPolicy {
             is Screen.FacetTracks, is Screen.AudiobookChapters, is Screen.AddToPlaylist -> true
             else -> false
         }
-
-    private fun wraps(screen: Screen, preference: Boolean): Boolean = when {
-        screen is Screen.ConfirmAction -> false
-        screen == Screen.EqualizerBands || screen.isRadialMenu() -> true
-        else -> preference
-    }
 }
