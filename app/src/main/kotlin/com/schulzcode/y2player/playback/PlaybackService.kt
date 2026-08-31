@@ -254,6 +254,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private lateinit var eventLog: EventLog
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var routeMonitor: AudioRouteMonitor
+    private lateinit var playbackWakeLock: PlaybackWakeLock
 
     @Volatile private var snapshot = PlaybackSnapshot()
     @Volatile private var currentTrack: Track? = null
@@ -343,6 +344,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         )
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        playbackWakeLock = PlaybackWakeLock(this)
 
         playbackThread = HandlerThread("y2-playback").apply { start() }
         playbackHandler = Handler(playbackThread.looper)
@@ -458,6 +460,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onDestroy() {
         shuttingDown = true
+        if (::playbackWakeLock.isInitialized) playbackWakeLock.release()
         volumeModeTransitionGate.cancel()
         volumeKeyRepeatController.cancel()
         if (::libraryRepository.isInitialized) libraryRepository.setPlaybackActive(false)
@@ -2193,6 +2196,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun publishSnapshot() {
         val value = snapshot
+        playbackWakeLock.sync(value.status)
         libraryRepository.setPlaybackActive(value.status == PlaybackStatus.PLAYING)
         if (::remoteControl.isInitialized) remoteControl.update(value, currentTrack)
         mainHandler.post {
