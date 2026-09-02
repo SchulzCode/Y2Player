@@ -55,18 +55,21 @@ class MainMenuHierarchyTest {
     // ---- main menu -------------------------------------------------------------
 
     @Test fun `the main menu fits the split layout without scrolling`() {
-        // 318 px of row area at 58 dp per row leaves room for five; four keeps a margin.
+        // 318 px of row area at 58 dp per row leaves room for all five destinations.
         assertTrue("main menu must not exceed the split-home row budget", ScreenContent.rows(AppState()).size <= 5)
-        assertEquals(4, ScreenContent.rows(AppState()).size)
+        assertEquals(5, ScreenContent.rows(AppState()).size)
     }
 
-    @Test fun `the main menu offers Shuffle All when nothing is loaded`() {
-        assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(AppState(library = library)))
+    @Test fun `the main menu combines search and FM without scrolling`() {
+        assertEquals(
+            listOf("music", "audiobooks", "fm_radio", "search", "settings"),
+            keys(AppState(library = library))
+        )
     }
 
     @Test fun `the main menu removes the duplicate Now Playing row during a session`() {
         val state = AppState(library = library, playback = playing)
-        assertEquals(listOf("music", "audiobooks", "settings"), keys(state))
+        assertEquals(listOf("music", "audiobooks", "fm_radio", "search", "settings"), keys(state))
     }
 
     @Test fun `right from the main menu skips to the next track`() {
@@ -74,11 +77,6 @@ class MainMenuHierarchyTest {
         val result = AppReducer.reduce(state, AppAction.Right)
         assertEquals(Screen.MainMenu, result.state.currentScreen)
         assertEquals(AppEffect.NextTrack, result.effects.single())
-    }
-
-    @Test fun `Shuffle All from the main menu still shuffles`() {
-        val result = open(AppState(library = library), "shuffle_all")
-        assertEquals(AppEffect.ShuffleAll, result.effects.single())
     }
 
     @Test fun `Audiobooks stays on the main menu even with no books`() {

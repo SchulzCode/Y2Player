@@ -33,6 +33,7 @@ import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
 import com.schulzcode.y2player.diagnostics.DiagnosticsRepository
+import com.schulzcode.y2player.fm.FmState
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
 import com.schulzcode.y2player.diagnostics.Sev
@@ -101,6 +102,7 @@ class MainActivity : Activity() {
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             playbackBinder?.cancelVolumeKeyRepeat()
+            HardwareKeyGate.invalidateScreenState()
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> playerView.setTextAnimationsVisible(false)
                 Intent.ACTION_SCREEN_ON -> playerView.setTextAnimationsVisible(true)
@@ -169,6 +171,10 @@ class MainActivity : Activity() {
         store.dispatch(AppAction.PlaybackChanged(snapshot))
     }
 
+    private val fmListener: (FmState) -> Unit = { state ->
+        store.dispatch(AppAction.FmChanged(state))
+    }
+
     private val bluetoothListener = BluetoothController.Listener { state ->
         store.dispatch(AppAction.BluetoothChanged(state))
     }
@@ -182,6 +188,7 @@ class MainActivity : Activity() {
             if (!playbackBound || !uiStarted) return
             playbackBinder = service as? PlaybackService.LocalBinder
             playbackBinder?.addListener(playbackListener)
+            playbackBinder?.setFmListener(fmListener)
             playbackBinder?.applyPreferences(preferences.snapshot())
             val library = libraryRepository.snapshot()
             lastAvailabilityRevision = library.availabilityRevision
@@ -189,6 +196,7 @@ class MainActivity : Activity() {
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             playbackBinder?.removeListener(playbackListener)
+            playbackBinder?.setFmListener(null)
             playbackBinder = null
         }
     }
@@ -300,6 +308,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        HardwareKeyGate.invalidateScreenState()
         eventLog.debug(Sub.ACTIVITY, Ev.ACTIVITY_RESUME)
         val currentPreferences = preferences.snapshot()
         val systemHaptics = systemHapticsController.suppress()
@@ -412,6 +421,14 @@ class MainActivity : Activity() {
 
     private fun handleEffect(effect: AppEffect) {
         when (effect) {
+            AppEffect.FmOpen -> requirePlayback { it.fmOpen() }
+            AppEffect.FmClose -> requirePlayback { it.fmClose() }
+            is AppEffect.FmTune -> requirePlayback { it.fmTuneBy(effect.steps) }
+            is AppEffect.FmSeek -> requirePlayback { it.fmSeek(effect.up) }
+            AppEffect.FmTogglePower -> requirePlayback {
+                val fm = store.state.fm
+                if (fm.powered) it.fmStop() else it.fmStart(fm.frequencyKhz)
+            }
             is AppEffect.PlayCollection ->
                 requirePlayback { it.playCollection(effect.trackIds, effect.startIndex, effect.shuffled, effect.fromStart) }
             is AppEffect.PlayQueueEntry -> requirePlayback { it.playQueueEntry(effect.entryId) }
@@ -514,7 +531,7 @@ class MainActivity : Activity() {
             AppEffect.ToggleWrapLists -> applyPlaybackPreferences(preferences.toggleWrapLists())
             AppEffect.CycleVolumeMode -> cycleVolumeMode()
             AppEffect.CycleReplayGain -> applyPlaybackPreferences(preferences.cycleReplayGain())
-            AppEffect.CycleSleepTimer -> requirePlayback { it.cycleSleepTimer() }
+            is AppEffect.SetSleepTimer -> requirePlayback { it.setSleepTimer(effect.mode, effect.minutes) }
             AppEffect.CycleAudioQuality -> {
                 val value = preferences.cycleAudioQuality()
                 applyPlaybackPreferences(value)
@@ -527,16 +544,16 @@ class MainActivity : Activity() {
                 )
             }
             AppEffect.ToggleAudioEffects -> applyPlaybackPreferences(preferences.toggleAudioEffects())
-            AppEffect.CycleEqualizerPreset -> {
+            is AppEffect.SetEqualizerPreset -> {
                 val presetCount = store.state.playback.audioEffects.presetNames.size
-                applyPlaybackPreferences(preferences.cycleEqualizerPreset(presetCount))
+                applyPlaybackPreferences(preferences.setEqualizerPreset(effect.index, presetCount))
             }
-            is AppEffect.AdjustEqualizerBand -> {
+            is AppEffect.SetEqualizerBand -> {
                 val effects = store.state.playback.audioEffects
                 applyPlaybackPreferences(
-                    preferences.adjustEqualizerBand(
+                    preferences.setEqualizerBand(
                         effect.index,
-                        effect.deltaSteps,
+                        effect.levelMb,
                         effects.bandMinMb,
                         effects.bandMaxMb,
                         effects.bandFrequenciesHz.size

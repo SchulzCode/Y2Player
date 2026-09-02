@@ -86,6 +86,28 @@ object HardwareKeyGate {
         device.hasKeys(KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_UP).any { it }
     }.getOrDefault(false)
 
+    /** The activity owns local keypad gestures whenever it can receive them. */
+    fun shouldDeferLocalBroadcastToActivity(
+        context: Context,
+        source: Source,
+        fromLocalKeypad: Boolean
+    ): Boolean {
+        val state = screenState(context)
+        return shouldDeferLocalBroadcastToActivity(
+            source,
+            fromLocalKeypad,
+            state.screenOn,
+            state.keyguardLocked
+        )
+    }
+
+    internal fun shouldDeferLocalBroadcastToActivity(
+        source: Source,
+        fromLocalKeypad: Boolean,
+        screenOn: Boolean,
+        keyguardLocked: Boolean
+    ): Boolean = source == Source.Y2_BROADCAST && fromLocalKeypad && screenOn && !keyguardLocked
+
     @Synchronized
     fun invalidateScreenState() {
         cachedScreenState = null

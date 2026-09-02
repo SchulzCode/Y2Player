@@ -143,8 +143,14 @@ class NavigationCorrectnessTest {
         assertEquals(AppEffect.TogglePlayback, result.effects.single())
     }
 
-    @Test fun `shuffle all from the main menu opens Now Playing once`() {
-        val state = selectKey(AppState(library = library), "shuffle_all")
+    @Test fun `shuffle all from Music opens Now Playing once`() {
+        val state = selectKey(
+            AppState(
+                screenStack = listOf(ScreenEntry(Screen.MainMenu), ScreenEntry(Screen.Music)),
+                library = library
+            ),
+            "shuffle_all"
+        )
         val result = AppReducer.reduce(state, AppAction.Confirm)
         assertEquals(Screen.NowPlaying, result.state.currentScreen)
         assertEquals(1, result.state.screenStack.count { it.screen == Screen.NowPlaying })

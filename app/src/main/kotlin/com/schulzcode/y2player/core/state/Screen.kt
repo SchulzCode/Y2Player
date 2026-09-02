@@ -5,6 +5,12 @@ import com.schulzcode.y2player.core.model.LibraryScope
 
 sealed interface Screen {
     data object MainMenu : Screen
+    data class Search(
+        val query: String = "",
+        val keyboardRow: Int = 0,
+        val keyboardColumn: Int = 0,
+        val resultsFocused: Boolean = false
+    ) : Screen
     data object Music : Screen
     data object Audiobooks : Screen
     data class AudiobookOptions(val folderKey: String) : Screen
@@ -50,6 +56,7 @@ sealed interface Screen {
     data object QueueManagement : Screen
     data object NowPlaying : Screen
     data object NowPlayingOptions : Screen
+    data object SleepTimer : Screen
     data object Queue : Screen
     data object Audio : Screen
     data object Settings : Screen
@@ -59,8 +66,10 @@ sealed interface Screen {
     data object PlaybackInterruptions : Screen
     data object SoundEffects : Screen
     data object EqualizerSettings : Screen
+    data object EqualizerPresets : Screen
     data object OutputInformation : Screen
     data object EqualizerBands : Screen
+    data class EqualizerBandLevel(val bandIndex: Int) : Screen
     data object SortOrder : Screen
     data object TrackSorting : Screen
     data object AlbumSorting : Screen
@@ -78,6 +87,8 @@ sealed interface Screen {
     data object Storage : Screen
     data object PlaybackHistory : Screen
 
+    data object FmRadio : Screen
+
     data object System : Screen
     data object BackupRestore : Screen
     data object Diagnostics : Screen
@@ -94,6 +105,7 @@ fun Screen.isRadialMenu(): Boolean =
 // R8 renames these classes, so simpleName logs as `b0` in release builds.
 val Screen.code: String get() = when (this) {
     Screen.MainMenu -> "main_menu"
+    is Screen.Search -> "search"
     Screen.Music -> "music"
     Screen.Audiobooks -> "audiobooks"
     is Screen.AudiobookOptions -> "audiobook_options"
@@ -127,6 +139,7 @@ val Screen.code: String get() = when (this) {
     Screen.QueueManagement -> "queue_management"
     Screen.NowPlaying -> "now_playing"
     Screen.NowPlayingOptions -> "now_playing_options"
+    Screen.SleepTimer -> "sleep_timer"
     Screen.Queue -> "queue"
     Screen.Audio -> "audio"
     Screen.Settings -> "settings"
@@ -136,8 +149,10 @@ val Screen.code: String get() = when (this) {
     Screen.PlaybackInterruptions -> "playback_interruptions"
     Screen.SoundEffects -> "sound_effects"
     Screen.EqualizerSettings -> "equalizer_settings"
+    Screen.EqualizerPresets -> "equalizer_presets"
     Screen.OutputInformation -> "output_information"
     Screen.EqualizerBands -> "equalizer_bands"
+    is Screen.EqualizerBandLevel -> "equalizer_band_level"
     Screen.SortOrder -> "sort_order"
     Screen.TrackSorting -> "track_sorting"
     Screen.AlbumSorting -> "album_sorting"
@@ -154,6 +169,7 @@ val Screen.code: String get() = when (this) {
     Screen.ScreenTimeout -> "screen_timeout"
     Screen.Storage -> "storage"
     Screen.PlaybackHistory -> "playback_history"
+    Screen.FmRadio -> "fm_radio"
     Screen.System -> "system"
     Screen.BackupRestore -> "backup_restore"
     Screen.Diagnostics -> "diagnostics"

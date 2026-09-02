@@ -5,5 +5,9 @@
             android:name=".debug.MediaRegressionService"
             android:exported="true"
             android:process=":media_regression" />
+        <service
+            android:name=".debug.FmProbeService"
+            android:exported="true"
+            android:process=":fm_probe" />
     </application>
 </manifest>

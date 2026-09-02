@@ -20,9 +20,11 @@ import com.schulzcode.y2player.core.model.RepeatMode
 import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.AppState
+import com.schulzcode.y2player.fm.FmState
 import com.schulzcode.y2player.core.state.Screen
 import com.schulzcode.y2player.core.state.ScreenContent
 import com.schulzcode.y2player.core.state.ScreenRow
+import com.schulzcode.y2player.core.state.SearchKeyboard
 import com.schulzcode.y2player.core.state.SleepTimerPresentation
 import com.schulzcode.y2player.core.state.isRadialMenu
 import com.schulzcode.y2player.core.state.isProgressOnlyUpdate
@@ -172,6 +174,11 @@ class Y2PlayerView(
     private var cachedHomeHint = ""
     private var cachedScanProgressFraction: Float? = null
     private var cachedScanProgressPhase = 0f
+    private var cachedFmFrequency = ""
+    private var cachedFmStatus = ""
+    private var cachedFmSignal = ""
+    private var cachedFmHint = ""
+    private var cachedFmFraction = 0f
     private var cachedDetailTitle = ""
     private var cachedDetailTitle2 = ""
     private var cachedDetailSubtitle = ""
@@ -463,11 +470,15 @@ class Y2PlayerView(
         super.onDraw(canvas)
         canvas.drawColor(palette.background)
         drawHeader(canvas)
-        if (isNowPlayingSurface()) {
+        if (state.currentScreen == Screen.FmRadio) {
+            drawFmRadio(canvas)
+        } else if (isNowPlayingSurface()) {
             drawNowPlaying(canvas)
         } else {
             if (hasDetailHeader()) drawDetailHeader(canvas)
+            if (state.currentScreen is Screen.Search) drawSearchQuery(canvas)
             drawRows(canvas)
+            if (state.currentScreen is Screen.Search) drawSearchKeyboard(canvas)
         }
         if (isSplitHome()) drawHomePane(canvas)
         drawFooter(canvas)
@@ -492,9 +503,15 @@ class Y2PlayerView(
 
     private fun hasDetailHeader(): Boolean = state.currentScreen is Screen.AlbumSongs || state.currentScreen is Screen.ArtistSongs
 
-    private fun rowAreaTop(): Float = headerHeight + if (hasDetailHeader()) detailHeaderHeight else 0f
+    private fun rowAreaTop(): Float = headerHeight + when {
+        state.currentScreen is Screen.Search -> SEARCH_QUERY_HEIGHT_DP * density
+        hasDetailHeader() -> detailHeaderHeight
+        else -> 0f
+    }
 
-    private fun rowAreaBottom(): Float = height - footerHeight - if (cachedMessageSource != null) 66f * density else 0f
+    private fun rowAreaBottom(): Float =
+        (if (state.currentScreen is Screen.Search) height.toFloat() - SEARCH_KEYBOARD_HEIGHT_DP * density
+        else height - footerHeight) - if (cachedMessageSource != null) 66f * density else 0f
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         return when (event.action) {
@@ -511,6 +528,12 @@ class Y2PlayerView(
             MotionEvent.ACTION_UP -> {
                 if (!pendingTouchActive) true else {
                     pendingTouchActive = false
+                    val searchKey = searchKeyAt(event.x, event.y)
+                    if (searchKey != null) {
+                        pendingTouchIndex = null
+                        dispatch(AppAction.PressSearchKey(searchKey))
+                        return true
+                    }
                     if (state.currentScreen.isRadialMenu()) {
                         pendingTouchIndex = null
                         performClick()
@@ -552,6 +575,71 @@ class Y2PlayerView(
         if (y < rowsTop || y >= rowAreaBottom()) return null
         if (x >= rowAreaRight()) return null
         return (visibleStart + ((y - rowsTop) / rowHeight).toInt()).takeIf { it in rows.indices }
+    }
+
+    private fun searchKeyAt(x: Float, y: Float): String? {
+        if (state.currentScreen !is Screen.Search) return null
+        val top = searchKeyboardTop()
+        if (y < top || y >= height || x !in 0f..width.toFloat()) return null
+        val rowHeight = (height - top) / SearchKeyboard.rows.size
+        val row = ((y - top) / rowHeight).toInt().coerceIn(0, SearchKeyboard.rows.lastIndex)
+        val keys = SearchKeyboard.rows[row]
+        val keyWidth = width.toFloat() / keys.size
+        return keys[(x / keyWidth).toInt().coerceIn(0, keys.lastIndex)]
+    }
+
+    private fun drawSearchQuery(canvas: Canvas) {
+        val screen = state.currentScreen as? Screen.Search ?: return
+        val top = headerHeight
+        val bottom = rowAreaTop()
+        paint.style = Paint.Style.FILL
+        paint.color = palette.surface
+        canvas.drawRect(0f, top, width.toFloat(), bottom, paint)
+        boldPaint.textAlign = Paint.Align.LEFT
+        boldPaint.textSize = Y2UiTheme.BODY_SP * density
+        boldPaint.color = if (screen.query.isEmpty()) palette.secondaryText else palette.primaryText
+        val query = screen.query.ifEmpty { "Type to search this device…" }
+        canvas.drawText(ellipsize(query, width - 86f * density, boldPaint), 12f * density, top + 25f * density, boldPaint)
+        paint.textAlign = Paint.Align.RIGHT
+        paint.textSize = Y2UiTheme.META_SP * density
+        paint.color = palette.secondaryText
+        canvas.drawText(if (screen.query.isEmpty()) "" else rows.size.toString(), width - 12f * density, top + 24f * density, paint)
+        paint.textAlign = Paint.Align.LEFT
+    }
+
+    private fun searchKeyboardTop(): Float = height - SEARCH_KEYBOARD_HEIGHT_DP * density
+
+    private fun drawSearchKeyboard(canvas: Canvas) {
+        val screen = state.currentScreen as? Screen.Search ?: return
+        val top = searchKeyboardTop()
+        val keyboardHeight = height - top
+        val keyHeight = keyboardHeight / SearchKeyboard.rows.size
+        paint.style = Paint.Style.FILL
+        paint.color = palette.surface
+        canvas.drawRect(0f, top, width.toFloat(), height.toFloat(), paint)
+        SearchKeyboard.rows.forEachIndexed { rowIndex, keys ->
+            val keyWidth = width.toFloat() / keys.size
+            keys.forEachIndexed { columnIndex, key ->
+                val left = columnIndex * keyWidth + 2f * density
+                val keyTop = top + rowIndex * keyHeight + 2f * density
+                val right = (columnIndex + 1) * keyWidth - 2f * density
+                val bottom = keyTop + keyHeight - 4f * density
+                val focused = !screen.resultsFocused && rowIndex == screen.keyboardRow && columnIndex == screen.keyboardColumn
+                paint.color = if (focused) palette.accent else palette.background
+                reusableRectF.set(left, keyTop, right, bottom)
+                canvas.drawRoundRect(reusableRectF, 4f * density, 4f * density, paint)
+                boldPaint.textAlign = Paint.Align.CENTER
+                boldPaint.textSize = if (rowIndex == SearchKeyboard.rows.lastIndex) 10f * density else 13f * density
+                boldPaint.color = if (focused) palette.background else palette.primaryText
+                canvas.drawText(
+                    SearchKeyboard.label(key),
+                    (left + right) * .5f,
+                    keyTop + keyHeight * .5f + 4f * density,
+                    boldPaint
+                )
+            }
+        }
+        boldPaint.textAlign = Paint.Align.LEFT
     }
 
     private fun drawHeader(canvas: Canvas) {
@@ -697,7 +785,8 @@ class Y2PlayerView(
             val slot = index - cachedRowStart
             val top = rowsTop + (index - visibleStart) * rowHeight
             val bottom = top + rowHeight
-            val focused = index == state.selectedIndex
+            val focused = index == state.selectedIndex &&
+                ((state.currentScreen as? Screen.Search)?.resultsFocused != false)
             val visual = Y2UiLogic.rowVisualState(focused, cachedActive[slot], cachedUnavailable[slot])
             if (focused) drawFocus(canvas, top, bottom) else if (cachedActive[slot]) drawActiveRow(canvas, top, bottom)
 
@@ -940,6 +1029,7 @@ class Y2PlayerView(
     }
 
     private fun drawEmptyState(canvas: Canvas) {
+        val search = state.currentScreen as? Screen.Search
         val storageAvailable = state.device.internalStorageAvailable || state.device.removableStorageAvailable
         val kind = Y2UiLogic.emptyState(
             scanning = state.library.isScanning,
@@ -957,7 +1047,11 @@ class Y2PlayerView(
         val title: String
         val detail: String
         val icon: Y2Icon
-        when (kind) {
+        if (search != null) {
+            title = if (search.query.isBlank()) "Search your device" else "No search results"
+            detail = if (search.query.isBlank()) "Use the keyboard below to begin" else "Try another word or spelling"
+            icon = Y2Icon.SEARCH
+        } else when (kind) {
             EmptyStateKind.SCANNING -> {
                 title = "Scanning music"
                 detail = "Building your library safely"
@@ -1020,7 +1114,7 @@ class Y2PlayerView(
         paint.textSize = Y2UiTheme.BODY_SP * density
         paint.color = palette.secondaryText
         canvas.drawText(ellipsize(detail, width - 34f * density, paint), centerX, centerY + 32f * density, paint)
-        val emptyAction = Y2UiLogic.emptyStateAction(kind)
+        val emptyAction = if (search != null) EmptyStateAction.NONE else Y2UiLogic.emptyStateAction(kind)
         if (emptyAction != EmptyStateAction.NONE) {
             val action = when (emptyAction) {
                 EmptyStateAction.OPEN_STORAGE -> "CENTER · OPEN STORAGE"
@@ -1476,6 +1570,67 @@ class Y2PlayerView(
         boldPaint.textAlign = Paint.Align.LEFT
     }
 
+    /**
+     * Every string the FM screen shows is built here rather than in onDraw, so
+     * a frame costs no formatting and no allocation.
+     */
+    private fun updateFmCache() {
+        val fm = state.fm
+        cachedFmFrequency = fm.frequencyLabel
+        cachedFmFraction = fm.signalFraction
+        cachedFmStatus = when {
+            fm.message != null -> fm.message
+            !fm.available -> "FM unavailable"
+            fm.seeking -> "Seeking"
+            !fm.powered -> "Off"
+            fm.stereo -> "Stereo"
+            else -> "Mono"
+        }
+        cachedFmSignal = if (fm.powered && fm.rssi != FmState.RSSI_UNKNOWN) "${fm.rssi} dBm" else ""
+        cachedFmHint = if (fm.powered) "Wheel tunes · Skip seeks · Select stops"
+        else "Select turns the radio on"
+    }
+
+    private fun drawFmRadio(canvas: Canvas) {
+        val centerX = width * .5f
+        val top = headerHeight + 26f * density
+
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 56f * density
+        boldPaint.color = if (state.fm.powered) palette.primaryText else palette.mutedText
+        canvas.drawText(cachedFmFrequency, centerX, top + 44f * density, boldPaint)
+
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = Y2UiTheme.NOW_ARTIST_SP * density
+        paint.color = palette.secondaryText
+        canvas.drawText("MHz", centerX, top + 66f * density, paint)
+
+        paint.textSize = Y2UiTheme.NOW_ALBUM_SP * density
+        paint.color = if (state.fm.available) palette.secondaryText else palette.warning
+        canvas.drawText(cachedFmStatus, centerX, top + 90f * density, paint)
+
+        // Signal meter, drawn with the same geometry as the playback progress bar.
+        val left = 20f * density
+        val right = width - 20f * density
+        val barTop = top + 104f * density
+        val barHeight = 6f * density
+        paint.color = palette.divider
+        canvas.drawRect(left, barTop, right, barTop + barHeight, paint)
+        if (cachedFmFraction > 0f) {
+            paint.color = palette.accent
+            canvas.drawRect(left, barTop, left + (right - left) * cachedFmFraction, barTop + barHeight, paint)
+        }
+
+        paint.textSize = Y2UiTheme.META_SP * density
+        paint.color = palette.mutedText
+        canvas.drawText(cachedFmSignal, centerX, barTop + 24f * density, paint)
+        canvas.drawText(cachedFmHint, centerX, barTop + 44f * density, paint)
+
+        paint.textAlign = Paint.Align.LEFT
+        boldPaint.textAlign = Paint.Align.LEFT
+    }
+
     private fun drawArtwork(
         canvas: Canvas,
         left: Float,
@@ -1571,7 +1726,7 @@ class Y2PlayerView(
     }
 
     private fun drawFooter(canvas: Canvas) {
-        if (isSplitHome()) return
+        if (isSplitHome() || state.currentScreen is Screen.Search) return
 
         if (
             state.playback.currentTrackId != null &&
@@ -1752,6 +1907,7 @@ class Y2PlayerView(
     }
 
     private fun updatePresentationCache() {
+        updateFmCache()
         cachedRoute = Y2UiLogic.routePresentation(state.playback.outputRoute)
         cachedHeaderRouteIcon = when (cachedRoute.icon) {
             RouteIcon.BLUETOOTH -> RouteIcon.BLUETOOTH
@@ -1949,6 +2105,8 @@ class Y2PlayerView(
 
     private fun updateFooterPosition() {
         cachedFooterPosition = when {
+            state.currentScreen is Screen.Search && !(state.currentScreen as Screen.Search).resultsFocused ->
+                if ((state.currentScreen as Screen.Search).query.isEmpty()) "" else "${rows.size} found"
             !isNowPlayingSurface() && rows.isNotEmpty() ->
                 "${state.selectedIndex + 1}/${rows.size}"
             isNowPlayingSurface() && state.playback.queue.isNotEmpty() ->
@@ -1960,8 +2118,13 @@ class Y2PlayerView(
     private fun updateFooterHint() {
         val hint = when {
             isNowPlayingSurface() -> ""
+            state.currentScreen is Screen.Search -> if ((state.currentScreen as Screen.Search).resultsFocused) {
+                "WHEEL RESULTS · CENTER OPEN · BACK KEYBOARD"
+            } else {
+                "WHEEL KEYS · CENTER TYPE · TOP DELETE"
+            }
             state.currentScreen is Screen.QueueMove -> "WHEEL MOVE · CENTER CONFIRM · BACK CANCEL"
-            state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER + · HOLD CENTER - · L/R TRACK"
+            state.currentScreen == Screen.EqualizerBands -> "WHEEL BAND · CENTER CHOOSE · L/R TRACK"
             state.currentScreen == Screen.Brightness || state.currentScreen == Screen.ScreenTimeout ||
                 state.currentScreen == Screen.SortOrder -> "WHEEL CHOOSE · CENTER APPLY · L/R TRACK"
             else -> "WHEEL NAVIGATE · CENTER SELECT · L/R TRACK"
@@ -2286,11 +2449,15 @@ class Y2PlayerView(
         private const val ROW_ARTWORK_SIZE_PX = 64
         private const val RADIAL_OPEN_MS = 160f
         private const val RADIAL_CLOSE_MS = 120f
+        private const val SEARCH_QUERY_HEIGHT_DP = 36f
+        // Four 29 dp key rows leave room for two 58 dp search results on the
+        // physical 480x360 panel instead of reducing discovery to one row.
+        private const val SEARCH_KEYBOARD_HEIGHT_DP = 116f
 
         private const val BATTERY_TEXT_REFERENCE = "100%"
         const val SHARED_ARTWORK_SIZE_PX = 256
         private val NAVIGATION_KEYS = setOf(
-            "music", "audiobooks", "songs", "albums", "artists", "playlists",
+            "music", "audiobooks", "search", "songs", "albums", "artists", "playlists",
             "folders", "favorites", "recent", "audio", "settings", "output", "sort", "bluetooth",
             "sound_effects", "reset", "extra_track_info",
             "display", "controls", "storage", "system", "diagnostics", "android_settings", "about",

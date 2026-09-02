@@ -22,18 +22,29 @@ class ListNavigationPolicyTest {
         assertEquals(0, ListNavigationPolicy.nextIndex(Screen.Songs, 0, 5, 1, wrapLists = true))
     }
 
-    @Test fun confirmationPromptIsNeverSelectableAndChoicesNeverWrap() {
+    @Test fun confirmationPromptIsNeverSelectableAndChoicesFollowWrapPreference() {
         val screen = Screen.ConfirmAction("reset_library")
         assertEquals(1, ListNavigationPolicy.firstSelectableIndex(screen, 3))
-        assertEquals(1, ListNavigationPolicy.nextIndex(screen, 1, -1, 3, wrapLists = true))
-        assertEquals(2, ListNavigationPolicy.nextIndex(screen, 2, 1, 3, wrapLists = true))
+        assertEquals(2, ListNavigationPolicy.nextIndex(screen, 1, -1, 3, wrapLists = true))
+        assertEquals(1, ListNavigationPolicy.nextIndex(screen, 2, 1, 3, wrapLists = true))
+        assertEquals(1, ListNavigationPolicy.nextIndex(screen, 1, -1, 3, wrapLists = false))
+        assertEquals(2, ListNavigationPolicy.nextIndex(screen, 2, 1, 3, wrapLists = false))
     }
 
-    @Test fun intentionalValueSelectorsKeepCycling() {
-        assertEquals(6, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 0, -1, 7, wrapLists = false))
-        assertEquals(0, ListNavigationPolicy.nextIndex(Screen.NowPlayingOptions, 6, 1, 7, wrapLists = false))
-        assertEquals(3, ListNavigationPolicy.nextIndex(Screen.QueueManagement, 0, -1, 4, wrapLists = false))
-        assertEquals(0, ListNavigationPolicy.nextIndex(Screen.QueueOptions(7), 3, 1, 4, wrapLists = false))
+    @Test fun customAndRadialMenusFollowWrapListsPreference() {
+        val screens = listOf(
+            Screen.EqualizerBands,
+            Screen.NowPlayingOptions,
+            Screen.QueueManagement,
+            Screen.QueueOptions(7)
+        )
+
+        screens.forEach { screen ->
+            assertEquals(3, ListNavigationPolicy.nextIndex(screen, 0, -1, 4, wrapLists = true))
+            assertEquals(0, ListNavigationPolicy.nextIndex(screen, 3, 1, 4, wrapLists = true))
+            assertEquals(0, ListNavigationPolicy.nextIndex(screen, 0, -1, 4, wrapLists = false))
+            assertEquals(3, ListNavigationPolicy.nextIndex(screen, 3, 1, 4, wrapLists = false))
+        }
     }
 
     @Test fun affectedSettingMenusFollowWrapListsPreference() {

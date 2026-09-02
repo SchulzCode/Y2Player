@@ -11,6 +11,7 @@ import com.schulzcode.y2player.core.model.CodecSupport
 import com.schulzcode.y2player.core.model.LibraryScope
 import com.schulzcode.y2player.core.model.NaturalTextOrder
 import com.schulzcode.y2player.core.model.RepeatMode
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.QueueEntry
 import com.schulzcode.y2player.core.model.QueueOrigin
 import com.schulzcode.y2player.core.model.Track
@@ -87,7 +88,9 @@ sealed interface ScreenGroupTarget {
 object ScreenContent {
     fun title(state: AppState): String = when (val screen = state.currentScreen) {
         Screen.MainMenu -> "Y2 Player"
+        is Screen.Search -> "Search"
         Screen.Music -> "Music"
+        Screen.FmRadio -> "FM Radio"
         Screen.Audiobooks -> "Audiobooks"
         is Screen.AudiobookOptions -> audiobookName(state, screen.folderKey) ?: "Book"
         is Screen.AudiobookChapters -> "Chapters"
@@ -122,6 +125,7 @@ object ScreenContent {
         Screen.QueueManagement -> "Queue"
         Screen.NowPlaying -> "Now Playing"
         Screen.NowPlayingOptions -> "Playback Options"
+        Screen.SleepTimer -> "Sleep Timer"
         Screen.Queue -> "Queue"
         Screen.Audio -> "Audio"
         Screen.Settings -> "Settings"
@@ -131,8 +135,11 @@ object ScreenContent {
         Screen.PlaybackInterruptions -> "Interruptions"
         Screen.SoundEffects -> "Sound Effects"
         Screen.EqualizerSettings -> "Equalizer"
+        Screen.EqualizerPresets -> "Equalizer Preset"
         Screen.OutputInformation -> "Output"
         Screen.EqualizerBands -> "Equalizer Bands"
+        is Screen.EqualizerBandLevel -> state.playback.audioEffects.bandFrequenciesHz
+            .getOrNull(screen.bandIndex)?.let { "${formatFrequency(it)} Level" } ?: "Band Level"
         Screen.SortOrder -> "Sort Order"
         Screen.TrackSorting -> "Track Order"
         Screen.AlbumSorting -> "Album Order"
@@ -180,6 +187,7 @@ object ScreenContent {
     }
 
     private fun contentRevision(state: AppState): Long = when (state.currentScreen) {
+        is Screen.Search -> state.library.revision
         Screen.RecentlyPlayed, Screen.Playlists, is Screen.PlaylistTracks,
         Screen.Audiobooks -> state.library.revision
         else -> state.library.tracksRevision
@@ -187,6 +195,9 @@ object ScreenContent {
 
     private fun buildRows(state: AppState): List<ScreenRow> = when (val screen = state.currentScreen) {
         Screen.MainMenu -> mainMenuRows(state)
+        // Drawn like Now Playing rather than as a list, so it has no rows.
+        Screen.FmRadio -> emptyList()
+        is Screen.Search -> searchRows(state)
         Screen.Music -> musicRows(state)
         Screen.Audiobooks -> audiobookRows(state)
         is Screen.AudiobookOptions -> audiobookOptionRows(state, screen.folderKey)
@@ -223,6 +234,7 @@ object ScreenContent {
         Screen.Queue -> queueRows(state)
         Screen.NowPlaying -> emptyList()
         Screen.NowPlayingOptions -> nowPlayingOptionsRows(state)
+        Screen.SleepTimer -> sleepTimerRows(state)
         Screen.Audio -> audioRows(state)
         Screen.Settings -> settingsRows(state)
         Screen.PlaybackTransitions -> playbackTransitionRows(state)
@@ -231,8 +243,10 @@ object ScreenContent {
         Screen.PlaybackInterruptions -> playbackInterruptionRows(state)
         Screen.SoundEffects -> soundEffectRows(state)
         Screen.EqualizerSettings -> equalizerRows(state)
+        Screen.EqualizerPresets -> equalizerPresetRows(state)
         Screen.OutputInformation -> outputInformationRows(state)
         Screen.EqualizerBands -> equalizerBandRows(state)
+        is Screen.EqualizerBandLevel -> equalizerBandLevelRows(state, screen.bandIndex)
         Screen.SortOrder -> sortOrderRows(state)
         Screen.TrackSorting -> trackSortRows()
         Screen.AlbumSorting -> albumSortRows()
@@ -300,12 +314,38 @@ object ScreenContent {
     private fun mainMenuRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"))
         add(ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"))
-        // Do not offer a destructive Shuffle All shortcut over a live or restored
-        // session. Now Playing remains available through the playback panel.
-        if (state.playback.currentTrackId == null && state.playback.queue.isEmpty()) {
-            add(ScreenRow.Action("Shuffle All", "Every track in random order", "shuffle_all"))
-        }
+        add(ScreenRow.Action("FM Radio", "Tune the built-in tuner", "fm_radio"))
+        add(ScreenRow.Action("Search", "Find anything on this device", "search"))
         add(ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings"))
+    }
+
+    internal fun searchResults(state: AppState): List<DeviceSearchResult> {
+        val screen = state.currentScreen as? Screen.Search ?: return emptyList()
+        return DeviceSearch.find(state.library, screen.query)
+    }
+
+    private fun searchRows(state: AppState): List<ScreenRow> = searchResults(state).mapIndexed { index, result ->
+        when (result) {
+            is DeviceSearchResult.TrackResult -> ScreenRow.Action(
+                result.title,
+                if (result.track.isAudiobookChapter) "Audiobook chapter · ${result.track.displayArtist}"
+                else "Song · ${result.track.displayArtist}",
+                "search_track:$index",
+                result.track.id
+            )
+            is DeviceSearchResult.AlbumResult -> ScreenRow.Action(
+                result.title, "Album · ${result.artist}", "search_album:$index", result.artworkTrackId
+            )
+            is DeviceSearchResult.ArtistResult -> ScreenRow.Action(
+                result.title, "Artist", "search_artist:$index", result.artworkTrackId
+            )
+            is DeviceSearchResult.PlaylistResult -> ScreenRow.Action(
+                result.title, "Playlist · ${trackCountLabel(result.trackCount)}", "search_playlist:$index"
+            )
+            is DeviceSearchResult.AudiobookResult -> ScreenRow.Action(
+                result.title, "Audiobook", "search_audiobook:$index", result.artworkTrackId
+            )
+        }
     }
 
     fun selectedCollection(state: AppState): Pair<String, List<Long>>? {
@@ -708,6 +748,33 @@ object ScreenContent {
         }
     }
 
+    private fun sleepTimerRows(state: AppState): List<ScreenRow> = buildList {
+        fun addChoice(title: String, key: String, active: Boolean) {
+            add(ScreenRow.Action(title, if (active) "Active" else null, key))
+        }
+        val playback = state.playback
+        addChoice("Off", "sleep_timer_off", playback.sleepTimerMode == SleepTimerMode.OFF)
+        addChoice("End of track", "sleep_timer_end_track", playback.sleepTimerMode == SleepTimerMode.END_TRACK)
+        addChoice("End of album", "sleep_timer_end_album", playback.sleepTimerMode == SleepTimerMode.END_ALBUM)
+        addChoice("End of queue", "sleep_timer_end_queue", playback.sleepTimerMode == SleepTimerMode.END_QUEUE)
+        for (minutes in 1..60) {
+            addChoice(
+                if (minutes == 1) "1 minute" else "$minutes minutes",
+                "sleep_timer_minutes:$minutes",
+                playback.sleepTimerMode == SleepTimerMode.MINUTES &&
+                    playback.sleepTimerConfiguredMinutes == minutes
+            )
+        }
+    }
+
+    fun sleepTimerSelectionIndex(state: AppState): Int = when (state.playback.sleepTimerMode) {
+        SleepTimerMode.OFF -> 0
+        SleepTimerMode.END_TRACK -> 1
+        SleepTimerMode.END_ALBUM -> 2
+        SleepTimerMode.END_QUEUE -> 3
+        SleepTimerMode.MINUTES -> 3 + (state.playback.sleepTimerConfiguredMinutes ?: 5).coerceIn(1, 60)
+    }
+
     private fun playingNextLabel(state: AppState): String {
         val playback = state.playback
         if (playback.queue.isEmpty()) return "Queue is empty"
@@ -909,8 +976,18 @@ object ScreenContent {
             ?: "Preset ${state.preferences.equalizerPreset + 1}"
         return listOf(
             ScreenRow.Action("Preset", preset, "eq_preset"),
-            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · center adjusts", "eq_bands")
+            ScreenRow.Action("Custom Bands", "${effects.bandFrequenciesHz.size} bands · choose values", "eq_bands")
         )
+    }
+
+    private fun equalizerPresetRows(state: AppState): List<ScreenRow> {
+        val selected = state.preferences.equalizerPreset
+        return buildList {
+            add(ScreenRow.Action("Custom", if (selected < 0) "Current" else null, "eq_preset:-1"))
+            state.playback.audioEffects.presetNames.forEachIndexed { index, name ->
+                add(ScreenRow.Action(name, if (selected == index) "Current" else null, "eq_preset:$index"))
+            }
+        }
     }
 
 
@@ -968,6 +1045,37 @@ object ScreenContent {
         return effects.bandFrequenciesHz.mapIndexed { index, frequency ->
             val level = effects.bandLevelsMb.getOrNull(index) ?: state.preferences.equalizerBandLevelsMb.getOrNull(index) ?: 0
             ScreenRow.Action(formatFrequency(frequency), signedDb(level), "eq_band:$index")
+        }
+    }
+
+    internal fun equalizerBandLevels(state: AppState): List<Int> {
+        val effects = state.playback.audioEffects
+        if (effects.bandMinMb > effects.bandMaxMb) return emptyList()
+        return buildSet {
+            add(effects.bandMinMb)
+            add(effects.bandMaxMb)
+            add(0.coerceIn(effects.bandMinMb, effects.bandMaxMb))
+            var level = Math.floorDiv(effects.bandMinMb, EQ_BAND_STEP_MB) * EQ_BAND_STEP_MB
+            if (level < effects.bandMinMb) level += EQ_BAND_STEP_MB
+            while (level <= effects.bandMaxMb) {
+                add(level)
+                level += EQ_BAND_STEP_MB
+            }
+        }.sorted()
+    }
+
+    internal fun equalizerBandLevel(state: AppState, bandIndex: Int): Int {
+        val effects = state.playback.audioEffects
+        return state.preferences.equalizerBandLevelsMb.getOrNull(bandIndex)
+            ?.takeIf { state.preferences.equalizerPreset < 0 }
+            ?: effects.bandLevelsMb.getOrNull(bandIndex)
+            ?: 0
+    }
+
+    private fun equalizerBandLevelRows(state: AppState, bandIndex: Int): List<ScreenRow> {
+        val current = equalizerBandLevel(state, bandIndex)
+        return equalizerBandLevels(state).map { level ->
+            ScreenRow.Action(signedDb(level), if (level == current) "Current" else null, "eq_level:$level")
         }
     }
 
@@ -1519,6 +1627,7 @@ object ScreenContent {
     private fun isLargeScreen(screen: Screen): Boolean = when (screen) {
         Screen.Songs, Screen.Favorites, Screen.RecentlyPlayed, Screen.Albums, Screen.Artists,
         Screen.Genres, Screen.Years, Screen.Playlists, Screen.Queue, Screen.Audiobooks -> true
+        is Screen.Search -> true
         is Screen.AlbumSongs, is Screen.ArtistAlbums, is Screen.ArtistSongs,
         is Screen.FacetMenu, is Screen.FacetArtists, is Screen.FacetAlbums,
         is Screen.FacetArtistAlbums, is Screen.FacetTracks,
@@ -1528,6 +1637,7 @@ object ScreenContent {
     }
 
     private const val ROW_CACHE_ENTRIES = 4
+    private const val EQ_BAND_STEP_MB = 100
 
     const val COLLECTION_SHUFFLE_KEY = "collection_shuffle"
     const val AUDIOBOOK_KEY_PREFIX = "audiobook:"

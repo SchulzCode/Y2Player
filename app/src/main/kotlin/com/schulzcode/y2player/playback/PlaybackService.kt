@@ -33,6 +33,8 @@ import com.schulzcode.y2player.core.state.AppAction
 import com.schulzcode.y2player.core.state.DeviceState
 import com.schulzcode.y2player.core.state.PlayerPreferencesState
 import com.schulzcode.y2player.diagnostics.DiagnosticLogger
+import com.schulzcode.y2player.fm.FmController
+import com.schulzcode.y2player.fm.FmState
 import com.schulzcode.y2player.diagnostics.Ev
 import com.schulzcode.y2player.diagnostics.EventLog
 import com.schulzcode.y2player.diagnostics.PlaybackHistory
@@ -60,6 +62,15 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     fun interface Listener { fun onPlaybackChanged(snapshot: PlaybackSnapshot) }
 
     inner class LocalBinder : Binder() {
+        fun setFmListener(listener: ((FmState) -> Unit)?) { fmListener = listener }
+        fun fmSnapshot(): FmState = fmController?.snapshot() ?: FmState()
+        fun fmOpen() = post { fm().probe() }
+        fun fmStart(frequencyKhz: Int) = post { fmStartInternal(frequencyKhz) }
+        fun fmStop() = post { fmController?.stop() }
+        fun fmClose() = post { fmController?.release() }
+        fun fmTuneBy(steps: Int) = post { fm().tuneBy(steps) }
+        fun fmSeek(up: Boolean) = post { fm().seek(up) }
+
         fun addListener(listener: Listener) = this@PlaybackService.addListener(listener)
         fun removeListener(listener: Listener) = this@PlaybackService.removeListener(listener)
         fun snapshot(): PlaybackSnapshot = snapshot
@@ -157,7 +168,8 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
             afterQueueMutation()
         }
 
-        fun cycleSleepTimer() = post(::cycleSleepTimerInternal)
+        fun setSleepTimer(mode: SleepTimerMode, minutes: Int? = null) =
+            post { setSleepTimerInternal(mode, minutes) }
 
         fun applyPreferences(value: PlayerPreferencesState) = post {
             applyPreferencesInternal(value)
@@ -254,10 +266,13 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
     private lateinit var eventLog: EventLog
     private lateinit var storageMonitor: StorageMonitor
     private lateinit var routeMonitor: AudioRouteMonitor
+    private lateinit var playbackWakeLock: PlaybackWakeLock
 
     @Volatile private var snapshot = PlaybackSnapshot()
     @Volatile private var currentTrack: Track? = null
     @Volatile private var shuttingDown = false
+    private var fmController: FmController? = null
+    private var fmListener: ((FmState) -> Unit)? = null
     @Volatile private var boundClients = 0
     @Volatile private var lastStartId = 0
     private var requestedPreferences = PlayerPreferencesState()
@@ -343,6 +358,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         )
         storageMonitor = container.storageMonitor
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        playbackWakeLock = PlaybackWakeLock(this)
 
         playbackThread = HandlerThread("y2-playback").apply { start() }
         playbackHandler = Handler(playbackThread.looper)
@@ -458,6 +474,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     override fun onDestroy() {
         shuttingDown = true
+        if (::playbackWakeLock.isInitialized) playbackWakeLock.release()
         volumeModeTransitionGate.cancel()
         volumeKeyRepeatController.cancel()
         if (::libraryRepository.isInitialized) libraryRepository.setPlaybackActive(false)
@@ -468,6 +485,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         if (::playbackHandler.isInitialized) {
             playbackHandler.removeCallbacksAndMessages(null)
             val cleanup = Runnable {
+                runCatching { fmController?.release() }
                 runCatching { releaseCurrentTrack(PlaybackExitReason.SERVICE_SHUTDOWN) }
                 if (::queue.isInitialized) runCatching {
                     playbackHandler.removeCallbacks(queuePersistRunnable)
@@ -1746,10 +1764,10 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
         return engine.durationMs().takeIf { it > 0 } ?: snapshot.durationMs
     }
 
-    private fun cycleSleepTimerInternal() {
+    private fun setSleepTimerInternal(mode: SleepTimerMode, minutes: Int?) {
         sleepTimerCallback?.let(playbackHandler::removeCallbacks)
         sleepTimerCallback = null
-        sleepTimer.cycle(SystemClock.elapsedRealtime())?.let { scheduled ->
+        sleepTimer.set(mode, minutes, SystemClock.elapsedRealtime())?.let { scheduled ->
             val callback = object : Runnable {
                 override fun run() {
                     when (val tick = sleepTimer.onTimer(scheduled.generation, SystemClock.elapsedRealtime())) {
@@ -2193,6 +2211,7 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun publishSnapshot() {
         val value = snapshot
+        playbackWakeLock.sync(value.status)
         libraryRepository.setPlaybackActive(value.status == PlaybackStatus.PLAYING)
         if (::remoteControl.isInitialized) remoteControl.update(value, currentTrack)
         mainHandler.post {
@@ -2258,6 +2277,23 @@ class PlaybackService : Service(), PlaybackEngine.Listener, AudioFocusController
 
     private fun post(block: () -> Unit) {
         if (!shuttingDown && ::playbackHandler.isInitialized) playbackHandler.post(block)
+    }
+
+    /**
+     * Created on first use so a device without the vendor FM stack never pays
+     * for it, and so the tuner is only ever touched from the playback thread.
+     */
+    private fun fm(): FmController {
+        fmController?.let { return it }
+        return FmController(applicationContext) { state ->
+            mainHandler.post { fmListener?.invoke(state) }
+        }.also { fmController = it }
+    }
+
+    private fun fmStartInternal(frequencyKhz: Int) {
+        // One output, one owner: the decoder has to let go before FM takes it.
+        if (snapshot.status in ACTIVE_STATUSES) runCatching { togglePlaybackInternal() }
+        fm().start(frequencyKhz)
     }
 
     private fun submitPersistence(operation: String, block: () -> Unit) {

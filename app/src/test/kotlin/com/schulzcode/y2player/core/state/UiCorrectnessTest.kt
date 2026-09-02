@@ -47,14 +47,14 @@ class UiCorrectnessTest {
     @Test fun `a live session has no duplicate Now Playing row`() {
         val state = AppState(library = LibraryState(), playback = playing)
         assertEquals(
-            listOf("music", "audiobooks", "settings"),
+            listOf("music", "audiobooks", "fm_radio", "search", "settings"),
             keys(state)
         )
     }
 
-    @Test fun `Shuffle All is present only when the session has ended`() {
+    @Test fun `main destinations stay stable when the session ends`() {
         val stopped = AppState(library = LibraryState(tracks = listOf(track)), playback = PlaybackSnapshot())
-        assertEquals(listOf("music", "audiobooks", "shuffle_all", "settings"), keys(stopped))
+        assertEquals(listOf("music", "audiobooks", "fm_radio", "search", "settings"), keys(stopped))
     }
 
     @Test fun `a restored queue has neither Shuffle All nor a duplicate Now Playing row`() {
@@ -63,14 +63,14 @@ class UiCorrectnessTest {
             playback = PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
         assertEquals(
-            listOf("music", "audiobooks", "settings"),
+            listOf("music", "audiobooks", "fm_radio", "search", "settings"),
             keys(restored)
         )
     }
 
     @Test fun `Settings selection survives removal of the idle Shuffle All row`() {
         val idle = AppState(
-            screenStack = listOf(ScreenEntry(Screen.MainMenu, 3)),
+            screenStack = listOf(ScreenEntry(Screen.MainMenu, 4)),
             library = LibraryState(tracks = listOf(track))
         )
         val live = AppReducer.reduce(idle, AppAction.PlaybackChanged(playing)).state
@@ -168,7 +168,8 @@ class UiCorrectnessTest {
         val settingsScreens = listOf(
             Screen.Settings, Screen.Audio, Screen.OutputInformation, Screen.PlaybackTransitions,
             Screen.PlaybackSeeking, Screen.PlaybackVolume, Screen.PlaybackInterruptions,
-            Screen.SoundEffects, Screen.EqualizerSettings, Screen.SortOrder, Screen.Bluetooth,
+            Screen.SoundEffects, Screen.EqualizerSettings, Screen.EqualizerPresets,
+            Screen.EqualizerBandLevel(0), Screen.SortOrder, Screen.Bluetooth,
             Screen.InterfaceSettings, Screen.LibrarySettings, Screen.Display, Screen.Controls,
             Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.PlaybackHistory,
             Screen.System, Screen.Diagnostics, Screen.Reset, Screen.About
@@ -236,7 +237,7 @@ class UiCorrectnessTest {
     }
 
     private fun allScreens(): List<Screen> = listOf(
-        Screen.MainMenu, Screen.Music, Screen.Audiobooks,
+        Screen.MainMenu, Screen.Search(), Screen.Music, Screen.Audiobooks,
         Screen.AudiobookOptions("sdcard|AUDIOBOOKS/Dune"), Screen.AudiobookChapters("sdcard|AUDIOBOOKS/Dune"),
         Screen.Songs, Screen.Favorites,
         Screen.RecentlyPlayed, Screen.Albums, Screen.AlbumSongs("Album"), Screen.Artists,
@@ -247,8 +248,8 @@ class UiCorrectnessTest {
         Screen.NowPlayingOptions, Screen.Queue, Screen.Audio, Screen.Settings,
         Screen.PlaybackTransitions, Screen.PlaybackSeeking,
         Screen.PlaybackVolume, Screen.PlaybackInterruptions, Screen.SoundEffects,
-        Screen.EqualizerSettings, Screen.OutputInformation,
-        Screen.EqualizerBands, Screen.SortOrder, Screen.Bluetooth,
+        Screen.EqualizerSettings, Screen.EqualizerPresets, Screen.OutputInformation,
+        Screen.EqualizerBands, Screen.EqualizerBandLevel(0), Screen.SortOrder, Screen.Bluetooth,
         Screen.BluetoothDevice("AA:BB:CC:DD:EE:FF"), Screen.ConfirmAction("forget_device:AA:BB"),
         Screen.InterfaceSettings, Screen.LibrarySettings, Screen.Display, Screen.Controls,
         Screen.Balance, Screen.Brightness, Screen.ScreenTimeout, Screen.Storage,

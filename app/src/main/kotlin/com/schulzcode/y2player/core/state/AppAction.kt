@@ -3,9 +3,11 @@ package com.schulzcode.y2player.core.state
 import com.schulzcode.y2player.core.model.LibraryState
 import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.PlaybackSnapshot
+import com.schulzcode.y2player.core.model.SleepTimerMode
 import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
+import com.schulzcode.y2player.fm.FmState
 
 sealed interface AppAction {
     data class WheelMoved(val delta: Int) : AppAction
@@ -35,12 +37,22 @@ sealed interface AppAction {
     data class DiagnosticsChanged(val diagnostics: DiagnosticsState) : AppAction
     data class BackupChanged(val backup: BackupUiState) : AppAction
     data class BackupImportReady(val summary: String) : AppAction
+    data class FmChanged(val fm: FmState) : AppAction
     data class SafeModeChanged(val enabled: Boolean) : AppAction
     data class ShowMessage(val message: String?) : AppAction
     data class SelectIndex(val index: Int) : AppAction
+    data class PressSearchKey(val key: String) : AppAction
 }
 
 sealed interface AppEffect {
+    // FM and the decoder cannot both own the output, so opening the tuner stops
+    // playback and leaving the screen releases it again.
+    data object FmOpen : AppEffect
+    data object FmClose : AppEffect
+    data class FmTune(val steps: Int) : AppEffect
+    data class FmSeek(val up: Boolean) : AppEffect
+    data object FmTogglePower : AppEffect
+
     data class PlayCollection(
         val trackIds: List<Long>,
         val startIndex: Int,
@@ -104,11 +116,11 @@ sealed interface AppEffect {
     data object CycleReplayGain : AppEffect
     data object CycleHapticLevel : AppEffect
     data object ToggleWrapLists : AppEffect
-    data object CycleSleepTimer : AppEffect
+    data class SetSleepTimer(val mode: SleepTimerMode, val minutes: Int? = null) : AppEffect
     data object CycleAudioQuality : AppEffect
     data object ToggleAudioEffects : AppEffect
-    data object CycleEqualizerPreset : AppEffect
-    data class AdjustEqualizerBand(val index: Int, val deltaSteps: Int) : AppEffect
+    data class SetEqualizerPreset(val index: Int) : AppEffect
+    data class SetEqualizerBand(val index: Int, val levelMb: Int) : AppEffect
     data object CycleBassStrength : AppEffect
     data object CycleLoudnessGain : AppEffect
     data class SetSortOrder(val order: TrackSortOrder) : AppEffect
@@ -162,7 +174,9 @@ val AppAction.code: String get() = when (this) {
     is AppAction.DiagnosticsChanged -> "diagnostics_changed"
     is AppAction.BackupChanged -> "backup_changed"
     is AppAction.BackupImportReady -> "backup_import_ready"
+    is AppAction.FmChanged -> "fm_changed"
     is AppAction.SafeModeChanged -> "safe_mode_changed"
     is AppAction.ShowMessage -> "show_message"
     is AppAction.SelectIndex -> "select_index"
+    is AppAction.PressSearchKey -> "search_key"
 }

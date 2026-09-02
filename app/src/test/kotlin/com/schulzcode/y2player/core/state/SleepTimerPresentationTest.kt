@@ -11,7 +11,7 @@ import org.junit.Test
 class SleepTimerPresentationTest {
     @Test fun fifteenMinuteTimerInitiallyDisplaysFifteenMinutes() {
         val timer = SleepTimerController()
-        timer.cycle(10_000L)
+        timer.set(SleepTimerMode.MINUTES, 15, 10_000L)
         val snapshot = timer.applyTo(PlaybackSnapshot(), 10_001L)
         val remaining = SleepTimerPresentation.remainingMs(snapshot, 10_001L)
 
@@ -30,7 +30,8 @@ class SleepTimerPresentationTest {
 
     @Test fun remainingTimeIsAlwaysDerivedFromTheDeadline() {
         val snapshot = PlaybackSnapshot(
-            sleepTimerMode = SleepTimerMode.MINUTES_15,
+            sleepTimerMode = SleepTimerMode.MINUTES,
+            sleepTimerConfiguredMinutes = 15,
             sleepTimerDeadlineElapsedMs = 901_000L,
             sleepTimerRemainingMs = 123L
         )
@@ -51,13 +52,13 @@ class SleepTimerPresentationTest {
     @Test fun refreshRunsOnlyWhileANumericCountdownIsVisible() {
         assertTrue(SleepTimerPresentation.shouldRefresh(
             Screen.NowPlayingOptions,
-            SleepTimerMode.MINUTES_15,
+            SleepTimerMode.MINUTES,
             deadlineElapsedMs = 900_000L,
             uiVisible = true
         ))
         assertFalse(SleepTimerPresentation.shouldRefresh(
             Screen.NowPlaying,
-            SleepTimerMode.MINUTES_15,
+            SleepTimerMode.MINUTES,
             deadlineElapsedMs = 900_000L,
             uiVisible = true
         ))
@@ -69,7 +70,7 @@ class SleepTimerPresentationTest {
         ))
         assertFalse(SleepTimerPresentation.shouldRefresh(
             Screen.NowPlayingOptions,
-            SleepTimerMode.MINUTES_15,
+            SleepTimerMode.MINUTES,
             deadlineElapsedMs = 900_000L,
             uiVisible = false
         ))

@@ -14,6 +14,7 @@ object ScreenCatalogue {
     private val samples: Map<KClass<out Screen>, Screen> = buildMap {
         fun put(screen: Screen) = put(screen::class, screen)
         put(Screen.MainMenu)
+        put(Screen.Search("test"))
         put(Screen.Music)
         put(Screen.Audiobooks)
         put(Screen.AudiobookOptions("sdcard|AUDIOBOOKS/Dune"))
@@ -47,6 +48,7 @@ object ScreenCatalogue {
         put(Screen.QueueManagement)
         put(Screen.NowPlaying)
         put(Screen.NowPlayingOptions)
+        put(Screen.SleepTimer)
         put(Screen.Queue)
         put(Screen.Audio)
         put(Screen.Settings)
@@ -56,8 +58,10 @@ object ScreenCatalogue {
         put(Screen.PlaybackInterruptions)
         put(Screen.SoundEffects)
         put(Screen.EqualizerSettings)
+        put(Screen.EqualizerPresets)
         put(Screen.OutputInformation)
         put(Screen.EqualizerBands)
+        put(Screen.EqualizerBandLevel(0))
         put(Screen.SortOrder)
         put(Screen.TrackSorting)
         put(Screen.AlbumSorting)
@@ -74,6 +78,7 @@ object ScreenCatalogue {
         put(Screen.ScreenTimeout)
         put(Screen.Storage)
         put(Screen.PlaybackHistory)
+        put(Screen.FmRadio)
         put(Screen.System)
         put(Screen.BackupRestore)
         put(Screen.Diagnostics)
@@ -89,11 +94,13 @@ object ScreenCatalogue {
         declaredSubtypes().filterNot { it in samples }.map { it.simpleName ?: "<anonymous>" }
 
     /** Screens that hold no rows by design; everything else must build something. */
-    val rowless: Set<String> = setOf(Screen.NowPlaying.code)
+    // Both are drawn directly rather than as row lists, so they have no rows.
+    val rowless: Set<String> = setOf(Screen.NowPlaying.code, Screen.FmRadio.code)
 
     /** Screens whose content depends on a library, so emptiness is legitimate. */
     val contentScreens: Set<String> = setOf(
         Screen.Songs.code, Screen.Favorites.code, Screen.RecentlyPlayed.code,
+        Screen.Search().code,
         Screen.Albums.code, Screen.Artists.code, Screen.Genres.code, Screen.Years.code, Screen.Audiobooks.code,
         Screen.Queue.code, Screen.AlbumSongs("").code, Screen.ArtistAlbums("").code,
         Screen.ArtistSongs("").code, Screen.Folders().code, Screen.PlaylistTracks(0, "").code,

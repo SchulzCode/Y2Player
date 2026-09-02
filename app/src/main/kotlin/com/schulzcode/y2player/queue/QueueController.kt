@@ -280,7 +280,8 @@ class QueueController(
     fun toggleShuffle(): Boolean {
         shuffleEnabled = !shuffleEnabled
         if (shuffleEnabled) shuffleSeed = System.nanoTime()
-        reorderFutureContinuation(shuffleEnabled)
+        if (shuffleEnabled) reorderFutureContinuation(shuffled = true)
+        else restoreContinuationOrderFromCurrent()
         return shuffleEnabled
     }
 
@@ -297,7 +298,7 @@ class QueueController(
         if (!changed) return false
         shuffleEnabled = false
         repeatMode = RepeatMode.OFF
-        reorderFutureContinuation(shuffled = false)
+        restoreContinuationOrderFromCurrent()
         return true
     }
 
@@ -356,6 +357,38 @@ class QueueController(
         entries.subList(start, entries.size).clear()
         entries += manual
         entries += continuation
+        touchEntries()
+    }
+
+    /**
+     * Makes the active collection entry the anchor of normal playback again.
+     *
+     * Sorting only the unplayed tail can put an earlier, not-yet-played entry (often track 1)
+     * directly after the current song. Rebuilding the materialized collection keeps the current
+     * entry selected and resumes with its successor, as if that song had been selected without
+     * shuffle. Explicit future Up Next entries still retain priority over the continuation.
+     */
+    private fun restoreContinuationOrderFromCurrent() {
+        val index = currentIndex
+        val currentId = currentEntryId()
+        val current = index?.let(entries::getOrNull)
+        if (index == null || currentId == null || current?.origin != QueueOrigin.CONTINUATION) {
+            reorderFutureContinuation(shuffled = false)
+            return
+        }
+
+        val pastManual = entries.take(index).filter { it.origin == QueueOrigin.UP_NEXT }
+        val futureManual = entries.drop(index + 1).filter { it.origin == QueueOrigin.UP_NEXT }
+        val continuation = entries
+            .filter { it.origin == QueueOrigin.CONTINUATION }
+            .sortedBy { it.sourceOrder ?: Int.MAX_VALUE }
+
+        entries.clear()
+        entries += pastManual
+        entries += continuation
+        currentIndex = entries.indexOfFirst { it.id == currentId }.takeIf { it >= 0 }
+        val insertionIndex = currentIndex?.plus(1) ?: entries.size
+        entries.addAll(insertionIndex, futureManual)
         touchEntries()
     }
 

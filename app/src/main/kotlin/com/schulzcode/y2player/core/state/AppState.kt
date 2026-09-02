@@ -7,6 +7,7 @@ import com.schulzcode.y2player.core.model.TrackSortOrder
 import com.schulzcode.y2player.core.model.AlbumSortOrder
 import com.schulzcode.y2player.core.model.YearSortOrder
 import com.schulzcode.y2player.diagnostics.DiagnosticsState
+import com.schulzcode.y2player.fm.FmState
 import com.schulzcode.y2player.input.HapticLevel
 import com.schulzcode.y2player.playback.AudioBalance
 import com.schulzcode.y2player.playback.CrossfadeMode
@@ -123,6 +124,7 @@ data class AppState(
     val preferences: PlayerPreferencesState = PlayerPreferencesState(),
     val diagnostics: DiagnosticsState = DiagnosticsState(),
     val backup: BackupUiState = BackupUiState(),
+    val fm: FmState = FmState(),
     val safeMode: Boolean = false,
     val transientMessage: String? = null,
     val alphabetScrub: AlphabetScrubState? = null

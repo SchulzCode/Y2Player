@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.5 — FM radio and unified search
+
+- Added FM Radio support for the built-in MediaTek MT6627 tuner.
+- Combined the complete Search-enabled Y2Player line with FM controls and the latest playback, wake-lock, timer, equalizer, wrapping, shuffle, and artwork fixes.
+- Added the production `ACCESS_MTK_MMHW` permission required to open `/dev/fm`.
+
+## 2.3 — Up Next queue, library browsing, and menu artwork
+
+- Rebuilt the playback queue around explicit Up Next and continuation sections, preserving the source collection after manually added songs finish.
+- Made Shuffle expose the actual upcoming order while keeping deliberate Up Next entries ordered and restoring the remaining collection order when Shuffle is disabled.
+- Added wheel-friendly circular actions for playing, promoting, moving, and removing individual queue occurrences.
+- Added focused Clear Up Next, Clear After Current, and confirmed Stop & Clear queue actions.
+- Added batch Play Next, Add to Up Next, and Add Shuffled actions for complete collections and manually selected groups of tracks.
+- Added Genres and Years library views with filtered track, artist, and album navigation.
+- Added independent sorting for tracks, albums, and year lists, including oldest-first and newest-first album chronology.
+- Kept same-named albums from different album artists separate and displayed release years on album rows where available.
+- Added bounded album-art thumbnails to visible menu rows while retaining track numbers in album song lists.
+- Excluded audiobook chapters from music collections, playlists, counts, and Shuffle All while preserving the dedicated Audiobooks experience.
+- Reduced audiobook Now Playing actions to Chapters, Queue, Sleep Timer, and Track Details.
+- Parsed repeated Vorbis `ARTIST` values into individual artists while preserving the complete display credit.
+- Removed unused state and result fields across device, diagnostics, playback, queue, backup, playlist, Bluetooth, and display code.
+
 ## 2.2.1 — playback stability, controls, and Now Playing refinements
 
 - Fixed brief volume peaks during volume-mode changes, playback resume, pause, lock, and screen wake.
