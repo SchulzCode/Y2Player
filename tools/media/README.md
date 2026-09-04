@@ -28,10 +28,10 @@ The local generator expects `build/host-ffmpeg/install/bin/ffmpeg` and
 8.1.2 plus the official LAME 3.100 static library. LAME's source SHA-256 is
 `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e`.
 
-Run from WSL:
+Run on Linux:
 
 ```sh
-python3 /mnt/c/Users/Luca/Documents/Y2Player/tools/media/generate-corpus.py
+python3 tools/media/generate-corpus.py
 ```
 
 All audio signals are synthetic, deterministic, and at most 500 ms except for
@@ -41,10 +41,10 @@ part of the corpus.
 Run the complete device gate (build, install, clean data, push, scan, decode,
 compare, and report) with:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\media\run-media-regression.ps1
+```bash
+./tools/media/run-media-regression.sh
 ```
 
-`-ProbeBytes` and `-AnalyzeUs` override metadata probe limits for controlled
+`--probe-bytes` and `--analyze-us` override metadata probe limits for controlled
 experiments without rebuilding native code. Production defaults are 32 KiB
 and 100 ms; every candidate must still pass the full `all` mode before use.

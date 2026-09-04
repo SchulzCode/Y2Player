@@ -1,9 +1,9 @@
 # Pinned FFmpeg source
 
 Y2Player uses FFmpeg 8.1.2 from the official release archive. The archive is
-not checked into Git. `tools/build-native-audio.ps1` downloads it into the
-ignored build cache, verifies the SHA-256 recorded in `source.properties`, and
-passes it to the WSL cross-build.
+not checked into Git. `tools/build-linux.sh native` downloads it into the
+ignored build cache, verifies its pinned SHA-256, and runs the Linux NDK
+cross-build.
 
 The release archive was additionally verified against
 `ffmpeg-8.1.2.tar.xz.asc` with the official FFmpeg release key whose full

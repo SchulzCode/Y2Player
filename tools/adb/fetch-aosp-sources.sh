@@ -32,9 +32,7 @@ fetch_exact() {
         echo "actual  : $actual" >&2
         exit 1
     fi
-    # A checkout created by Windows Git may contain CRLF while the pinned AOSP
-    # objects use LF. Permit only that end-of-line normalization; a real source
-    # change still makes the verification fail.
+    # Permit only end-of-line normalization; a real source change still fails.
     if ! git -C "$destination" diff --ignore-space-at-eol --quiet HEAD --; then
         echo "source checkout has non-EOL modifications: $destination" >&2
         exit 1

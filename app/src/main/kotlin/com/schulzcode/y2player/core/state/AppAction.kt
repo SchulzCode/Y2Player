@@ -99,8 +99,10 @@ sealed interface AppEffect {
     data object ToggleVerboseDiagnostics : AppEffect
     data object ToggleKeepScreenOn : AppEffect
     data object ToggleExtraTrackInfo : AppEffect
+    data object ToggleShowFmRadio : AppEffect
     data object ToggleLightTheme : AppEffect
     data object ToggleLocalKeysWhileScreenOff : AppEffect
+    data object ToggleSeekWhenLocked : AppEffect
     data class SetBalance(val balance: Int) : AppEffect
     data object TogglePauseOnDisconnect : AppEffect
     data object ToggleResumePosition : AppEffect

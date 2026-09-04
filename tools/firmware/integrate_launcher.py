@@ -7,7 +7,7 @@ PROTECTED region are never touched. The image is edited offline with debugfs
 (no root, no loop mount), reconciled with e2fsck, then re-encoded as a sparse
 image byte-compatible with the stock one.
 
-Requires: e2fsprogs (debugfs, e2fsck, dumpe2fs). Run on Linux or WSL.
+Requires Linux and e2fsprogs (debugfs, e2fsck, dumpe2fs).
 
     python3 integrate_launcher.py \
         --system   OriginalFirmware/system.img \
@@ -48,7 +48,10 @@ TARGET_KEY_LAYOUT = keylayout_patch.KEYLAYOUT_SYSTEM_PATH
 BATTERY_WARNING_SUPPRESSION_MARKER = "/media/audio/ui/battery_y2player_suppressed"
 STOCK_SYSTEM_UI = "/priv-app/SystemUI.apk"
 STOCK_SYSTEM_UI_SIZE = 2122282
-STOCK_SYSTEM_UI_SHA256 = "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3"
+STOCK_SYSTEM_UI_SHA256S = {
+    "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3",
+    "c6320280eb36efe358aaad23379bb2e1fb80711d13dbd88322e5c3b58dcbefa4",
+}
 APK_NATIVE_ENTRY = "lib/armeabi-v7a/liby2audio.so"
 # Matches stock files in both /system/priv-app and /system/lib.
 SELINUX_CONTEXT = b"u:object_r:system_file:s0\x00"
@@ -284,7 +287,7 @@ def main():
         raise SystemExit(f"could not read stock {STOCK_SYSTEM_UI}")
     system_ui_size = os.path.getsize(stock_system_ui)
     system_ui_sha = sha256(stock_system_ui)
-    if (system_ui_size, system_ui_sha) != (STOCK_SYSTEM_UI_SIZE, STOCK_SYSTEM_UI_SHA256):
+    if system_ui_size != STOCK_SYSTEM_UI_SIZE or system_ui_sha not in STOCK_SYSTEM_UI_SHA256S:
         os.unlink(stock_system_ui)
         raise SystemExit(
             "stock SystemUI is not the audited battery-warning implementation: "
@@ -333,17 +336,19 @@ def main():
         raise SystemExit(f"could not read stock {TARGET_PRIMARY_AUDIO_HAL}")
     try:
         with open(stock_hal, "rb") as handle:
-            patched_hal_bytes = hal_patch.patch_hal(handle.read())
+            stock_hal_bytes = handle.read()
+        hal_variant = hal_patch.identify_variant(stock_hal_bytes)
+        patched_hal_bytes = hal_patch.patch_hal(stock_hal_bytes)
         hal_patch.write_atomic(patched_hal, patched_hal_bytes)
     except hal_patch.PatchError as error:
         raise SystemExit(f"stock primary-audio HAL rejected: {error}") from error
     log(
-        f"      stock HAL: {hal_patch.STOCK_SIZE} bytes, "
-        f"SHA-256 {hal_patch.STOCK_SHA256}"
+        f"      stock HAL ({hal_variant.name}): {hal_variant.size} bytes, "
+        f"SHA-256 {hal_variant.stock_sha256}"
     )
     log(
         f"      patched HAL: {len(patched_hal_bytes)} bytes, "
-        f"SHA-256 {hal_patch.PATCHED_SHA256}"
+        f"SHA-256 {hal_variant.patched_sha256}"
     )
     log("      DAC frequency hook: guarded numeric 44100/48000-Hz ioctl")
     stock_keylayout = raw + ".stock-mtk-kpd.kl"
@@ -448,7 +453,7 @@ def main():
 
     log("\n[4/6] reconciling filesystem and clearing freed blocks")
     # First reconcile metadata. Discard may punch holes on capable hosts, but
-    # drvfs-backed WSL files do not reliably honor it, so the audited free-block
+    # Some filesystems do not reliably honor it, so the audited free-block
     # map is also zeroed explicitly below before sparse.pack().
     check = run(["e2fsck", "-fy", "-E", "discard", raw])
     # 0 = clean, 1 = errors corrected. Anything higher is uncorrected damage.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproducible Android API-19 ARMv7 FFmpeg and JNI build. This script is called
-# by tools/build-native-audio.ps1 after the source archives are hash-verified.
+# by tools/build-linux.sh after the source archives are hash-verified.
 
 set -euo pipefail
 
@@ -54,7 +54,7 @@ abi=armeabi-v7a
 #
 # To evaluate it:
 #   adb shell grep -i Features /proc/cpuinfo      # look for "neon"
-#   Y2_ENABLE_NEON=1 tools/build-native-audio.ps1 # or export before this script
+#   Y2_ENABLE_NEON=1 ./tools/build-linux.sh native
 #   ./gradlew assembleDebug -PnativeNeon=true     # explicitly accept that artifact
 #   measure: audio-thread CPU on MP3/FLAC/AAC, crossfade CPU, liby2audio.so size
 #

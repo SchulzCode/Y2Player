@@ -208,7 +208,13 @@ $RECYCLE.BIN/
 !/CHANGELOG.md
 !/LICENSE
 !/README.md
+!/RELEASE_2.5.md
+!/RELEASE_2.5_REDDIT.md
 !/SOURCE_SHA256SUMS.txt
+!/docs/
+/docs/*
+!/docs/Y2PLAYER_V2_3_RELEASE_POST.md
+!/docs/Y2PLAYER_V2_3_REDDIT_POST.md
 !/app/
 # Maintained build, firmware, ADB, and regression tooling is source. Downloads,
 # generated corpora, and other outputs stay under ignored build/out/dist paths.
@@ -223,7 +229,6 @@ $RECYCLE.BIN/
 !/third_party/ffmpeg/source.properties
 !/gradle/
 !/gradlew
-!/gradlew.bat
 !/build.gradle.kts
 !/settings.gradle.kts
 !/gradle.properties

@@ -314,7 +314,9 @@ object ScreenContent {
     private fun mainMenuRows(state: AppState): List<ScreenRow> = buildList {
         add(ScreenRow.Action("Music", "Songs, albums, artists and playlists", "music"))
         add(ScreenRow.Action("Audiobooks", "Pick up where you stopped", "audiobooks"))
-        add(ScreenRow.Action("FM Radio", "Tune the built-in tuner", "fm_radio"))
+        if (state.preferences.showFmRadio) {
+            add(ScreenRow.Action("FM Radio", "Tune the built-in tuner", "fm_radio"))
+        }
         add(ScreenRow.Action("Search", "Find anything on this device", "search"))
         add(ScreenRow.Action("Settings", if (state.safeMode) "SAFE MODE" else null, "settings"))
     }
@@ -847,7 +849,12 @@ object ScreenContent {
 
     private fun interfaceRows(state: AppState): List<ScreenRow> = listOf(
         ScreenRow.Action("Display", "${state.display.brightnessPercent}% · ${timeoutLabel(state.display.screenTimeoutMs)}", "display"),
-        ScreenRow.Action("Controls", controlsSummary(state), "controls")
+        ScreenRow.Action("Controls", controlsSummary(state), "controls"),
+        ScreenRow.Action(
+            "FM Radio",
+            if (state.preferences.showFmRadio) "Shown on main menu" else "Hidden from main menu",
+            "show_fm_radio"
+        )
     )
 
     private fun librarySettingsRows(state: AppState): List<ScreenRow> = listOf(
@@ -915,7 +922,12 @@ object ScreenContent {
     private fun playbackSeekingRows(state: AppState): List<ScreenRow> = listOf(
         ScreenRow.Action("Seek Step", secondsLabel(state.preferences.seekStepMs), "seek_step"),
         ScreenRow.Action("Seek Step When Held", secondsLabel(state.preferences.longSeekStepMs), "long_seek_step"),
-        ScreenRow.Action("Previous Button", thresholdLabel(state.preferences.previousRestartThresholdMs), "previous_threshold")
+        ScreenRow.Action("Previous Button", thresholdLabel(state.preferences.previousRestartThresholdMs), "previous_threshold"),
+        ScreenRow.Action(
+            "Seek When Locked",
+            if (state.preferences.seekWhenLocked) "Left and right seek" else "Left and right change tracks",
+            "seek_when_locked"
+        )
     )
 
     private fun playbackVolumeRows(state: AppState): List<ScreenRow> = listOf(

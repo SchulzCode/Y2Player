@@ -24,8 +24,10 @@ class PreferenceBackupTest {
             wrapLists = false,
             keepScreenOnWhilePlaying = true,
             extraTrackInfo = true,
+            showFmRadio = true,
             lightTheme = true,
             localKeysWhileScreenOff = true,
+            seekWhenLocked = true,
             pauseOnDisconnect = false,
             resumePosition = false,
             sortOrder = TrackSortOrder.RECENT,
@@ -55,10 +57,14 @@ class PreferenceBackupTest {
         val oldFields = PreferenceBackup.encode(PlayerPreferencesState()).toMutableMap().apply {
             remove("album_sort_order")
             remove("year_sort_order")
+            remove("show_fm_radio")
+            remove("seek_when_locked")
         }
 
         val decoded = PreferenceBackup.decode(oldFields)
         assertEquals(AlbumSortOrder.TITLE, decoded.albumSortOrder)
         assertEquals(YearSortOrder.NEWEST_FIRST, decoded.yearSortOrder)
+        assertEquals(false, decoded.showFmRadio)
+        assertEquals(false, decoded.seekWhenLocked)
     }
 }

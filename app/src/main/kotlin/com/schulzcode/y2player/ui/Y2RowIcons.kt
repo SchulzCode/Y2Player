@@ -58,7 +58,7 @@ object Y2RowIcons {
     private fun exactAction(key: String): Y2Icon? = when (key) {
         "music" -> Y2Icon.MUSIC
         "audiobooks" -> Y2Icon.BOOK
-        "fm_radio" -> Y2Icon.SPEAKER
+        "fm_radio", "show_fm_radio" -> Y2Icon.SPEAKER
         "now_playing" -> Y2Icon.PLAYING
         "settings" -> Y2Icon.SETTINGS
 
@@ -92,7 +92,7 @@ object Y2RowIcons {
         "sound_effects" -> Y2Icon.EQUALIZER
         "playback_transitions", "gapless", "crossfade", "crossfade_mode", "pause_fade" -> Y2Icon.CROSSFADE
         "playback_volume", "volume_mode", "replay_gain", "balance" -> Y2Icon.VOLUME
-        "playback_seeking", "seek_step", "long_seek_step", "previous_threshold" -> Y2Icon.NEXT
+        "playback_seeking", "seek_step", "long_seek_step", "previous_threshold", "seek_when_locked" -> Y2Icon.NEXT
         "playback_interruptions", "duck_focus", "pause_disconnect" -> Y2Icon.WARNING
         "resume_position" -> Y2Icon.RECENT
         "equalizer", "eq_preset", "eq_bands", "effects_toggle", "sound_dynamics",

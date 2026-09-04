@@ -1,6 +1,6 @@
 # Y2Player
 
-**Y2Player 2.2.1 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
+**Y2Player 2.3 is an offline music player and HOME launcher built specifically for the Innioasis Y2.** It turns the Android 4.4 device into a focused, click-wheel-driven music player with local library browsing, a persistent playback queue, album artwork, Bluetooth audio, and a compact interface designed for the Y2's 480 × 360 landscape display.
 
 Y2Player is for Y2 owners, firmware modders, and contributors who want a lightweight music-first replacement for the stock launcher. It works without an internet connection and does not include streaming, search, video, or cloud services.
 
@@ -18,17 +18,35 @@ The diagnostics log is especially helpful because many playback, audio-effect, B
 
 ## Highlights
 
-- Browse local music by **Songs, Albums, Artists, Folders, Playlists, Favorites, and Recently Played**.
+- Browse local music by **Songs, Albums, Artists, Genres, Years, Folders, Playlists, Favorites, and Recently Played**.
 - Keep your place in **Audiobooks**, which are grouped by folder and resume at the minute you stopped.
 - Decode every advertised format through one pinned FFmpeg engine, including MP3, AAC/M4A, ALAC/M4A, FLAC, WAV/PCM, AIFF/PCM, Ogg Vorbis, and Opus.
-- Play individual tracks or collections, shuffle the library, and manage a persistent queue with Play Next, reordering, and removal.
+- Play individual tracks, selected batches, or complete collections and manage an explicit Up Next queue with Play Next, reordering, and removal.
 - Use repeat-one/repeat-all, configurable seeking, playback resume, gapless transitions, crossfade, and resume fades.
 - Set a sleep timer for 15, 30, or 60 minutes, or stop at the end of the current track, album, or queue.
 - Navigate entirely with the Y2 click wheel and hardware buttons.
 - Choose between the original dark interface and a light theme, and adjust left/right audio balance independently of firmware effects.
-- View embedded album artwork, metadata, progress, output status, and playback controls on Home and Now Playing.
+- View embedded or external album artwork in library menus and on Now Playing alongside metadata, progress, output status, and playback controls.
 - Scan internal storage and removable SD cards, including M3U/M3U8 playlist import and export.
 - Pair and manage Bluetooth A2DP audio devices.
+
+## Version 2.3
+
+Version 2.3 makes the upcoming playback order explicit, expands library browsing, and adds bounded album-art thumbnails throughout the menu system.
+
+The release includes:
+
+- a rebuilt queue that keeps deliberate Up Next entries ahead of the remaining album, playlist, or shuffled collection;
+- queue rows that show the real upcoming order under Shuffle, with wheel-friendly Play Now, Play Next, Move, and Remove actions;
+- batch queue actions for albums, collections, and manually selected groups of songs;
+- new Genres and Years views with matching track, artist, and album navigation;
+- independent track, album, and year-list sorting, including chronological album order;
+- album-art thumbnails for visible song, album, artist, genre, year, playlist, audiobook, and queue rows;
+- audiobook chapters removed from ordinary music views while remaining available in the dedicated Audiobooks section;
+- correct parsing of repeated Vorbis `ARTIST` values exposed by FFmpeg as semicolon-separated metadata;
+- internal model, diagnostics, playback, queue, and controller cleanup with the complete unit-test suite passing.
+
+The complete release write-up is available in [`docs/Y2PLAYER_V2_3_RELEASE_POST.md`](docs/Y2PLAYER_V2_3_RELEASE_POST.md). The shorter [Reddit release post](docs/Y2PLAYER_V2_3_REDDIT_POST.md) is also kept in the repository.
 
 ## Version 2.2.1
 
@@ -64,7 +82,7 @@ The complete technical release write-up is available in [`docs/Y2PLAYER_V2_2_REL
 
 Version 2.1 improved the library scanner and refined the FFmpeg media engine using measurements collected directly on physical Y2 hardware, including a collation-correct SQLite index that made the largest measured scanner lookup 98.4% faster on a synthetic 9,178-file library.
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete release history. The short [Reddit release post](docs/Y2PLAYER_V2_2_REDDIT_POST.md) is also kept in the repository.
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history.
 
 ## Music library and playback
 
@@ -151,7 +169,7 @@ The generated 2.1 firmware contains an audited, guarded primary-audio HAL hook f
 - Reacts safely to Android mount, unmount, and media-scanner events. USB/storage status is diagnostic and read-only; Y2Player does not switch USB modes.
 - Provides manual library rescanning, bounded structured logs, confirmed diagnostic clearing, local diagnostic export, and a build-derived report of the native decoder and output capabilities.
 - Provides a manual, versioned Backup & Restore file on the removable card (or the existing writable Y2Player export location).
-- Includes PowerShell helpers for collecting and watching device diagnostics over ADB.
+- Supports standard Linux `adb` tools for device installation and live diagnostics.
 - Enters Safe Mode after repeated incomplete launcher starts, or on request. Safe Mode suppresses automatic scanning, Bluetooth management, and session restoration so the UI can recover.
 
 ### Backup contents
@@ -208,14 +226,14 @@ The precise codec and container policy is maintained in [docs/FORMAT_SUPPORT_MAT
 - JDK 17 or newer;
 - Android SDK Platform 36 and Android Build Tools;
 - an SDK path in `local.properties` (see `local.properties.example`);
-- PowerShell and WSL2 with `bash`, `make`, `unzip`, and `sha256sum`;
+- Linux with `bash`, `make`, `unzip`, `patch`, `curl`, and `sha256sum`;
 - Internet access for the first verified native bootstrap; later builds use the cache.
 
 Build the pinned API-19 ARMv7 runtime, then test, lint, and package a debug APK:
 
-```powershell
-.\tools\build-native-audio.ps1
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```bash
+./tools/build-linux.sh native
+./tools/build-linux.sh app
 ```
 
 The APK is written to:
@@ -224,7 +242,7 @@ The APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The maintained native bootstrap currently targets the Windows + WSL firmware-build environment.
+The maintained build and firmware toolchain targets Linux.
 
 ### Build a signed release APK
 
@@ -232,21 +250,21 @@ Copy `keystore.properties.example` to `keystore.properties`, create and back up 
 
 Then run:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build-release-apk.ps1
+```bash
+./tools/build-linux.sh release
 ```
 
-The verified APK and build report are staged under `dist\firmware\`. Signing material and generated release artifacts are intentionally ignored by Git.
+The verified APK and checksum are staged under `dist/firmware/`. Signing material and generated release artifacts are intentionally ignored by Git.
 
 ### Build the secure ADB development image
 
 The optional ADB pipeline is separate from the release `system.img` pipeline. It builds a static API-19 ARM `adbd` from pinned official Android 4.4.2 sources and inserts it into a verified copy of the stock MediaTek boot image. The result keeps USB mass storage, RSA authorization, a non-root shell, and the production security properties.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build-adb-boot.ps1
+```bash
+./tools/build-linux.sh adb-boot
 ```
 
-Outputs and verification reports are written to `out\boot-adb\`. This image is for development and requires its own BOOTIMG-only flashing procedure; it is not generated or flashed by the normal firmware build. Read [docs/ADB_BOOT_IMAGE.md](docs/ADB_BOOT_IMAGE.md) before using it.
+Outputs and verification reports are written to `out/boot-adb/`. This image is for development and requires its own BOOTIMG-only flashing procedure; it is not generated or flashed by the normal firmware build. Read [docs/ADB_BOOT_IMAGE.md](docs/ADB_BOOT_IMAGE.md) before using it.
 
 ## Install on a device
 
@@ -359,17 +377,17 @@ OriginalFirmware/MT6582_Android_scatter.txt
 
 Validate the host environment without producing an image:
 
-```powershell
-.\tools\build-firmware.ps1 -ValidateOnly
+```bash
+./tools/build-linux.sh firmware-validate
 ```
 
 Build and verify the release APK and replacement system image:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build-firmware.ps1
+```bash
+./tools/build-linux.sh system-image
 ```
 
-This requires WSL, Python 3, and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out\firmware\`, including `Y2Player.apk`, `system.img`, checksums, a manifest, logs, and an independent verification report. The verifier reopens the sparse image and checks the embedded APK, native runtime, patched HAL, package-pruning policy, retained critical packages, ext4 structure, partition size, ownership, modes, SELinux labels, uniqueness, and SHA-256 readback.
+This requires Python 3 and Linux `e2fsprogs` in addition to the Android build requirements. Successful outputs are written to `out/firmware/`, including `Y2Player.apk`, `system.img`, checksums, a manifest, and an independent verification report. The verifier reopens the sparse image and checks the embedded APK, native runtime, patched HAL, package-pruning policy, retained critical packages, ext4 structure, partition size, ownership, modes, SELinux labels, uniqueness, and SHA-256 readback.
 
 The build script only creates files. It never flashes, pushes, reboots, emits a boot image, or modifies the original firmware inputs.
 
@@ -378,18 +396,19 @@ The build script only creates files. It never flashes, pushes, reboots, emits a 
 To create the complete release archive accepted by the
 [Innioasis Updater](https://github.com/y1-community/Innioasis-Updater), run:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build-updater-rom.ps1
+```bash
+./tools/build-linux.sh firmware
 ```
 
-This single command first calls `build-firmware.ps1`, so the signed APK and
+This single command first runs the Linux system-image pipeline, so the signed APK and
 `system.img` are always rebuilt from the current source. It then combines the
 new system image with the guarded stock Y2 partition set, converts the
 filesystem images to raw form, adds the portable flashing tool, and produces a
-maximum-Deflate flat archive at `out\updater\rom_y2.zip`. The known-good
+maximum-Deflate flat archive at `out/updater/rom_y2.zip`. The known-good
 flashing-tool template is downloaded and SHA-256 verified on the first run,
-then kept under `build\downloads\` for subsequent releases. An offline template
-can instead be supplied with `-TemplateZip`.
+then kept under `build/downloads/` for subsequent releases. The underlying
+`tools/firmware/build_full_package.py` command also accepts `--template` for an
+offline copy.
 
 The output directory contains:
 
@@ -398,7 +417,6 @@ rom_y2.zip
 checksums.txt
 build-manifest.txt
 verification-report.txt
-build.log
 ```
 
 Upload `rom_y2.zip` to the GitHub release without renaming it. The updater only
@@ -407,14 +425,14 @@ flashes anything itself.
 
 > [!WARNING]
 > `rom_y2.zip` is a full-device ROM package and its installation erases user
-> data. The separate sparse `out\firmware\system.img` remains available for the
+> data. The separate sparse `out/firmware/system.img` remains available for the
 > existing system-only SP Flash Tool update procedure.
 
 Validate all local ROM inputs and tools without building or downloading the
 template:
 
-```powershell
-.\tools\build-updater-rom.ps1 -ValidateOnly
+```bash
+./tools/build-linux.sh firmware-validate
 ```
 
 ## Known limitations
@@ -433,8 +451,8 @@ template:
 
 Contributions should preserve Android 4.4/API 19 compatibility, physical-control navigation, offline operation, and the project's small CPU/heap footprint. Before submitting a change, run:
 
-```powershell
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```bash
+./tools/build-linux.sh app
 ```
 
 Hardware-dependent changes should describe the Y2 firmware version and include diagnostic evidence where possible.

@@ -458,6 +458,7 @@ object AppReducer {
             "display" -> push(state, Screen.Display)
             "controls" -> push(state, Screen.Controls)
             "extra_track_info" -> Reduction(state, listOf(ToggleExtraTrackInfo))
+            "show_fm_radio" -> Reduction(state, listOf(ToggleShowFmRadio))
             else -> Reduction(state)
         }
     }
@@ -496,6 +497,7 @@ object AppReducer {
             "pause_fade" -> Reduction(state, listOf(CyclePauseFade))
             "seek_step" -> Reduction(state, listOf(CycleSeekStep))
             "long_seek_step" -> Reduction(state, listOf(CycleLongSeekStep))
+            "seek_when_locked" -> Reduction(state, listOf(ToggleSeekWhenLocked))
             "previous_threshold" -> Reduction(state, listOf(CyclePreviousThreshold))
             "duck_focus" -> Reduction(state, listOf(ToggleDuckOnFocusLoss))
             "volume_mode" -> Reduction(state, listOf(CycleVolumeMode))

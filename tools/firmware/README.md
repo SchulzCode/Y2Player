@@ -29,8 +29,10 @@ the underlying telephony services. Freed ext4 blocks are explicitly cleared
 and independently verified as zero before the image is repacked, so removed
 payloads do not inflate the sparse output.
 
-These tools operate on `system.img` only. The immutable
-`OriginalFirmware/system.img` remains the recovery base; every generated image
-receives the HAL and keypad patches and checks both against audited SHA-256
-values. The normal entry point is `.\tools\build-firmware.ps1`; none of these
-tools flashes a device.
+These tools operate on `system.img` only. The normal pipeline uses the immutable
+`y2_v3.2.0_FM-20260813/system.img` as its base so the vendor's corrected FM
+audio route is retained. The builder also recognizes the older
+`OriginalFirmware/system.img` when explicitly selected with `--stock-system`
+and `--stock-scatter`. Every generated image receives the guarded HAL and keypad
+patches and checks both against audited SHA-256 values. The normal entry point is
+`./tools/build-linux.sh firmware`; none of these tools flashes a device.

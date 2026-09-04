@@ -21,6 +21,8 @@ while [ $# -gt 0 ]; do
     --apk) APK="$2"; shift 2 ;;
     --apk-metadata) APK_META="$2"; shift 2 ;;
     --native-lib) NATIVE_LIB="$2"; shift 2 ;;
+    --stock-system) STOCK_SYSTEM="$2"; shift 2 ;;
+    --stock-scatter) STOCK_SCATTER="$2"; shift 2 ;;
     --out) OUTDIR="$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
     --validate-only) VALIDATE_ONLY=1; shift ;;
@@ -31,8 +33,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-STOCK_SYSTEM="$ROOT/OriginalFirmware/system.img"
-STOCK_SCATTER="$ROOT/OriginalFirmware/MT6582_Android_scatter.txt"
+STOCK_SYSTEM="${STOCK_SYSTEM:-$ROOT/y2_v3.2.0_FM-20260813/system.img}"
+STOCK_SCATTER="${STOCK_SCATTER:-$ROOT/y2_v3.2.0_FM-20260813/MT6582_Android_scatter.txt}"
 
 stage() { printf '\n=== %s ===\n' "$*"; }
 log() { printf '      %s\n' "$*"; }
@@ -98,7 +100,7 @@ rm -f "$OUTDIR/Y2Player.apk" "$OUTDIR/system.img" \
       "$OUTDIR/system.zip" \
       "$OUTDIR/boot.img" "$OUTDIR/boot-stock.img" "$OUTDIR/y2bridged" \
       "$OUTDIR/build-manifest.txt" "$OUTDIR/checksums.txt" \
-      "$OUTDIR/verification-report.txt" "$OUTDIR"/bridge*
+      "$OUTDIR/verification-report.txt" "$OUTDIR/build.log" "$OUTDIR"/bridge*
 
 stage "Integrating Y2Player into system.img"
 python3 tools/firmware/integrate_launcher.py \
@@ -162,8 +164,8 @@ fi
   echo "APK install path     : /system/priv-app/Y2Player.apk"
   echo "Native install path  : /system/lib/liby2audio.so"
   echo "Primary HAL path     : /system/lib/libaudio.primary.default.so"
-  echo "Stock HAL SHA-256    : 5c5162f6a68f7db57febd050ee88cc886779dcce5948937149d6cd211eb0e6de"
-  echo "Patched HAL SHA-256  : c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
+  echo "Stock HAL             : exact supported variant verified during integration"
+  echo "Patched HAL           : exact variant-specific digest verified after patching"
   echo "DAC rate hook        : guarded 44100/48000 Hz, ioctl 0x40044305 by value"
   echo "Keypad layout path   : /system/usr/keylayout/mtk-kpd.kl"
   echo "Stock keypad SHA-256 : de48544bbfd465ac844bff2fd9f30c5793738041b6da6f228eeb8c40e9d444a7"
@@ -181,8 +183,7 @@ fi
   echo "-----------"
   echo "app log (device)     : /data/data/com.schulzcode.y2player/files/logs/"
   echo "app log mirror       : /storage/sdcard1/Y2Player/logs/ (best effort)"
-  echo "collect a bundle     : .\\tools\\collect-device-diagnostics.ps1"
-  echo "watch live           : .\\tools\\watch-device-logs.ps1"
+  echo "watch live           : adb logcat"
   echo
   echo "Safety"
   echo "------"

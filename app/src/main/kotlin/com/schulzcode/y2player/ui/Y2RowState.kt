@@ -30,8 +30,10 @@ object Y2RowState {
             key == "resume_position" -> state.preferences.resumePosition
             key == "keep_screen_on" -> state.preferences.keepScreenOnWhilePlaying
             key == "extra_track_info" -> state.preferences.extraTrackInfo
+            key == "show_fm_radio" -> state.preferences.showFmRadio
             key == "wrap_lists" -> state.preferences.wrapLists
             key == "screen_off_keys" -> state.preferences.localKeysWhileScreenOff
+            key == "seek_when_locked" -> state.preferences.seekWhenLocked
             key == "ui_sounds" -> state.preferences.uiSoundEffectsEnabled
             key == "haptics" -> state.preferences.hapticLevel != HapticLevel.OFF
             key == "theme" -> state.preferences.lightTheme

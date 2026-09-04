@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Apply the narrowly scoped CS43131 sample-rate hook to the stock Y2 HAL.
+"""Apply the narrowly scoped CS43131 sample-rate hook to a supported Y2 HAL.
 
-The patch is intentionally tied to one exact stock binary.  It refuses to run
+Each patch variant is intentionally tied to an exact stock binary. It refuses to run
 if the size, SHA-256, ELF layout, original function bytes, PLT stubs, device-path
 string, or injection space differs.  It never touches a device; it only writes
 a new local ELF file.
@@ -12,30 +12,42 @@ import hashlib
 import os
 import struct
 import tempfile
+from dataclasses import dataclass
 
 
 HAL_SYSTEM_PATH = "/lib/libaudio.primary.default.so"
-STOCK_SIZE = 753072
-STOCK_SHA256 = "5c5162f6a68f7db57febd050ee88cc886779dcce5948937149d6cd211eb0e6de"
-PATCHED_SHA256 = "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
 
-HOOK_ADDRESS = 0x00081B20
-INJECTION_ADDRESS = 0x000A73E4
-ORIGINAL_RX_SIZE = INJECTION_ADDRESS
-CS43131_PATH_ADDRESS = 0x000A5FFC
-OPEN_PLT_ADDRESS = 0x0002ECFC
-IOCTL_PLT_ADDRESS = 0x0002ECF0
-CLOSE_PLT_ADDRESS = 0x0002ED14
 
-ORIGINAL_FUNCTION = bytes.fromhex(
+@dataclass(frozen=True)
+class HalVariant:
+    name: str
+    size: int
+    stock_sha256: str
+    patched_sha256: str
+    hook: int
+    injection: int
+    path: int
+    open_plt: int
+    ioctl_plt: int
+    close_plt: int
+    original_function: bytes
+
+
+V1_FUNCTION = bytes.fromhex(
     "14 10 9f e5 14 20 9f e5 00 30 a0 e1 01 10 8f e0 "
     "03 00 a0 e3 02 20 8f e0 66 b4 fe ea 74 44 02 00 "
     "18 45 02 00"
 )
 
+V320_FUNCTION = bytes.fromhex(
+    "14 10 9f e5 14 20 9f e5 00 30 a0 e1 01 10 8f e0 "
+    "03 00 a0 e3 02 20 8f e0 a6 b2 fe ea 50 48 02 00 "
+    "f4 48 02 00"
+)
+
 # Independently assembled from primary_audio_hal_hook.S with Android NDK r25c
 # clang 14, linked at 0x000a73e4, then disassembled with llvm-objdump.
-HOOK_PAYLOAD = bytes.fromhex(
+HOOK_PAYLOAD_TEMPLATE = bytes.fromhex(
     "30 48 2d e9 00 40 a0 e1 44 3c 0a e3 03 00 54 e1 "
     "02 00 00 0a 80 3b 0b e3 03 00 54 e1 0c 00 00 1a "
     "30 00 9f e5 00 00 8f e0 02 10 a0 e3 39 1e fe eb "
@@ -45,7 +57,25 @@ HOOK_PAYLOAD = bytes.fromhex(
 )
 
 DEVICE_PATH = b"/dev/cs43131_dac\x00"
-PATCHED_RX_SIZE = INJECTION_ADDRESS + len(HOOK_PAYLOAD)
+
+VARIANTS = (
+    HalVariant(
+        "Y2 original", 753072,
+        "5c5162f6a68f7db57febd050ee88cc886779dcce5948937149d6cd211eb0e6de",
+        "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216",
+        0x81B20, 0xA73E4, 0xA5FFC, 0x2ECFC, 0x2ECF0, 0x2ED14, V1_FUNCTION,
+    ),
+    HalVariant(
+        "Y2 v3.2.0 FM", 757172,
+        "409430ce670538326110f8f991ead095b0c16df1274fab2e14a8988b69cc4304",
+        "5e4b3c85b6cb6a65058eaa2a9685a1e003b62d45771a75e0321e968543d8d0b5",
+        0x824D8, 0xA81B4, 0xA6D90, 0x2EFB4, 0x2EFA8, 0x2EFCC, V320_FUNCTION,
+    ),
+)
+
+STOCK_SIZE = VARIANTS[0].size
+STOCK_SHA256 = VARIANTS[0].stock_sha256
+PATCHED_SHA256 = VARIANTS[0].patched_sha256
 
 
 class PatchError(RuntimeError):
@@ -56,16 +86,35 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def arm_branch(source, target):
+def arm_branch(source, target, opcode=0xEA000000):
     """Encode an unconditional ARM-state B from source to target."""
     delta = target - (source + 8)
     if delta % 4 or not -(1 << 25) <= delta < (1 << 25):
         raise PatchError("ARM branch target is unaligned or out of range")
-    instruction = 0xEA000000 | ((delta >> 2) & 0x00FFFFFF)
+    instruction = opcode | ((delta >> 2) & 0x00FFFFFF)
     return struct.pack("<I", instruction)
 
 
-HOOK_BRANCH = arm_branch(HOOK_ADDRESS, INJECTION_ADDRESS)
+def payload_for(variant):
+    payload = bytearray(HOOK_PAYLOAD_TEMPLATE)
+    payload[0x2C:0x30] = arm_branch(variant.injection + 0x2C, variant.open_plt, 0xEB000000)
+    payload[0x48:0x4C] = arm_branch(variant.injection + 0x48, variant.ioctl_plt, 0xEB000000)
+    payload[0x50:0x54] = arm_branch(variant.injection + 0x50, variant.close_plt, 0xEB000000)
+    struct.pack_into("<i", payload, 0x58, variant.path - (variant.injection + 0x2C))
+    return bytes(payload)
+
+
+def identify_variant(data, patched=False):
+    digest = sha256_bytes(data)
+    field = "patched_sha256" if patched else "stock_sha256"
+    for variant in VARIANTS:
+        if len(data) == variant.size and digest == getattr(variant, field):
+            return variant
+    known = ", ".join(f"{variant.name}: {getattr(variant, field)}" for variant in VARIANTS)
+    raise PatchError(
+        f"unrecognized {'patched' if patched else 'stock'} HAL: {len(data)} bytes, "
+        f"SHA-256 {digest}; expected {known}"
+    )
 
 
 def elf_rx_program_header(data, expected_size):
@@ -112,42 +161,42 @@ def require_range(data, offset, expected, description):
 
 
 def patch_hal(stock):
-    if len(stock) != STOCK_SIZE:
-        raise PatchError(f"stock HAL size mismatch: expected {STOCK_SIZE}, found {len(stock)}")
-    digest = sha256_bytes(stock)
-    if digest != STOCK_SHA256:
-        raise PatchError(f"stock HAL SHA-256 mismatch: expected {STOCK_SHA256}, found {digest}")
-
-    phdr_offset = elf_rx_program_header(stock, ORIGINAL_RX_SIZE)
-    require_range(stock, HOOK_ADDRESS, ORIGINAL_FUNCTION, "stock frequency stub")
-    require_range(stock, CS43131_PATH_ADDRESS, DEVICE_PATH, "CS43131 device path")
+    variant = identify_variant(stock)
+    payload = payload_for(variant)
+    patched_rx_size = variant.injection + len(payload)
+    phdr_offset = elf_rx_program_header(stock, variant.injection)
+    require_range(stock, variant.hook, variant.original_function, "stock frequency stub")
+    require_range(stock, variant.path, DEVICE_PATH, "CS43131 device path")
     require_range(
-        stock, INJECTION_ADDRESS, b"\x00" * len(HOOK_PAYLOAD), "HAL injection space"
+        stock, variant.injection, b"\x00" * len(payload), "HAL injection space"
     )
 
     patched = bytearray(stock)
-    patched[INJECTION_ADDRESS:PATCHED_RX_SIZE] = HOOK_PAYLOAD
-    patched[HOOK_ADDRESS:HOOK_ADDRESS + 4] = HOOK_BRANCH
+    patched[variant.injection:patched_rx_size] = payload
+    patched[variant.hook:variant.hook + 4] = arm_branch(variant.hook, variant.injection)
     # ELF32_Phdr p_filesz and p_memsz fields are at +16 and +20.
-    struct.pack_into("<II", patched, phdr_offset + 16, PATCHED_RX_SIZE, PATCHED_RX_SIZE)
-    verify_patched_hal(patched)
+    struct.pack_into("<II", patched, phdr_offset + 16, patched_rx_size, patched_rx_size)
+    verify_variant(patched, variant)
     return bytes(patched)
 
 
-def verify_patched_hal(data):
-    if len(data) != STOCK_SIZE:
-        raise PatchError(f"patched HAL size mismatch: expected {STOCK_SIZE}, found {len(data)}")
-    elf_rx_program_header(data, PATCHED_RX_SIZE)
-    require_range(data, HOOK_ADDRESS, HOOK_BRANCH, "frequency hook branch")
-    require_range(data, HOOK_ADDRESS + 4, ORIGINAL_FUNCTION[4:], "preserved stock stub tail")
-    require_range(data, INJECTION_ADDRESS, HOOK_PAYLOAD, "injected frequency routine")
-    require_range(data, CS43131_PATH_ADDRESS, DEVICE_PATH, "CS43131 device path")
+def verify_variant(data, variant, check_digest=True):
+    payload = payload_for(variant)
+    elf_rx_program_header(data, variant.injection + len(payload))
+    require_range(data, variant.hook, arm_branch(variant.hook, variant.injection), "frequency hook branch")
+    require_range(data, variant.hook + 4, variant.original_function[4:], "preserved stock stub tail")
+    require_range(data, variant.injection, payload, "injected frequency routine")
+    require_range(data, variant.path, DEVICE_PATH, "CS43131 device path")
     digest = sha256_bytes(data)
-    if digest != PATCHED_SHA256:
+    if check_digest and digest != variant.patched_sha256:
         raise PatchError(
-            f"patched HAL SHA-256 mismatch: expected {PATCHED_SHA256}, found {digest}"
+            f"patched HAL SHA-256 mismatch: expected {variant.patched_sha256}, found {digest}"
         )
     return digest
+
+
+def verify_patched_hal(data):
+    return verify_variant(data, identify_variant(data, patched=True))
 
 
 def write_atomic(path, data):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline decoder for Y2 /proc/audio runtime captures.
 
-Consumes a session directory produced by tools/collect-afe-runtime.ps1 and emits
+Consumes a directory of AFE captures collected from a device and emits
 a state-by-state register table, per-transition diffs, decoded bit fields, and a
 pass/fail check of the phase-2 static-analysis predictions.
 
@@ -188,7 +188,7 @@ def sha256(p: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("session", type=Path, help="session directory from collect-afe-runtime.ps1")
+    ap.add_argument("session", type=Path, help="session directory containing AFE captures")
     ap.add_argument("--markdown", type=Path, default=None, help="write a markdown report here")
     args = ap.parse_args()
 

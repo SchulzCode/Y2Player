@@ -27,7 +27,7 @@ public final class GradleWrapperMain {
         String baseName = fileName.replace("-bin.zip", "").replace("-all.zip", "");
         Path gradleHome = Paths.get(System.getProperty("user.home"), ".gradle", "wrapper", "dists", baseName, "y2player");
         Path installation = gradleHome.resolve(baseName);
-        Path executable = installation.resolve(isWindows() ? "bin/gradle.bat" : "bin/gradle");
+        Path executable = installation.resolve("bin/gradle");
 
         if (!Files.isRegularFile(executable)) {
             Files.createDirectories(gradleHome);
@@ -43,7 +43,7 @@ public final class GradleWrapperMain {
             }
             deleteRecursively(installation);
             unzip(zip, gradleHome);
-            if (!isWindows()) executable.toFile().setExecutable(true);
+            executable.toFile().setExecutable(true);
         }
 
         List<String> command = new ArrayList<>();
@@ -115,10 +115,6 @@ public final class GradleWrapperMain {
         } catch (UncheckedIOException error) {
             throw error.getCause();
         }
-    }
-
-    private static boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
     private static String required(Properties properties, String key) {

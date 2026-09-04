@@ -32,8 +32,10 @@ class AppPreferences(context: Context) {
         wrapLists = boolean(KEY_WRAP_LISTS, true),
         keepScreenOnWhilePlaying = boolean(KEY_KEEP_SCREEN_ON, false),
         extraTrackInfo = boolean(KEY_EXTRA_TRACK_INFO, false),
+        showFmRadio = boolean(KEY_SHOW_FM_RADIO, false),
         lightTheme = boolean(KEY_LIGHT_THEME, false),
         localKeysWhileScreenOff = boolean(KEY_SCREEN_OFF_KEYS, false),
+        seekWhenLocked = boolean(KEY_SEEK_WHEN_LOCKED, false),
         pauseOnDisconnect = boolean(KEY_PAUSE_ON_DISCONNECT, true),
         resumePosition = boolean(KEY_RESUME_POSITION, true),
         sortOrder = TrackSortOrder.fromStorage(string(KEY_SORT_ORDER, TrackSortOrder.TITLE.storageId)),
@@ -61,8 +63,10 @@ class AppPreferences(context: Context) {
     fun toggleVerboseDiagnostics() = updateBoolean(KEY_VERBOSE_DIAGNOSTICS, !snapshot().verboseDiagnostics)
     fun toggleKeepScreenOn() = updateBoolean(KEY_KEEP_SCREEN_ON, !snapshot().keepScreenOnWhilePlaying)
     fun toggleExtraTrackInfo() = updateBoolean(KEY_EXTRA_TRACK_INFO, !snapshot().extraTrackInfo)
+    fun toggleShowFmRadio() = updateBoolean(KEY_SHOW_FM_RADIO, !snapshot().showFmRadio)
     fun toggleLightTheme() = updateBoolean(KEY_LIGHT_THEME, !snapshot().lightTheme)
     fun toggleLocalKeysWhileScreenOff() = updateBoolean(KEY_SCREEN_OFF_KEYS, !snapshot().localKeysWhileScreenOff)
+    fun toggleSeekWhenLocked() = updateBoolean(KEY_SEEK_WHEN_LOCKED, !snapshot().seekWhenLocked)
     fun togglePauseOnDisconnect() = updateBoolean(KEY_PAUSE_ON_DISCONNECT, !snapshot().pauseOnDisconnect)
     fun toggleResumePosition() = updateBoolean(KEY_RESUME_POSITION, !snapshot().resumePosition)
     fun toggleGapless() = updateBoolean(KEY_GAPLESS, !snapshot().gaplessEnabled)
@@ -157,8 +161,10 @@ class AppPreferences(context: Context) {
             putBoolean(KEY_WRAP_LISTS, value.wrapLists)
             putBoolean(KEY_KEEP_SCREEN_ON, value.keepScreenOnWhilePlaying)
             putBoolean(KEY_EXTRA_TRACK_INFO, value.extraTrackInfo)
+            putBoolean(KEY_SHOW_FM_RADIO, value.showFmRadio)
             putBoolean(KEY_LIGHT_THEME, value.lightTheme)
             putBoolean(KEY_SCREEN_OFF_KEYS, value.localKeysWhileScreenOff)
+            putBoolean(KEY_SEEK_WHEN_LOCKED, value.seekWhenLocked)
             putBoolean(KEY_PAUSE_ON_DISCONNECT, value.pauseOnDisconnect)
             putBoolean(KEY_RESUME_POSITION, value.resumePosition)
             putString(KEY_SORT_ORDER, value.sortOrder.storageId)
@@ -225,8 +231,10 @@ class AppPreferences(context: Context) {
         private const val KEY_WRAP_LISTS = "wrap_lists"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_EXTRA_TRACK_INFO = "extra_track_info"
+        private const val KEY_SHOW_FM_RADIO = "show_fm_radio"
         private const val KEY_LIGHT_THEME = "light_theme"
         private const val KEY_SCREEN_OFF_KEYS = "screen_off_keys"
+        private const val KEY_SEEK_WHEN_LOCKED = "seek_when_locked"
         private const val KEY_PAUSE_ON_DISCONNECT = "pause_on_disconnect"
         private const val KEY_RESUME_POSITION = "resume_position"
         private const val KEY_SORT_ORDER = "sort_order"

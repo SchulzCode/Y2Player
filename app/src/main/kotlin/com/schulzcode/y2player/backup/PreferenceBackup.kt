@@ -24,8 +24,10 @@ object PreferenceBackup {
         "wrap_lists" to value.wrapLists.toString(),
         "keep_screen_on" to value.keepScreenOnWhilePlaying.toString(),
         "extra_track_info" to value.extraTrackInfo.toString(),
+        "show_fm_radio" to value.showFmRadio.toString(),
         "light_theme" to value.lightTheme.toString(),
         "screen_off_keys" to value.localKeysWhileScreenOff.toString(),
+        "seek_when_locked" to value.seekWhenLocked.toString(),
         "pause_on_disconnect" to value.pauseOnDisconnect.toString(),
         "resume_position" to value.resumePosition.toString(),
         "sort_order" to value.sortOrder.storageId,
@@ -89,8 +91,22 @@ object PreferenceBackup {
             wrapLists = boolean("wrap_lists"),
             keepScreenOnWhilePlaying = boolean("keep_screen_on"),
             extraTrackInfo = boolean("extra_track_info"),
+            showFmRadio = values["show_fm_radio"]?.let {
+                when (it) {
+                    "true" -> true
+                    "false" -> false
+                    else -> throw IllegalArgumentException("Invalid show_fm_radio setting")
+                }
+            } ?: false,
             lightTheme = boolean("light_theme"),
             localKeysWhileScreenOff = boolean("screen_off_keys"),
+            seekWhenLocked = values["seek_when_locked"]?.let {
+                when (it) {
+                    "true" -> true
+                    "false" -> false
+                    else -> throw IllegalArgumentException("Invalid seek_when_locked setting")
+                }
+            } ?: false,
             pauseOnDisconnect = boolean("pause_on_disconnect"),
             resumePosition = boolean("resume_position"),
             sortOrder = enum("sort_order", TrackSortOrder.values(), TrackSortOrder::storageId),
@@ -118,6 +134,6 @@ object PreferenceBackup {
         )
     }
 
-    private val OPTIONAL_KEYS = setOf("album_sort_order", "year_sort_order")
+    private val OPTIONAL_KEYS = setOf("album_sort_order", "year_sort_order", "show_fm_radio", "seek_when_locked")
     private val REQUIRED_KEYS = encode(PlayerPreferencesState()).keys - OPTIONAL_KEYS
 }

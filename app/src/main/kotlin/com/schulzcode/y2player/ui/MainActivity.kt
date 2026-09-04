@@ -505,10 +505,12 @@ class MainActivity : Activity() {
             }
             AppEffect.ToggleKeepScreenOn -> applyPlaybackPreferences(preferences.toggleKeepScreenOn())
             AppEffect.ToggleExtraTrackInfo -> applyPlaybackPreferences(preferences.toggleExtraTrackInfo())
+            AppEffect.ToggleShowFmRadio -> applyPlaybackPreferences(preferences.toggleShowFmRadio())
             AppEffect.ToggleLightTheme -> applyPlaybackPreferences(preferences.toggleLightTheme())
             is AppEffect.SetBalance -> applyPlaybackPreferences(preferences.setBalance(effect.balance))
             AppEffect.ToggleLocalKeysWhileScreenOff ->
                 applyPlaybackPreferences(preferences.toggleLocalKeysWhileScreenOff())
+            AppEffect.ToggleSeekWhenLocked -> applyPlaybackPreferences(preferences.toggleSeekWhenLocked())
             AppEffect.TogglePauseOnDisconnect -> applyPlaybackPreferences(preferences.togglePauseOnDisconnect())
             AppEffect.ToggleResumePosition -> applyPlaybackPreferences(preferences.toggleResumePosition())
             AppEffect.ToggleGapless -> applyPlaybackPreferences(preferences.toggleGapless())

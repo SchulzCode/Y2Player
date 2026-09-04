@@ -12,12 +12,11 @@ import zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sparse
 import system_package_policy as package_policy
+import patch_primary_audio_hal as hal_patch
 
 APK_PATH = "/priv-app/Y2Player.apk"
 NATIVE_LIBRARY_PATH = "/lib/liby2audio.so"
 PRIMARY_AUDIO_HAL_PATH = "/lib/libaudio.primary.default.so"
-PRIMARY_AUDIO_HAL_SIZE = 753072
-PRIMARY_AUDIO_HAL_SHA256 = "c155e239c8d13bc83bc4016ebdcbd1724114d728df86beb4d42c112150ffe216"
 KEY_LAYOUT_PATH = "/usr/keylayout/mtk-kpd.kl"
 KEY_LAYOUT_SIZE = 1684
 KEY_LAYOUT_SHA256 = "b85deb46f0ac9ebeb49f22a442ef442fc7adc612dbf075e52ddf178695969ec4"
@@ -25,7 +24,10 @@ BATTERY_WARNING_SUPPRESSION_MARKER = "/media/audio/ui/battery_y2player_suppresse
 BATTERY_WARNING_SUPPRESSION_SHA256 = "bfd10cd32fa8869b18e8bcc4f153e005dc0b290969186017fc8268e68d3d7c51"
 SYSTEM_UI_PATH = "/priv-app/SystemUI.apk"
 SYSTEM_UI_SIZE = 2122282
-SYSTEM_UI_SHA256 = "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3"
+SYSTEM_UI_SHA256S = {
+    "e2a3e4676dafb6b2e6f551ea7fafd89862adbfd8c4b5ebf5162f1a661e7ea1c3",
+    "c6320280eb36efe358aaad23379bb2e1fb80711d13dbd88322e5c3b58dcbefa4",
+}
 KEY_LAYOUT_MAPPINGS = (
     b"key 115   MEDIA_FAST_FORWARD  WAKE_DROPPED",
     b"key 114   MEDIA_REWIND        WAKE_DROPPED",
@@ -293,8 +295,8 @@ def main():
 
         hal_stat = query(raw, "stat %s" % PRIMARY_AUDIO_HAL_PATH)
         check("Inode" in hal_stat, "%s exists" % PRIMARY_AUDIO_HAL_PATH)
-        check(stat_size(hal_stat) == PRIMARY_AUDIO_HAL_SIZE,
-              "patched primary-audio HAL size is %d bytes" % PRIMARY_AUDIO_HAL_SIZE)
+        check(stat_size(hal_stat) in {variant.size for variant in hal_patch.VARIANTS},
+              "patched primary-audio HAL size matches a supported variant")
         hal_mode = next((line for line in hal_stat.splitlines() if "Mode:" in line), "")
         check("0644" in hal_mode, "patched primary-audio HAL mode is 0644")
         check("User:     0" in hal_stat and "Group:     0" in hal_stat,
@@ -307,8 +309,15 @@ def main():
               "patched primary-audio HAL can be read back")
         if os.path.isfile(embedded_hal):
             embedded_hal_sha = sha256_file(embedded_hal)
-            check(embedded_hal_sha == PRIMARY_AUDIO_HAL_SHA256,
-                  "patched primary-audio HAL SHA-256 matches the audited patch")
+            with open(embedded_hal, "rb") as handle:
+                embedded_hal_data = handle.read()
+            try:
+                hal_patch.verify_patched_hal(embedded_hal_data)
+                hal_valid = True
+            except hal_patch.PatchError:
+                hal_valid = False
+            check(hal_valid,
+                  "patched primary-audio HAL SHA-256 and code match an audited patch")
             embedded_hal_elf = elf_description(embedded_hal)
             check(embedded_hal_elf is not None
                   and embedded_hal_elf["class"] == 1
@@ -367,7 +376,7 @@ def main():
         check(dump(raw, SYSTEM_UI_PATH, embedded_system_ui),
               "stock SystemUI can be read back")
         if os.path.isfile(embedded_system_ui):
-            check(sha256_file(embedded_system_ui) == SYSTEM_UI_SHA256,
+            check(sha256_file(embedded_system_ui) in SYSTEM_UI_SHA256S,
                   "stock SystemUI matches the audited battery-warning implementation")
 
         check(query(raw, "ls -p /lib").count("liby2audio.so") == 1,

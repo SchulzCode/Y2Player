@@ -1209,8 +1209,19 @@ class AppReducerTest {
         val interfaceKeys = ScreenContent.rows(
             AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)))
         ).filterIsInstance<ScreenRow.Action>().map { it.key }
-        assertEquals(listOf("display", "controls"), interfaceKeys)
+        assertEquals(listOf("display", "controls", "show_fm_radio"), interfaceKeys)
         assertFalse("extra_track_info" in interfaceKeys)
+    }
+
+    @Test fun fmRadioVisibilityTogglesFromInterfaceSettings() {
+        val interfaceSettings = AppState(screenStack = listOf(ScreenEntry(Screen.InterfaceSettings)))
+        val row = ScreenContent.rows(interfaceSettings)
+            .filterIsInstance<ScreenRow.Action>().single { it.key == "show_fm_radio" }
+        assertEquals("Hidden from main menu", row.subtitle)
+        assertEquals(
+            AppEffect.ToggleShowFmRadio,
+            AppReducer.reduce(selectKey(interfaceSettings, "show_fm_radio"), AppAction.Confirm).effects.single()
+        )
     }
 
     @Test fun keepScreenOnLivesOnlyOnTheDisplayScreen() {

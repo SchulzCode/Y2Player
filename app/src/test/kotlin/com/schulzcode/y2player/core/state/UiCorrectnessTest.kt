@@ -47,14 +47,14 @@ class UiCorrectnessTest {
     @Test fun `a live session has no duplicate Now Playing row`() {
         val state = AppState(library = LibraryState(), playback = playing)
         assertEquals(
-            listOf("music", "audiobooks", "fm_radio", "search", "settings"),
+            listOf("music", "audiobooks", "search", "settings"),
             keys(state)
         )
     }
 
     @Test fun `main destinations stay stable when the session ends`() {
         val stopped = AppState(library = LibraryState(tracks = listOf(track)), playback = PlaybackSnapshot())
-        assertEquals(listOf("music", "audiobooks", "fm_radio", "search", "settings"), keys(stopped))
+        assertEquals(listOf("music", "audiobooks", "search", "settings"), keys(stopped))
     }
 
     @Test fun `a restored queue has neither Shuffle All nor a duplicate Now Playing row`() {
@@ -63,7 +63,7 @@ class UiCorrectnessTest {
             playback = PlaybackSnapshot(queue = testQueue(1L), currentQueueEntryId = 1L)
         )
         assertEquals(
-            listOf("music", "audiobooks", "fm_radio", "search", "settings"),
+            listOf("music", "audiobooks", "search", "settings"),
             keys(restored)
         )
     }

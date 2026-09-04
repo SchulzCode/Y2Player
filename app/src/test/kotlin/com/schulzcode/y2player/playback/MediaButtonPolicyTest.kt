@@ -82,6 +82,30 @@ class MediaButtonPolicyTest {
         assertNull(MediaButtonPolicy.playbackKeyCode(KeyEvent.KEYCODE_ENTER, HardwareKeyGate.Source.Y2_BROADCAST))
     }
 
+    @Test fun lockedSeekOptionRemapsOnlyTheLocalY2DirectionButtons() {
+        val left = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            HardwareKeyGate.Source.Y2_BROADCAST,
+            fromLocalKeypad = true,
+            seekInsteadOfSkip = true
+        )
+        val right = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            HardwareKeyGate.Source.Y2_BROADCAST,
+            fromLocalKeypad = true,
+            seekInsteadOfSkip = true
+        )
+        val remote = MediaButtonPolicy.serviceRequest(
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            HardwareKeyGate.Source.MEDIA_BROADCAST,
+            fromLocalKeypad = false,
+            seekInsteadOfSkip = true
+        )
+        assertEquals(KeyEvent.KEYCODE_MEDIA_REWIND, left?.keyCode)
+        assertEquals(KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, right?.keyCode)
+        assertEquals(KeyEvent.KEYCODE_MEDIA_NEXT, remote?.keyCode)
+    }
+
     @Test fun remappedLocalKeypadVolumeKeysBecomeVolumeRequests() {
         val up = MediaButtonPolicy.serviceRequest(
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,

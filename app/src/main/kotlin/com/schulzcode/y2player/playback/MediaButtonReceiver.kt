@@ -22,11 +22,13 @@ class MediaButtonReceiver : BroadcastReceiver() {
         event ?: return
         val source = if (intent.action == ACTION_Y2_KEY) HardwareKeyGate.Source.Y2_BROADCAST else HardwareKeyGate.Source.MEDIA_BROADCAST
         val fromLocalKeypad = HardwareKeyGate.isLocalKeypad(event.deviceId)
+        val preferences = (context.applicationContext as? Y2Application)?.container?.preferences?.snapshot()
         val serviceRequest = MediaButtonPolicy.serviceRequest(
             keyCode = event.keyCode,
             source = source,
             scanCode = event.scanCode,
-            fromLocalKeypad = fromLocalKeypad
+            fromLocalKeypad = fromLocalKeypad,
+            seekInsteadOfSkip = preferences?.seekWhenLocked == true
         ) ?: return logRejected(context, "unmapped_key", source, event)
         // The vendor rebroadcasts the same physical keypad stream delivered to the foreground
         // activity. Letting that fallback path act while the display is usable turns the first
@@ -34,8 +36,7 @@ class MediaButtonReceiver : BroadcastReceiver() {
         if (HardwareKeyGate.shouldDeferLocalBroadcastToActivity(context, source, fromLocalKeypad)) {
             return logRejected(context, "activity_owns_local_key", source, event)
         }
-        val localKeysWhileScreenOff = (context.applicationContext as? Y2Application)
-            ?.container?.preferences?.snapshot()?.localKeysWhileScreenOff ?: false
+        val localKeysWhileScreenOff = preferences?.localKeysWhileScreenOff ?: false
         if (!serviceRequest.isVolumeAdjustment && !HardwareKeyGate.isInputAllowed(
                 context, event.keyCode, source, fromLocalKeypad, localKeysWhileScreenOff
             )
@@ -159,12 +160,20 @@ internal object MediaButtonPolicy {
         keyCode: Int,
         source: HardwareKeyGate.Source,
         scanCode: Int = 0,
-        fromLocalKeypad: Boolean = false
+        fromLocalKeypad: Boolean = false,
+        seekInsteadOfSkip: Boolean = false
     ): ServiceRequest? {
         LocalVolumeKeyPolicy.direction(keyCode, scanCode, fromLocalKeypad)?.let { direction ->
             return ServiceRequest(PlaybackService.ACTION_ADJUST_VOLUME, keyCode, direction)
         }
-        return playbackKeyCode(keyCode, source)?.let {
+        val mappedKeyCode = when {
+            seekInsteadOfSkip && fromLocalKeypad && source == HardwareKeyGate.Source.Y2_BROADCAST &&
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> KeyEvent.KEYCODE_MEDIA_REWIND
+            seekInsteadOfSkip && fromLocalKeypad && source == HardwareKeyGate.Source.Y2_BROADCAST &&
+                keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+            else -> playbackKeyCode(keyCode, source)
+        }
+        return mappedKeyCode?.let {
             ServiceRequest(PlaybackService.ACTION_MEDIA_BUTTON, it)
         }
     }
